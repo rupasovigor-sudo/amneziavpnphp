@@ -966,8 +966,15 @@ class ServerMonitoring
         }
 
         // Get current peer states
-        $cmd = "docker exec $containerName wg show wg0 dump";
+        $protocolSlug = (string) ($this->serverData['install_protocol'] ?? '');
+        $isAwg2 = (stripos($containerName, 'awg2') !== false || $protocolSlug === 'awg2');
+        $cmd = $isAwg2
+            ? "docker exec $containerName awg show awg0 dump"
+            : "docker exec $containerName wg show wg0 dump";
         $result = $this->execSSH($cmd);
+        if (!$result && $isAwg2) {
+            $result = $this->execSSH("docker exec $containerName wg show wg0 dump");
+        }
         if (!$result) {
             return;
         }

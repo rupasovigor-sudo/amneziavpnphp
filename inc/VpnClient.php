@@ -175,6 +175,51 @@ class VpnClient
 
             // Re-fetch awg_params after possible auto-sync
             $awgParams = json_decode($serverData['awg_params'] ?? '{}', true) ?? [];
+            if (!is_array($awgParams)) {
+                $awgParams = [];
+            }
+
+            foreach ($awgParams as $k => $v) {
+                $uk = strtoupper((string) $k);
+                if (in_array($uk, ['JC', 'JMIN', 'JMAX', 'S1', 'S2', 'S3', 'S4', 'H1', 'H2', 'H3', 'H4', 'I1', 'I2', 'I3', 'I4', 'I5'], true) && !isset($awgParams[$uk])) {
+                    $awgParams[$uk] = $v;
+                }
+            }
+
+            if ($slug === 'awg2') {
+                $requiredAwg2Params = ['JC', 'JMIN', 'JMAX', 'S1', 'S2', 'S3', 'S4', 'H1', 'H2', 'H3', 'H4', 'I1', 'I2', 'I3', 'I4', 'I5'];
+                $missingAwg2Params = false;
+                foreach ($requiredAwg2Params as $requiredKey) {
+                    if (!isset($awgParams[$requiredKey]) || $awgParams[$requiredKey] === '') {
+                        $missingAwg2Params = true;
+                        break;
+                    }
+                }
+
+                if ($missingAwg2Params) {
+                    $directAwgParams = self::extractAwgParamsFromWg0Conf($server, $serverData['container_name'] ?? 'amnezia-awg2', '/opt/amnezia/awg/awg0.conf');
+                    if (empty($directAwgParams)) {
+                        $directAwgParams = self::extractAwgParamsFromWg0Conf($server, $serverData['container_name'] ?? 'amnezia-awg2', '/opt/amnezia/awg/wg0.conf');
+                    }
+                    if (!empty($directAwgParams)) {
+                        foreach ($directAwgParams as $k => $v) {
+                            $awgParams[strtoupper((string) $k)] = $v;
+                        }
+                        try {
+                            $stmtPersistAwg = $pdo->prepare('UPDATE vpn_servers SET awg_params = ? WHERE id = ?');
+                            $stmtPersistAwg->execute([json_encode($awgParams), $serverData['id']]);
+                        } catch (Exception $e) {
+                            error_log('Failed to persist AWG2 params from config: ' . $e->getMessage());
+                        }
+                    }
+                }
+
+                foreach ($requiredAwg2Params as $requiredKey) {
+                    if (!isset($awgParams[$requiredKey]) || $awgParams[$requiredKey] === '') {
+                        throw new Exception('AWG2 server parameters are missing; refusing to generate a client config from defaults');
+                    }
+                }
+            }
 
             // Build variables for template
             $vars = [
@@ -911,10 +956,10 @@ class VpnClient
                 'H3' => '2145217268-2146643749',
                 'H4' => '2146790761-2146860793',
                 'I1' => '<r 2><b 0x858000010001000000000669636c6f756403636f6d0000010001c00c000100010000105a00044d583737>',
-                'I2' => '',
-                'I3' => '',
-                'I4' => '',
-                'I5' => '',
+                'I2' => '<r 4><b 0x16030100><r 64>',
+                'I3' => '<r 8><b 0x17030300><r 48>',
+                'I4' => '<r 6><b 0x00000001><r 32>',
+                'I5' => '<r 10><b 0x08000000><r 40>',
             ];
         }
 
@@ -959,7 +1004,7 @@ class VpnClient
         return $awgParams;
     }
 
-    private static function extractPeerPskFromWgDump(VpnServer $server, string $containerName, string $clientPublicKey): ?string
+    private static function extractPeerPskFromWgDump(VpnServer $server, string $containerName, string $clientPublicKey, string $protocolSlug = ''): ?string
     {
         $clientPublicKey = trim($clientPublicKey);
         if ($clientPublicKey === '') {
@@ -968,8 +1013,15 @@ class VpnClient
 
         // wg show wg0 dump peer line format:
         // public_key \t preshared_key \t endpoint \t allowed_ips \t latest_handshake \t rx \t tx \t keepalive
-        $cmdDump = sprintf('docker exec %s wg show wg0 dump 2>/dev/null || true', escapeshellarg($containerName));
+        $isAwg2 = (stripos($containerName, 'awg2') !== false || $protocolSlug === 'awg2');
+        $wgTool = $isAwg2 ? 'awg' : 'wg';
+        $ifaceName = $isAwg2 ? 'awg0' : 'wg0';
+        $cmdDump = sprintf('docker exec %s %s show %s dump 2>/dev/null || true', escapeshellarg($containerName), $wgTool, $ifaceName);
         $dump = (string) $server->executeCommand($cmdDump, true);
+        if (trim($dump) === '' && $isAwg2) {
+            $cmdDump = sprintf('docker exec %s wg show wg0 dump 2>/dev/null || true', escapeshellarg($containerName));
+            $dump = (string) $server->executeCommand($cmdDump, true);
+        }
         foreach (preg_split('/\r?\n/', trim($dump)) as $line) {
             if ($line === '') {
                 continue;
@@ -1000,16 +1052,26 @@ class VpnClient
     {
         $containerName = $serverData['container_name'] ?? 'amnezia-awg';
         $protocolSlug = (string) ($serverData['install_protocol'] ?? '');
-        $primaryConfigDir = $protocolSlug === 'awg2' ? '/opt/amnezia/awg2' : '/opt/amnezia/awg';
+        $isAwg2 = (stripos($containerName, 'awg2') !== false || $protocolSlug === 'awg2');
+        $primaryConfigDir = '/opt/amnezia/awg';
+        $primaryConfigFile = $isAwg2 ? 'awg0.conf' : 'wg0.conf';
+        $primaryIface = $isAwg2 ? 'awg0' : 'wg0';
+        $wgTool = $isAwg2 ? 'awg' : 'wg';
 
         try {
             // Try to get public key from wg show
-            $pubKeyCmd = "docker exec $containerName wg show wg0 2>/dev/null | grep 'public key:' | awk '{print \$3}'";
+            $pubKeyCmd = "docker exec $containerName $wgTool show $primaryIface 2>/dev/null | grep 'public key:' | awk '{print \$3}'";
             $pubKey = trim($server->executeCommand($pubKeyCmd, true));
+            if ($pubKey === '' && $isAwg2) {
+                $pubKey = trim($server->executeCommand("docker exec $containerName wg show wg0 2>/dev/null | grep 'public key:' | awk '{print \$3}'", true));
+            }
 
             // Get listening port
-            $portCmd = "docker exec $containerName wg show wg0 2>/dev/null | grep 'listening port:' | awk '{print \$3}'";
+            $portCmd = "docker exec $containerName $wgTool show $primaryIface 2>/dev/null | grep 'listening port:' | awk '{print \$3}'";
             $port = trim($server->executeCommand($portCmd, true));
+            if ($port === '' && $isAwg2) {
+                $port = trim($server->executeCommand("docker exec $containerName wg show wg0 2>/dev/null | grep 'listening port:' | awk '{print \$3}'", true));
+            }
 
             // PresharedKey is stored per-peer, and in this project we persist it in wireguard_psk.key.
             // Prefer that file (stable) and fall back to parsing the first peer PSK from wg0.conf.
@@ -1019,7 +1081,7 @@ class VpnClient
             $psk = trim($server->executeCommand($pskKeyFileCmd, true));
 
             if ($psk === '') {
-                $pskFromConfCmd = "docker exec $containerName sh -c \"grep -E '^[[:space:]]*PresharedKey[[:space:]]*=' $primaryConfigDir/wg0.conf 2>/dev/null | head -1 | sed -E 's/^[[:space:]]*PresharedKey[[:space:]]*=[[:space:]]*//' | tr -d '\\r'\" 2>/dev/null || true";
+                $pskFromConfCmd = "docker exec $containerName sh -c \"grep -E '^[[:space:]]*PresharedKey[[:space:]]*=' $primaryConfigDir/$primaryConfigFile 2>/dev/null | head -1 | sed -E 's/^[[:space:]]*PresharedKey[[:space:]]*=[[:space:]]*//' | tr -d '\\r'\" 2>/dev/null || true";
                 $psk = trim($server->executeCommand($pskFromConfCmd, true));
             }
 
@@ -1034,7 +1096,7 @@ class VpnClient
             }
 
             // Extract DNS from config
-            $dnsCmd = "docker exec $containerName sh -c \"grep -E '^DNS' $primaryConfigDir/wg0.conf 2>/dev/null | head -1 | cut -d= -f2 | tr -d '[:space:]'\" 2>/dev/null || echo ''";
+            $dnsCmd = "docker exec $containerName sh -c \"grep -E '^DNS' $primaryConfigDir/$primaryConfigFile 2>/dev/null | head -1 | cut -d= -f2 | tr -d '[:space:]'\" 2>/dev/null || echo ''";
             $dns = trim($server->executeCommand($dnsCmd, true));
 
             if (empty($dns) && $primaryConfigDir !== '/opt/amnezia/awg') {
@@ -1059,7 +1121,7 @@ class VpnClient
             $awgParams = [];
 
             // Legacy attempt: some builds print jc/jmin/... in `wg show` output.
-            $wgShowCmd = "docker exec $containerName wg show wg0 2>/dev/null";
+            $wgShowCmd = "docker exec $containerName $wgTool show $primaryIface 2>/dev/null";
             $wgOutput = (string) $server->executeCommand($wgShowCmd, true);
             $paramNames = ['jc', 'jmin', 'jmax', 's1', 's2', 's3', 's4', 'h1', 'h2', 'h3', 'h4', 'i1', 'i2', 'i3', 'i4', 'i5'];
             foreach ($paramNames as $param) {
@@ -1076,15 +1138,17 @@ class VpnClient
                 }
             }
 
-            // Primary source: wg0.conf
-            if (empty($awgParams)) {
-                $awgParams = self::extractAwgParamsFromWg0Conf($server, $containerName, $primaryConfigDir . '/wg0.conf');
-                if (empty($awgParams) && $primaryConfigDir !== '/opt/amnezia/awg') {
-                    $awgParams = self::extractAwgParamsFromWg0Conf($server, $containerName, '/opt/amnezia/awg/wg0.conf');
-                }
-                if (empty($awgParams)) {
-                    $awgParams = self::extractAwgParamsFromWg0Conf($server, $containerName, '/etc/wireguard/wg0.conf');
-                }
+            // Primary source: config file. Merge it even if `awg show` returned a partial set,
+            // because AWG2 packet templates (I1-I5) are not reliably exposed by `awg show`.
+            $configAwgParams = self::extractAwgParamsFromWg0Conf($server, $containerName, $primaryConfigDir . '/' . $primaryConfigFile);
+            if (empty($configAwgParams) && $isAwg2) {
+                $configAwgParams = self::extractAwgParamsFromWg0Conf($server, $containerName, '/opt/amnezia/awg/wg0.conf');
+            }
+            if (empty($configAwgParams)) {
+                $configAwgParams = self::extractAwgParamsFromWg0Conf($server, $containerName, '/etc/wireguard/wg0.conf');
+            }
+            if (!empty($configAwgParams)) {
+                $awgParams = array_merge($awgParams, $configAwgParams);
             }
 
             // Update database if we found keys
@@ -1140,12 +1204,10 @@ class VpnClient
             
             // For H1-H4 parameters, only use server value if it has the correct "value1-value2" format
             if (in_array($upperKey, ['H1', 'H2', 'H3', 'H4'], true)) {
-                if (is_string($value) && preg_match('/^\d+-\d+$/', $value)) {
-                    $finalParams[$upperKey] = $value;
+                if (is_scalar($value) && preg_match('/^\d+(?:-\d+)?$/', (string) $value)) {
+                    $finalParams[$upperKey] = (string) $value;
                 }
-                // Otherwise keep the default value
             } else {
-                // For other parameters, use server value if present
                 $finalParams[$upperKey] = $value;
             }
         }
@@ -1752,7 +1814,9 @@ class VpnClient
         // If AWG params are missing (common after reinstall), fetch them directly from wg0.conf
         // to avoid falling back to template defaults that will not match the server.
         if (in_array($slug, ['amnezia-wg-advanced', 'awg2'], true)) {
-            $needKeys = ['JC', 'JMIN', 'JMAX', 'S1', 'S2', 'H1', 'H2', 'H3', 'H4'];
+            $needKeys = $slug === 'awg2'
+                ? ['JC', 'JMIN', 'JMAX', 'S1', 'S2', 'S3', 'S4', 'H1', 'H2', 'H3', 'H4', 'I1', 'I2', 'I3', 'I4', 'I5']
+                : ['JC', 'JMIN', 'JMAX', 'S1', 'S2', 'H1', 'H2', 'H3', 'H4'];
             $missing = false;
             foreach ($needKeys as $k) {
                 if (!isset($awgParams[$k])) {
@@ -1763,8 +1827,12 @@ class VpnClient
 
             if ($missing) {
                 $containerName = $serverData['container_name'] ?? ($slug === 'awg2' ? 'amnezia-awg2' : 'amnezia-awg');
-                $configDir = $slug === 'awg2' ? '/opt/amnezia/awg2' : '/opt/amnezia/awg';
-                $direct = self::extractAwgParamsFromWg0Conf($server, $containerName, $configDir . '/wg0.conf');
+                $configDir = '/opt/amnezia/awg';
+                $configFile = $slug === 'awg2' ? 'awg0.conf' : 'wg0.conf';
+                $direct = self::extractAwgParamsFromWg0Conf($server, $containerName, $configDir . '/' . $configFile);
+                if (empty($direct) && $slug === 'awg2') {
+                    $direct = self::extractAwgParamsFromWg0Conf($server, $containerName, $configDir . '/wg0.conf');
+                }
                 if (empty($direct)) {
                     $direct = self::extractAwgParamsFromWg0Conf($server, $containerName, '/etc/wireguard/wg0.conf');
                 }
@@ -1803,7 +1871,7 @@ class VpnClient
         $presharedKeyForConfig = (string) ($serverData['preshared_key'] ?? '');
         try {
             $containerName = $serverData['container_name'] ?? 'amnezia-awg';
-            $peerPsk = self::extractPeerPskFromWgDump($server, $containerName, $clientPublicKey);
+            $peerPsk = self::extractPeerPskFromWgDump($server, $containerName, $clientPublicKey, $slug);
             if ($peerPsk !== null && $peerPsk !== '') {
                 $presharedKeyForConfig = $peerPsk;
             }
@@ -2270,10 +2338,18 @@ class VpnClient
     private static function getClientStatsFromServer(array $serverData, string $publicKey): array
     {
         $containerName = $serverData['container_name'];
+        $protocolSlug = (string) ($serverData['install_protocol'] ?? '');
+        $isAwg2 = (stripos($containerName, 'awg2') !== false || $protocolSlug === 'awg2');
+        $wgTool = $isAwg2 ? 'awg' : 'wg';
+        $ifaceName = $isAwg2 ? 'awg0' : 'wg0';
 
         // Get WireGuard interface stats
-        $cmd = sprintf("docker exec -i %s wg show wg0 dump", $containerName);
+        $cmd = sprintf("docker exec -i %s %s show %s dump", $containerName, $wgTool, $ifaceName);
         $output = self::executeServerCommand($serverData, $cmd, true);
+        if (trim($output) === '' && $isAwg2) {
+            $cmd = sprintf("docker exec -i %s wg show wg0 dump", $containerName);
+            $output = self::executeServerCommand($serverData, $cmd, true);
+        }
 
         $stats = [
             'bytes_sent' => 0,
@@ -2635,5 +2711,3 @@ class VpnClient
         return $disabled;
     }
 }
-
-

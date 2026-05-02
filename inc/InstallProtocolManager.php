@@ -886,6 +886,9 @@ class InstallProtocolManager
                 'host key verification failed',
                 'timed out',
                 'operation timed out',
+                'requires at least 1 argument',
+                'usage: docker',
+                'no such container',
             ];
             foreach ($hardErrors as $needle) {
                 if ($needle !== '' && strpos($lower, $needle) !== false) {
@@ -1254,6 +1257,10 @@ class InstallProtocolManager
     {
         $slug = $protocol['slug'] ?? '';
 
+        if ($slug === 'awg2') {
+            return 'script';
+        }
+
         // ── 1. Explicit slug → handler mapping (always wins) ──
         static $slugMap = [
             // WARP
@@ -1264,7 +1271,6 @@ class InstallProtocolManager
             // AWG variants
             'amnezia-wg'            => 'awg',
             'amnezia-wg-advanced'   => 'awg',
-            'awg2'                  => 'awg',
         ];
 
         if (isset($slugMap[$slug])) {
@@ -1709,8 +1715,42 @@ class InstallProtocolManager
                 $existingProtocol = $server->getData()['install_protocol'] ?? '';
                 $currentSlug = $protocol['slug'] ?? '';
                 $isFirstProtocol = ($existingProtocol === '' || $existingProtocol === $currentSlug);
+
+                $activeExtras = [
+                    'vpn_port' => $port,
+                ];
+
+                // Scripted WireGuard/AWG protocols, especially awg2, return keys from install_script.
+                // Persist them into vpn_servers too, because VpnClient::create() uses serverData.
+                if (!empty($res['server_public_key'])) {
+                    $activeExtras['server_public_key'] = $res['server_public_key'];
+                }
+
+                if (!empty($res['preshared_key'])) {
+                    $activeExtras['preshared_key'] = $res['preshared_key'];
+                }
+
+                if (!empty($res['container_name'])) {
+                    $activeExtras['container_name'] = $res['container_name'];
+                } elseif (($protocol['slug'] ?? '') === 'awg2') {
+                    $activeExtras['container_name'] = 'amnezia-awg2';
+                }
+
+                $awgParams = [];
+                foreach (['Jc', 'Jmin', 'Jmax', 'S1', 'S2', 'S3', 'S4', 'H1', 'H2', 'H3', 'H4', 'I1', 'I2', 'I3', 'I4', 'I5'] as $k) {
+                    if (array_key_exists($k, $res) && $res[$k] !== null && $res[$k] !== '') {
+                        $awgParams[$k] = $res[$k];
+                    }
+                }
+
+                if (!empty($awgParams)) {
+                    $activeExtras['awg_params'] = $awgParams;
+                }
+
                 if ($isFirstProtocol) {
-                    self::markServerActive($serverId, null, ['vpn_port' => $port]);
+                    self::markServerActive($serverId, null, $activeExtras);
+                } else {
+                    self::markServerActive($serverId, null, []);
                 }
             }
 
@@ -2274,8 +2314,9 @@ class InstallProtocolManager
             $server->executeCommand("docker exec -i $containerName sh -c 'echo \"$escaped\" > {$configDir}/{$configFile}'", true);
 
             // Reload interface
-            $server->executeCommand("docker exec -i $containerName wg-quick down wg0 || true", true);
-            $server->executeCommand("docker exec -i $containerName wg-quick up wg0", true);
+            $wgQuickTool = $isAwg2 ? 'awg-quick' : 'wg-quick';
+            $ifaceName = str_replace('.conf', '', $configFile);
+            $server->executeCommand("docker exec -i $containerName sh -c 'ip link del $ifaceName 2>/dev/null || true; $wgQuickTool up {$configDir}/{$configFile}'", true);
         }
     }
 
