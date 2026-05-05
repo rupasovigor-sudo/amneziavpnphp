@@ -95,6 +95,85 @@
     color: #999;
 }
 
+.health-panel {
+    background: white;
+    border-radius: 8px;
+    padding: 20px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    margin-bottom: 20px;
+}
+
+.health-panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 16px;
+}
+
+.health-panel h3 {
+    margin: 0;
+    font-size: 18px;
+    color: #333;
+}
+
+.health-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 12px;
+}
+
+.health-item {
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    padding: 12px;
+    background: #f9fafb;
+}
+
+.health-item.ok {
+    border-color: #bbf7d0;
+    background: #f0fdf4;
+}
+
+.health-item.problem {
+    border-color: #fecaca;
+    background: #fef2f2;
+}
+
+.health-name {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    font-weight: 600;
+    font-size: 13px;
+    color: #111827;
+    margin-bottom: 6px;
+}
+
+.health-message {
+    font-size: 13px;
+    color: #4b5563;
+    line-height: 1.35;
+}
+
+.health-badge {
+    font-size: 11px;
+    border-radius: 999px;
+    padding: 2px 8px;
+    white-space: nowrap;
+}
+
+.health-badge.ok {
+    background: #dcfce7;
+    color: #166534;
+}
+
+.health-badge.problem {
+    background: #fee2e2;
+    color: #991b1b;
+}
+
 .back-link {
     display: inline-block;
     margin-bottom: 20px;
@@ -116,6 +195,18 @@
     
     <div class="refresh-info">
         Auto-refresh every 30 seconds
+    </div>
+
+    <div class="health-panel">
+        <div class="health-panel-header">
+            <h3>Health checks</h3>
+            <button type="button" id="refresh-health" style="background:#4f46e5;color:white;border:0;border-radius:6px;padding:8px 12px;cursor:pointer;">
+                Refresh
+            </button>
+        </div>
+        <div id="health-list" class="health-list">
+            <div class="no-data">Loading...</div>
+        </div>
     </div>
     
     <div class="metrics-container">
@@ -186,14 +277,7 @@ const chartOptions = {
     },
     scales: {
         x: {
-            display: true,
-            type: 'time',
-            time: {
-                unit: 'minute',
-                displayFormats: {
-                    minute: 'HH:mm'
-                }
-            }
+            display: true
         },
         y: {
             beginAtZero: true
@@ -298,13 +382,51 @@ function initCharts() {
     });
 }
 
+function escapeHtml(value) {
+    return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+}
+
+async function updateHealthChecks() {
+    const container = document.getElementById('health-list');
+    try {
+        const response = await fetch(`/api/servers/${serverId}/health`, {
+            credentials: 'same-origin'
+        });
+        const data = await response.json();
+        if (!data.success) {
+            throw new Error(data.error || 'Failed to load health checks');
+        }
+
+        container.innerHTML = (data.checks || []).map(check => {
+            const ok = Boolean(check.ok);
+            const statusClass = ok ? 'ok' : 'problem';
+            const statusText = ok ? 'OK' : String(check.severity || 'problem').toUpperCase();
+            return `
+                <div class="health-item ${statusClass}">
+                    <div class="health-name">
+                        <span>${escapeHtml(check.name)}</span>
+                        <span class="health-badge ${statusClass}">${escapeHtml(statusText)}</span>
+                    </div>
+                    <div class="health-message">${escapeHtml(check.message)}</div>
+                </div>
+            `;
+        }).join('') || '<div class="no-data">No health checks</div>';
+    } catch (error) {
+        console.error('Failed to update health checks:', error);
+        container.innerHTML = '<div class="no-data">Failed to load health checks</div>';
+    }
+}
+
 // Update server metrics
 async function updateServerMetrics() {
     try {
         const response = await fetch(`/api/servers/${serverId}/metrics?hours=1`, {
-            headers: {
-                'Authorization': 'Bearer ' + localStorage.getItem('auth_token')
-            }
+            credentials: 'same-origin'
         });
         
         const data = await response.json();
@@ -323,7 +445,12 @@ async function updateServerMetrics() {
                 `↓ ${latest.network_rx_mbps} Mbps ↑ ${latest.network_tx_mbps} Mbps`;
             
             // Update charts
-            const timestamps = metrics.map(m => new Date(m.collected_at));
+            const timestamps = metrics.map(m => {
+                const date = new Date(String(m.collected_at).replace(' ', 'T'));
+                return Number.isNaN(date.getTime())
+                    ? String(m.collected_at).slice(11, 16)
+                    : date.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+            });
             
             charts.cpu.data.labels = timestamps;
             charts.cpu.data.datasets[0].data = metrics.map(m => parseFloat(m.cpu_percent));
@@ -350,38 +477,41 @@ async function updateServerMetrics() {
 // Update client speeds
 async function updateClientSpeeds() {
     try {
-        const clientIds = {{ clients|map(c => c.id)|json_encode|raw }};
+        const clients = {{ clients|json_encode|raw }};
+        const clientIds = clients.map(c => Number(c.id));
         
         if (clientIds.length === 0) {
             document.getElementById('clients-list').innerHTML = 
                 '<div class="no-data">No active clients</div>';
             return;
         }
+
+        const response = await fetch(`/api/servers/${serverId}/client-metrics?hours=1`, {
+            credentials: 'same-origin'
+        });
+
+        const data = await response.json();
+        if (!data.success) {
+            throw new Error(data.error || 'Failed to load client metrics');
+        }
+
+        const latestByClient = {};
+        for (const metric of data.metrics || []) {
+            latestByClient[String(metric.client_id)] = metric;
+        }
         
         const clientsData = [];
         
         for (const clientId of clientIds) {
-            try {
-                const response = await fetch(`/api/clients/${clientId}/metrics?hours=1`, {
-                    headers: {
-                        'Authorization': 'Bearer ' + localStorage.getItem('auth_token')
-                    }
+            const latest = latestByClient[String(clientId)];
+            const client = clients.find(c => Number(c.id) === clientId);
+
+            if (client && latest) {
+                clientsData.push({
+                    name: client.name,
+                    speedUp: parseFloat(latest.speed_up_kbps) || 0,
+                    speedDown: parseFloat(latest.speed_down_kbps) || 0
                 });
-                
-                const data = await response.json();
-                
-                if (data.success && data.metrics.length > 0) {
-                    const latest = data.metrics[data.metrics.length - 1];
-                    const client = {{ clients|json_encode|raw }}.find(c => c.id === clientId);
-                    
-                    clientsData.push({
-                        name: client.name,
-                        speedUp: parseFloat(latest.speed_up_kbps),
-                        speedDown: parseFloat(latest.speed_down_kbps)
-                    });
-                }
-            } catch (error) {
-                console.error(`Failed to fetch client ${clientId} metrics:`, error);
             }
         }
         
@@ -409,11 +539,15 @@ async function updateClientSpeeds() {
 
 // Initialize
 initCharts();
+updateHealthChecks();
 updateServerMetrics();
 updateClientSpeeds();
 
+document.getElementById('refresh-health')?.addEventListener('click', updateHealthChecks);
+
 // Auto-refresh every 30 seconds
 setInterval(() => {
+    updateHealthChecks();
     updateServerMetrics();
     updateClientSpeeds();
 }, 30000);

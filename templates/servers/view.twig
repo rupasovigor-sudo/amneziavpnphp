@@ -41,9 +41,14 @@
 
 {% block content %}
 <div class="max-w-7xl mx-auto px-4 py-8">
-  <div class="mb-6">
-    <h1 class="text-3xl font-bold">{{ server.name }}</h1>
-    <p class="text-gray-600">{{ server.host }}</p>
+  <div class="mb-6 flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+    <div>
+      <h1 class="text-3xl font-bold">{{ server.name }}</h1>
+      <p class="text-gray-600">{{ server.host }}</p>
+    </div>
+    <a href="/servers/{{ server.id }}/monitoring" class="inline-flex items-center justify-center px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700 text-sm font-medium">
+      <i class="fas fa-chart-line mr-2"></i>Мониторинг
+    </a>
   </div>
   
   {% if import_message %}
@@ -414,6 +419,7 @@
           </td>
           <td class="px-6 py-4">
             <a href="/clients/{{ client.id }}" class="text-purple-600 hover:text-purple-800 mr-2">{{ t('servers.view') }}</a>
+            <button type="button" class="text-blue-600 hover:text-blue-800 mr-2" onclick="diagnoseClient({{ client.id }})">Диагностика</button>
             {% if client.status == 'active' %}
               <form method="POST" action="/clients/{{ client.id }}/revoke" style="display:inline;">
                 <button type="button" class="text-orange-600 hover:text-orange-800 mr-2" onclick="confirmAction(this, '{{ t('clients.revoke_confirm') }}')">{{ t('clients.revoke') }}</button>
@@ -1116,98 +1122,100 @@ function prepareSparklineSeries(values) {
 
 async function updateClientSpeeds() {
   const clientRows = document.querySelectorAll('[id^="client-speed-"]');
-  
+
+  let metricsByClient = {};
+  try {
+    const response = await fetch(`/api/servers/${serverId}/client-metrics?hours=24`, {
+      credentials: 'same-origin'
+    });
+
+    const data = await response.json();
+    if (!data.success) {
+      throw new Error(data.error || 'Failed to load client metrics');
+    }
+
+    for (const metric of data.metrics || []) {
+      const key = String(metric.client_id);
+      if (!metricsByClient[key]) {
+        metricsByClient[key] = [];
+      }
+      metricsByClient[key].push(metric);
+    }
+  } catch (error) {
+    console.error('Failed to fetch client metrics:', error);
+    return;
+  }
+
   for (const row of clientRows) {
     const clientId = row.id.replace('client-speed-', '');
     const canvasId = `clientSparkline-${clientId}`;
     const canvas = document.getElementById(canvasId);
-    
-    try {
-      const response = await fetch(`/api/clients/${clientId}/metrics?hours=24`, { // Fetch 24h for sparkline
-        credentials: 'same-origin'
-      });
-      
-      const data = await response.json();
-      
-      if (data.success && data.metrics) {
-        const metrics = data.metrics; // Use all points for chart
-        
-        // 1. Render/Update Chart
-        if (canvas) {
-           const labels = metrics.map((_, i) => i);
-            const rawUp = metrics.map(m => (parseFloat(m.speed_up_kbps) / 1000)); // Mbps
-            const rawDown = metrics.map(m => (parseFloat(m.speed_down_kbps) / 1000)); // Mbps
-            const dataUp = prepareSparklineSeries(rawUp);
-            const dataDown = prepareSparklineSeries(rawDown);
-           
-           if (clientCharts[clientId]) {
-               // Update existing chart
-               clientCharts[clientId].data.labels = labels;
-               clientCharts[clientId].data.datasets[0].data = dataUp;
-               clientCharts[clientId].data.datasets[1].data = dataDown;
-               clientCharts[clientId].update('none');
-           } else {
-               // Create new chart
-               clientCharts[clientId] = new Chart(canvas, {
-                   type: 'line',
-                   data: {
-                       labels: labels,
-                       datasets: [
-                           {
-                               label: 'Up',
-                               data: dataUp,
-                               borderColor: '#16a34a', // green-600
-                               borderWidth: 1.5,
-                               pointRadius: 0,
-                               fill: false,
-                               tension: 0.4
-                           },
-                           {
-                               label: 'Down',
-                               data: dataDown,
-                               borderColor: '#2563eb', // blue-600
-                               borderWidth: 1.5,
-                               pointRadius: 0,
-                               fill: false,
-                               tension: 0.4
-                           }
-                       ]
-                   },
-                   options: {
-                       responsive: true,
-                       maintainAspectRatio: false,
-                       plugins: { legend: { display: false }, tooltip: { enabled: false } },
-                       scales: {
-                           x: { display: false },
-                           y: { display: false, beginAtZero: true }
-                       },
-                       animation: false
-                   }
-               });
-           }
-        }
 
-        // 2. Update Text Badge (Last Known Speed)
-        if (metrics.length > 0) {
-            const latest = metrics[metrics.length - 1];
-            const speedUp = (parseFloat(latest.speed_up_kbps) / 1000).toFixed(2);
-            const speedDown = (parseFloat(latest.speed_down_kbps) / 1000).toFixed(2);
-            
-            row.innerHTML = `
-                <div class="text-green-600 whitespace-nowrap">↑${speedUp} Mbit</div>
-                <div class="text-blue-600 whitespace-nowrap">↓${speedDown} Mbit</div>
-            `;
-        } else {
-            row.innerHTML = '<span class="text-gray-400">-</span>';
-        }
-
-      } else {
-        row.innerHTML = '<span class="text-xs text-gray-400">-</span>';
-      }
-    } catch (error) {
-      console.error(`Failed to fetch metrics for client ${clientId}:`, error);
-      row.innerHTML = '<span class="text-xs text-gray-400">Error</span>';
+    const metrics = metricsByClient[String(clientId)] || [];
+    if (metrics.length === 0) {
+      continue;
     }
+
+    if (canvas) {
+      const labels = metrics.map((_, i) => i);
+      const rawUp = metrics.map(m => (parseFloat(m.speed_up_kbps) / 1000));
+      const rawDown = metrics.map(m => (parseFloat(m.speed_down_kbps) / 1000));
+      const dataUp = prepareSparklineSeries(rawUp);
+      const dataDown = prepareSparklineSeries(rawDown);
+
+      if (clientCharts[clientId]) {
+        clientCharts[clientId].data.labels = labels;
+        clientCharts[clientId].data.datasets[0].data = dataUp;
+        clientCharts[clientId].data.datasets[1].data = dataDown;
+        clientCharts[clientId].update('none');
+      } else {
+        clientCharts[clientId] = new Chart(canvas, {
+          type: 'line',
+          data: {
+            labels: labels,
+            datasets: [
+              {
+                label: 'Up',
+                data: dataUp,
+                borderColor: '#16a34a',
+                borderWidth: 1.5,
+                pointRadius: 0,
+                fill: false,
+                tension: 0.4
+              },
+              {
+                label: 'Down',
+                data: dataDown,
+                borderColor: '#2563eb',
+                borderWidth: 1.5,
+                pointRadius: 0,
+                fill: false,
+                tension: 0.4
+              }
+            ]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false }, tooltip: { enabled: false } },
+            scales: {
+              x: { display: false },
+              y: { display: false, beginAtZero: true }
+            },
+            animation: false
+          }
+        });
+      }
+    }
+
+    const latest = metrics[metrics.length - 1];
+    const speedUp = (parseFloat(latest.speed_up_kbps) / 1000).toFixed(2);
+    const speedDown = (parseFloat(latest.speed_down_kbps) / 1000).toFixed(2);
+
+    row.innerHTML = `
+        <div class="text-green-600 whitespace-nowrap">↑${speedUp} Mbit</div>
+        <div class="text-blue-600 whitespace-nowrap">↓${speedDown} Mbit</div>
+    `;
   }
 }
 
@@ -1215,6 +1223,34 @@ async function updateClientSpeeds() {
 if (document.querySelector('[id^="client-speed-"]')) {
   updateClientSpeeds();
   setInterval(updateClientSpeeds, 30000);
+}
+
+async function diagnoseClient(clientId) {
+  try {
+    const response = await fetch(`/api/clients/${clientId}/diagnostics`, {
+      credentials: 'same-origin'
+    });
+    const data = await response.json();
+    if (!data.success) {
+      alert('Диагностика: ' + (data.error || 'ошибка'));
+      return;
+    }
+
+    const header = [
+      `Клиент: ${data.client.name}`,
+      `IP: ${data.client.ip || '-'}`,
+      `Протокол: ${data.client.protocol_slug || '-'}`,
+      `Контейнер: ${data.client.container_name || '-'}`
+    ];
+    const checks = (data.checks || []).map(check => {
+      const status = check.ok ? 'OK' : 'FAIL';
+      return `${status} ${check.name}: ${check.message}`;
+    });
+
+    alert(header.concat('', checks).join('\n'));
+  } catch (e) {
+    alert('Диагностика: ' + e.message);
+  }
 }
 
 // Real-time online status updates

@@ -1,4 +1,6 @@
 <?php
+require_once __DIR__ . '/SecretBox.php';
+
 /**
  * VPN Server Management Class
  * Handles deployment and management of Amnezia VPN servers
@@ -49,6 +51,7 @@ class VpnServer
         if (!$this->data) {
             throw new Exception('Server not found');
         }
+        $this->data = self::decryptServerSecrets($this->data);
     }
 
     /**
@@ -117,8 +120,8 @@ class VpnServer
             $data['host'],
             $data['port'],
             $data['username'],
-            $data['password'] ?? null,
-            !empty($data['ssh_key']) ? self::normalizeSshKey($data['ssh_key']) : null,
+            self::encryptSecret($data['password'] ?? null),
+            !empty($data['ssh_key']) ? self::encryptSecret(self::normalizeSshKey($data['ssh_key'])) : null,
             $data['container_name'] ?? 'amnezia-awg',
             $protocolSlug,
             $installOptions,
@@ -177,7 +180,7 @@ class VpnServer
             $host,
             $port,
             $username,
-            $password,
+            self::encryptSecret($password),
             $containerName,
             $installProtocol,
             $installOptions,
@@ -215,7 +218,7 @@ class VpnServer
             'name' => $mapString($serverData['name'] ?? null),
             'host' => $mapString($serverData['host'] ?? null),
             'username' => $mapString($serverData['ssh_username'] ?? null),
-            'password' => isset($serverData['ssh_password']) ? (string) $serverData['ssh_password'] : null,
+            'password' => isset($serverData['ssh_password']) ? self::encryptSecret((string) $serverData['ssh_password']) : null,
             'container_name' => $mapString($serverData['container_name'] ?? null),
             'vpn_subnet' => $mapString($serverData['vpn_subnet'] ?? null),
             'server_public_key' => $mapString($serverData['server_public_key'] ?? null),
@@ -869,7 +872,7 @@ BASH;
         $pdo = DB::conn();
         $stmt = $pdo->prepare('SELECT * FROM vpn_servers WHERE user_id = ? ORDER BY created_at DESC');
         $stmt->execute([$userId]);
-        return $stmt->fetchAll();
+        return array_map([self::class, 'decryptServerSecrets'], $stmt->fetchAll());
     }
 
     /**
@@ -879,7 +882,7 @@ BASH;
     {
         $pdo = DB::conn();
         $stmt = $pdo->query('SELECT s.*, u.email as user_email FROM vpn_servers s LEFT JOIN users u ON s.user_id = u.id ORDER BY s.created_at DESC');
-        return $stmt->fetchAll();
+        return array_map([self::class, 'decryptServerSecrets'], $stmt->fetchAll());
     }
 
     /**
@@ -909,6 +912,35 @@ BASH;
     public function getData(): ?array
     {
         return $this->data;
+    }
+
+    public static function decryptServerSecrets(array $serverData): array
+    {
+        foreach (['password', 'ssh_key'] as $field) {
+            if (array_key_exists($field, $serverData)) {
+                $serverData[$field] = SecretBox::decryptNullable($serverData[$field]);
+            }
+        }
+
+        return $serverData;
+    }
+
+    public static function redactServerSecrets(array $serverData): array
+    {
+        $serverData['has_password'] = !empty($serverData['password']);
+        $serverData['has_ssh_key'] = !empty($serverData['ssh_key']);
+        unset($serverData['password'], $serverData['ssh_key']);
+        return $serverData;
+    }
+
+    public static function redactServerList(array $servers): array
+    {
+        return array_map([self::class, 'redactServerSecrets'], $servers);
+    }
+
+    public static function encryptSecret(?string $value): ?string
+    {
+        return SecretBox::encryptNullable($value);
     }
 
     /**
@@ -966,6 +998,7 @@ BASH;
                     'name' => $this->data['name'],
                     'host' => $this->data['host'],
                     'port' => $this->data['port'],
+                    'username' => $this->data['username'],
                     'vpn_port' => $this->data['vpn_port'],
                     'vpn_subnet' => $this->data['vpn_subnet'],
                     'container_name' => $this->data['container_name'],

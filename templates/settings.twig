@@ -55,6 +55,10 @@
                class="tab-link border-transparent text-gray-500 hover:text-gray-700 py-4 px-1 border-b-2 font-medium text-sm">
                 <i class="fas fa-network-wired mr-2"></i>LDAP
             </a>
+            <a href="#" onclick="showTab('alerts'); return false;" id="tab-alerts"
+               class="tab-link border-transparent text-gray-500 hover:text-gray-700 py-4 px-1 border-b-2 font-medium text-sm">
+                <i class="fas fa-bell mr-2"></i>Оповещения
+            </a>
             <a href="#" onclick="showTab('protocols'); return false;" id="tab-protocols"
                class="tab-link border-transparent text-gray-500 hover:text-gray-700 py-4 px-1 border-b-2 font-medium text-sm">
                 <i class="fas fa-cubes mr-2"></i>{{ t('settings.protocol_management') }}
@@ -477,6 +481,186 @@
         </div>
     </div>
 
+    <!-- Alerts Tab -->
+    <div id="content-alerts" class="tab-content hidden">
+        <div class="bg-white shadow rounded-lg mb-6">
+            <div class="px-6 py-5 border-b border-gray-200">
+                <h2 class="text-lg font-medium text-gray-900">
+                    <i class="fas fa-bell mr-2 text-purple-600"></i>Оповещения
+                </h2>
+            </div>
+            <div class="px-6 py-5">
+                <form method="POST" action="/settings/alerts/save" class="space-y-6">
+                    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                        <div class="space-y-4">
+                            <label class="flex items-center">
+                                <input type="checkbox" name="ALERTS_ENABLED" value="1" {% if alert_settings.ALERTS_ENABLED == '1' %}checked{% endif %}
+                                       class="rounded border-gray-300 text-purple-600 focus:ring-purple-500">
+                                <span class="ml-2 text-sm font-medium text-gray-700">Включить оповещения</span>
+                            </label>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">Срабатывание после ошибок подряд</label>
+                                <input type="number" name="ALERTS_FAILURE_THRESHOLD" min="1" value="{{ alert_settings.ALERTS_FAILURE_THRESHOLD }}"
+                                       class="block w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-purple-500 focus:border-purple-500">
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">CPU/RAM/Disk после циклов подряд</label>
+                                <input type="number" name="ALERT_RESOURCE_FAILURE_THRESHOLD" min="2" value="{{ alert_settings.ALERT_RESOURCE_FAILURE_THRESHOLD }}"
+                                       class="block w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-purple-500 focus:border-purple-500">
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">Пауза между повторами, сек</label>
+                                <input type="number" name="ALERTS_COOLDOWN_SECONDS" min="60" value="{{ alert_settings.ALERTS_COOLDOWN_SECONDS }}"
+                                       class="block w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-purple-500 focus:border-purple-500">
+                            </div>
+                        </div>
+
+                        <div class="space-y-4">
+                            <div class="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-1">CPU warning %</label>
+                                    <input type="number" name="ALERT_CPU_WARNING_PERCENT" min="1" max="100" value="{{ alert_settings.ALERT_CPU_WARNING_PERCENT }}" class="block w-full px-3 py-2 border border-gray-300 rounded-md">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-1">CPU critical %</label>
+                                    <input type="number" name="ALERT_CPU_CRITICAL_PERCENT" min="1" max="100" value="{{ alert_settings.ALERT_CPU_CRITICAL_PERCENT }}" class="block w-full px-3 py-2 border border-gray-300 rounded-md">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-1">RAM warning %</label>
+                                    <input type="number" name="ALERT_RAM_WARNING_PERCENT" min="1" max="100" value="{{ alert_settings.ALERT_RAM_WARNING_PERCENT }}" class="block w-full px-3 py-2 border border-gray-300 rounded-md">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-1">RAM critical %</label>
+                                    <input type="number" name="ALERT_RAM_CRITICAL_PERCENT" min="1" max="100" value="{{ alert_settings.ALERT_RAM_CRITICAL_PERCENT }}" class="block w-full px-3 py-2 border border-gray-300 rounded-md">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-1">Disk warning %</label>
+                                    <input type="number" name="ALERT_DISK_WARNING_PERCENT" min="1" max="100" value="{{ alert_settings.ALERT_DISK_WARNING_PERCENT }}" class="block w-full px-3 py-2 border border-gray-300 rounded-md">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-1">Disk critical %</label>
+                                    <input type="number" name="ALERT_DISK_CRITICAL_PERCENT" min="1" max="100" value="{{ alert_settings.ALERT_DISK_CRITICAL_PERCENT }}" class="block w-full px-3 py-2 border border-gray-300 rounded-md">
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="space-y-4">
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">Handshake stale, сек</label>
+                                <input type="number" name="ALERT_HANDSHAKE_STALE_SECONDS" min="60" value="{{ alert_settings.ALERT_HANDSHAKE_STALE_SECONDS }}" class="block w-full px-3 py-2 border border-gray-300 rounded-md">
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">Массово stale, % peers</label>
+                                <input type="number" name="ALERT_HANDSHAKE_STALE_PERCENT" min="1" max="100" value="{{ alert_settings.ALERT_HANDSHAKE_STALE_PERCENT }}" class="block w-full px-3 py-2 border border-gray-300 rounded-md">
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">Минимум peers для проверки</label>
+                                <input type="number" name="ALERT_HANDSHAKE_MIN_PEERS" min="1" value="{{ alert_settings.ALERT_HANDSHAKE_MIN_PEERS }}" class="block w-full px-3 py-2 border border-gray-300 rounded-md">
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">Watchdog restart lookback, сек</label>
+                                <input type="number" name="ALERT_WATCHDOG_RESTART_LOOKBACK_SECONDS" min="0" value="{{ alert_settings.ALERT_WATCHDOG_RESTART_LOOKBACK_SECONDS }}" class="block w-full px-3 py-2 border border-gray-300 rounded-md">
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 pt-4 border-t border-gray-200">
+                        <div class="space-y-4">
+                            <div class="flex items-center justify-between">
+                                <label class="flex items-center">
+                                    <input type="checkbox" name="TELEGRAM_ALERTS_ENABLED" value="1" {% if alert_settings.TELEGRAM_ALERTS_ENABLED == '1' %}checked{% endif %}
+                                           class="rounded border-gray-300 text-purple-600 focus:ring-purple-500">
+                                    <span class="ml-2 text-sm font-medium text-gray-700">Telegram</span>
+                                </label>
+                                {% if alert_settings.telegram_token_set %}
+                                    <span class="text-xs px-2 py-1 bg-green-100 text-green-700 rounded">токен задан</span>
+                                {% endif %}
+                            </div>
+                            <input type="password" name="TELEGRAM_BOT_TOKEN" autocomplete="new-password" placeholder="Новый bot token, если нужно заменить" class="block w-full px-3 py-2 border border-gray-300 rounded-md">
+                            <input type="text" name="TELEGRAM_CHAT_ID" value="{{ alert_settings.TELEGRAM_CHAT_ID }}" placeholder="Chat ID" class="block w-full px-3 py-2 border border-gray-300 rounded-md">
+                            <button type="button" id="testTelegramAlert" class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700">
+                                <i class="fas fa-paper-plane mr-2"></i>Тест Telegram
+                            </button>
+                        </div>
+
+                        <div class="space-y-4">
+                            <div class="flex items-center justify-between">
+                                <label class="flex items-center">
+                                    <input type="checkbox" name="EMAIL_ALERTS_ENABLED" value="1" {% if alert_settings.EMAIL_ALERTS_ENABLED == '1' %}checked{% endif %}
+                                           class="rounded border-gray-300 text-purple-600 focus:ring-purple-500">
+                                    <span class="ml-2 text-sm font-medium text-gray-700">Email</span>
+                                </label>
+                                {% if alert_settings.smtp_password_set %}
+                                    <span class="text-xs px-2 py-1 bg-green-100 text-green-700 rounded">SMTP пароль задан</span>
+                                {% endif %}
+                            </div>
+                            <input type="email" name="ALERT_EMAIL_TO" value="{{ alert_settings.ALERT_EMAIL_TO }}" placeholder="Получатель" class="block w-full px-3 py-2 border border-gray-300 rounded-md">
+                            <div class="grid grid-cols-2 gap-3">
+                                <input type="text" name="SMTP_HOST" value="{{ alert_settings.SMTP_HOST }}" placeholder="SMTP host" class="block w-full px-3 py-2 border border-gray-300 rounded-md">
+                                <input type="number" name="SMTP_PORT" value="{{ alert_settings.SMTP_PORT }}" placeholder="Port" class="block w-full px-3 py-2 border border-gray-300 rounded-md">
+                                <input type="text" name="SMTP_USERNAME" value="{{ alert_settings.SMTP_USERNAME }}" placeholder="Username" class="block w-full px-3 py-2 border border-gray-300 rounded-md">
+                                <input type="password" name="SMTP_PASSWORD" autocomplete="new-password" placeholder="Новый SMTP пароль" class="block w-full px-3 py-2 border border-gray-300 rounded-md">
+                                <input type="email" name="SMTP_FROM" value="{{ alert_settings.SMTP_FROM }}" placeholder="From email" class="block w-full px-3 py-2 border border-gray-300 rounded-md">
+                                <input type="text" name="SMTP_FROM_NAME" value="{{ alert_settings.SMTP_FROM_NAME }}" placeholder="From name" class="block w-full px-3 py-2 border border-gray-300 rounded-md">
+                            </div>
+                            <label class="flex items-center">
+                                <input type="checkbox" name="SMTP_TLS" value="1" {% if alert_settings.SMTP_TLS == '1' %}checked{% endif %} class="rounded border-gray-300 text-purple-600 focus:ring-purple-500">
+                                <span class="ml-2 text-sm text-gray-700">SMTP TLS</span>
+                            </label>
+                            <button type="button" id="testEmailAlert" class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700">
+                                <i class="fas fa-envelope mr-2"></i>Тест Email
+                            </button>
+                        </div>
+                    </div>
+
+                    <button type="submit" class="px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700">
+                        <i class="fas fa-save mr-2"></i>{{ t('form.save') }}
+                    </button>
+                </form>
+            </div>
+        </div>
+
+        <div class="bg-white shadow rounded-lg overflow-hidden">
+            <div class="px-6 py-5 border-b border-gray-200">
+                <h3 class="text-lg font-medium text-gray-900">Последние состояния</h3>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="min-w-full divide-y divide-gray-200">
+                    <thead class="bg-gray-50">
+                        <tr>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Статус</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Сервер</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Проверка</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Сообщение</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Обновлено</th>
+                        </tr>
+                    </thead>
+                    <tbody class="bg-white divide-y divide-gray-200">
+                        {% for state in alert_states %}
+                        <tr>
+                            <td class="px-6 py-4 whitespace-nowrap">
+                                {% if state.status == 'open' %}
+                                    <span class="px-2 py-1 text-xs font-semibold rounded-full bg-red-100 text-red-800">{{ state.severity }}</span>
+                                {% else %}
+                                    <span class="px-2 py-1 text-xs font-semibold rounded-full bg-green-100 text-green-800">ok</span>
+                                {% endif %}
+                            </td>
+                            <td class="px-6 py-4 text-sm text-gray-700">{{ state.server_name|default('Panel') }}</td>
+                            <td class="px-6 py-4 text-sm font-mono text-gray-700">{{ state.alert_key }}</td>
+                            <td class="px-6 py-4 text-sm text-gray-600">{{ state.message|default('') }}</td>
+                            <td class="px-6 py-4 text-sm text-gray-500">{{ state.last_seen_at|default(state.created_at) }}</td>
+                        </tr>
+                        {% else %}
+                        <tr>
+                            <td colspan="5" class="px-6 py-8 text-center text-sm text-gray-500">Пока нет данных</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
     <!-- Protocols Tab -->
     <div id="content-protocols" class="tab-content hidden">
         {% include 'settings/protocols_management.twig' %}
@@ -561,6 +745,31 @@ document.addEventListener('click', function(e) {
             .finally(() => {
                 btn.disabled = false;
                 btn.textContent = '{{ t('ldap.test_connection') }}';
+            });
+    }
+
+    const alertButton = e.target.closest && e.target.closest('#testTelegramAlert, #testEmailAlert');
+    if (alertButton) {
+        const channel = alertButton.id === 'testTelegramAlert' ? 'telegram' : 'email';
+        const originalText = alertButton.innerHTML;
+        alertButton.disabled = true;
+        alertButton.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Отправка...';
+
+        fetch('/settings/alerts/test', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({channel})
+        })
+            .then(r => r.json())
+            .then(result => {
+                alert((result.success ? '✓ ' : '✗ ') + (result.message || 'Готово'));
+            })
+            .catch(err => {
+                alert('Ошибка отправки: ' + err.message);
+            })
+            .finally(() => {
+                alertButton.disabled = false;
+                alertButton.innerHTML = originalText;
             });
     }
 });

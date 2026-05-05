@@ -55,9 +55,10 @@ class JWT {
      * @param int $expiresIn Token lifetime in seconds (default: 30 days)
      * @return string JWT token
      */
-    public static function generate(int $userId, int $expiresIn = 2592000): string {
+    public static function generate(int $userId, int $expiresIn = 2592000, ?string $jti = null): string {
         $issuedAt = time();
         $expire = $issuedAt + $expiresIn;
+        $jti = $jti ?? bin2hex(random_bytes(16));
         
         $payload = [
             'iss' => 'amnezia-panel',          // Issuer
@@ -65,7 +66,7 @@ class JWT {
             'iat' => $issuedAt,                // Issued at
             'exp' => $expire,                  // Expiration
             'sub' => $userId,                  // Subject (user ID)
-            'jti' => bin2hex(random_bytes(16)) // JWT ID (unique token identifier)
+            'jti' => $jti                      // JWT ID (unique token identifier)
         ];
         
         return FirebaseJWT::encode($payload, self::getSecretKey(), 'HS256');
@@ -116,18 +117,35 @@ class JWT {
      * @return array|null User data or null if invalid
      */
     public static function verify(string $token): ?array {
-        $userId = self::getUserId($token);
+        $decoded = self::decode($token);
         
-        if ($userId === null) {
+        if ($decoded === null || empty($decoded->jti)) {
             return null;
         }
+
+        $userId = (int)$decoded->sub;
+        $jti = (string)$decoded->jti;
+        $tokenHash = self::hashToken($token);
         
-        // Get user from database
         $pdo = DB::conn();
-        $stmt = $pdo->prepare('SELECT id, name, email, role FROM users WHERE id = ?');
-        $stmt->execute([$userId]);
+        $stmt = $pdo->prepare('
+            SELECT u.id, u.name, u.email, u.role
+            FROM api_tokens t
+            INNER JOIN users u ON u.id = t.user_id
+            WHERE t.user_id = ?
+              AND t.token = ?
+              AND t.revoked_at IS NULL
+              AND (t.expires_at IS NULL OR t.expires_at > NOW())
+            LIMIT 1
+        ');
+        $stmt->execute([$userId, $tokenHash]);
         $user = $stmt->fetch();
-        
+
+        if ($user) {
+            $pdo->prepare('UPDATE api_tokens SET last_used_at = NOW() WHERE user_id = ? AND token = ?')
+                ->execute([$userId, $tokenHash]);
+        }
+
         return $user ?: null;
     }
     
@@ -213,7 +231,9 @@ class JWT {
      * @return array Token data (id, token, expires_at)
      */
     public static function createApiToken(int $userId, ?string $name = null, int $expiresIn = 2592000): array {
-        $token = self::generate($userId, $expiresIn);
+        $jti = bin2hex(random_bytes(16));
+        $token = self::generate($userId, $expiresIn, $jti);
+        $tokenHash = self::hashToken($token);
         $expiresAt = date('Y-m-d H:i:s', time() + $expiresIn);
         
         $pdo = DB::conn();
@@ -224,7 +244,7 @@ class JWT {
         
         $stmt->execute([
             $userId,
-            $token,
+            $tokenHash,
             $name ?? 'API Token',
             $expiresAt
         ]);
@@ -246,7 +266,7 @@ class JWT {
      */
     public static function revokeApiToken(int $tokenId, int $userId): bool {
         $pdo = DB::conn();
-        $stmt = $pdo->prepare('DELETE FROM api_tokens WHERE id = ? AND user_id = ?');
+        $stmt = $pdo->prepare('UPDATE api_tokens SET revoked_at = NOW() WHERE id = ? AND user_id = ? AND revoked_at IS NULL');
         return $stmt->execute([$tokenId, $userId]);
     }
     
@@ -259,12 +279,16 @@ class JWT {
     public static function getUserTokens(int $userId): array {
         $pdo = DB::conn();
         $stmt = $pdo->prepare('
-            SELECT id, name, LEFT(token, 20) as token_preview, created_at, expires_at 
+            SELECT id, name, created_at, expires_at, last_used_at
             FROM api_tokens 
-            WHERE user_id = ? AND (expires_at IS NULL OR expires_at > NOW())
+            WHERE user_id = ? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > NOW())
             ORDER BY created_at DESC
         ');
         $stmt->execute([$userId]);
         return $stmt->fetchAll();
+    }
+
+    public static function hashToken(string $token): string {
+        return hash('sha256', $token);
     }
 }

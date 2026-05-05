@@ -32,7 +32,7 @@ class LogsController {
                 $fileSize = filesize($filePath);
                 
                 // Read log file (last 1000 lines or complete if small)
-                $logContent = $this->readLogFile($filePath);
+                $logContent = $this->redactLogContent($this->readLogFile($filePath));
                 $logLines = array_filter(explode("\n", $logContent));
                 $lineCount = count($logLines);
             }
@@ -178,9 +178,10 @@ class LogsController {
 
         header('Content-Type: text/plain; charset=utf-8');
         header('Content-Disposition: attachment; filename="' . basename($file) . '"');
-        header('Content-Length: ' . filesize($filePath));
+        $content = $this->redactLogContent(file_get_contents($filePath) ?: '');
+        header('Content-Length: ' . strlen($content));
 
-        readfile($filePath);
+        echo $content;
         exit;
     }
 
@@ -285,7 +286,7 @@ class LogsController {
             return;
         }
 
-        $content = file_get_contents($filePath);
+        $content = $this->redactLogContent(file_get_contents($filePath) ?: '');
         if ($content === false) {
             http_response_code(500);
             echo json_encode(['success' => false, 'message' => 'Failed to read file']);
@@ -391,6 +392,22 @@ class LogsController {
         }
 
         return true;
+    }
+
+    private function redactLogContent(string $content): string {
+        $patterns = [
+            '/sshpass\s+-p\s+(?:\'[^\']*\'|"[^"]*"|\S+)/i' => 'sshpass -p [REDACTED]',
+            '/("?(?:password|ssh_password|bind_password|private_key|ssh_key)"?\s*[:=]\s*)"[^"]*"/i' => '$1"[REDACTED]"',
+            "/('?(?:password|ssh_password|bind_password|private_key|ssh_key)'?\s*[:=]\s*)'[^']*'/i" => '$1\'[REDACTED]\'',
+            '/(-----BEGIN [A-Z ]*PRIVATE KEY-----).*?(-----END [A-Z ]*PRIVATE KEY-----)/s' => '$1[REDACTED]$2',
+            '/enc:v1:[A-Za-z0-9+\/=]+/' => 'enc:v1:[REDACTED]',
+        ];
+
+        foreach ($patterns as $pattern => $replacement) {
+            $content = preg_replace($pattern, $replacement, $content) ?? $content;
+        }
+
+        return $content;
     }
 
     /**

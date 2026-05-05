@@ -4,12 +4,49 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}{{ app_name }}{% endblock %}</title>
+    <meta name="csrf-token" content="{{ csrf_token }}">
+    <script>
+        window.AMNEZIA_CSRF_TOKEN = {{ csrf_token|json_encode|raw }};
+        (() => {
+            const token = window.AMNEZIA_CSRF_TOKEN;
+            const originalFetch = window.fetch;
+            window.fetch = (input, init = {}) => {
+                const requestUrl = input instanceof Request ? input.url : input;
+                const url = new URL(requestUrl, window.location.href);
+                const method = (init.method || (input instanceof Request ? input.method : 'GET')).toUpperCase();
+                if (url.origin === window.location.origin && method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {
+                    const headers = new Headers(init.headers || (input instanceof Request ? input.headers : undefined));
+                    headers.set('X-CSRF-Token', token);
+                    init = { ...init, headers };
+                }
+                return originalFetch(input, init);
+            };
+
+            document.addEventListener('DOMContentLoaded', () => {
+                document.querySelectorAll('form[method]').forEach((form) => {
+                    if ((form.getAttribute('method') || '').toUpperCase() !== 'POST') {
+                        return;
+                    }
+                    if (form.querySelector('input[name="_csrf_token"]')) {
+                        return;
+                    }
+                    const input = document.createElement('input');
+                    input.type = 'hidden';
+                    input.name = '_csrf_token';
+                    input.value = token;
+                    form.appendChild(input);
+                });
+            });
+        })();
+    </script>
     <script>
         tailwind = { config: { devtools: false } };
     </script>
     <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"
+          integrity="sha384-iw3OoTErCYJJB9mCa8LNS2hbsQ7M3C0EpIsO/H5+EGAkPGc6rk+V8i04oW/K5xq0" crossorigin="anonymous">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"
+            integrity="sha384-e6nUZLBkQ86NJ6TVVKAeSaK8jWa3NhkYWZFomE39AvDbQWeie9PlQqM3pmYW5d1g" crossorigin="anonymous"></script>
     {% block styles %}{% endblock %}
     <style>
         .gradient-bg {
@@ -136,8 +173,8 @@
         {% block content %}{% endblock %}
     </main>
     <!-- Custom Confirmation Modal -->
-    <div id="confirmModal" class="fixed inset-0 bg-gray-600 bg-opacity-50 hidden overflow-y-auto h-full w-full z-[9999]" style="display:none;">
-        <div class="relative top-20 mx-auto p-5 border w-96 shadow-lg rounded-md bg-white">
+    <div id="confirmModal" class="fixed inset-0 bg-gray-600 bg-opacity-50 hidden overflow-y-auto w-full z-[9999] items-center justify-center p-4" style="display:none;">
+        <div class="w-full max-w-sm p-5 border shadow-lg rounded-md bg-white">
             <div class="mt-3 text-center">
                 <div class="mx-auto flex items-center justify-center h-12 w-12 rounded-full bg-red-100">
                     <i class="fas fa-exclamation-triangle text-red-600 text-xl"></i>

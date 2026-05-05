@@ -39,6 +39,7 @@ class Auth {
           $stmt->execute([$ldapUser['email'], $ldapUser['display_name'], $ldapUser['role'], $userId]);
         }
         
+        session_regenerate_id(true);
         $_SESSION['user_id'] = $userId;
         return true;
       }
@@ -50,12 +51,18 @@ class Auth {
     $user = $stmt->fetch();
     if (!$user) return false;
     if (!password_verify($password, $user['password_hash'])) return false;
+    session_regenerate_id(true);
     $_SESSION['user_id'] = (int)$user['id'];
     $pdo->prepare('UPDATE users SET last_login_at = NOW() WHERE id = ?')->execute([$user['id']]);
     return true;
   }
 
-  public static function logout(): void { unset($_SESSION['user_id']); }
+  public static function logout(): void {
+    unset($_SESSION['user_id']);
+    if (session_status() === PHP_SESSION_ACTIVE) {
+      session_regenerate_id(true);
+    }
+  }
   public static function check(): bool { return isset($_SESSION['user_id']); }
 
   public static function getUserByEmail(string $email): ?array {

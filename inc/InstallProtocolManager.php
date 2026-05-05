@@ -62,6 +62,76 @@ class InstallProtocolManager
         }
     }
 
+    private static function installAwg2WatchdogIfNeeded(VpnServer $server, array $protocol, array $details = []): void
+    {
+        if (($protocol['slug'] ?? '') !== 'awg2') {
+            return;
+        }
+
+        $sourcePath = dirname(__DIR__) . '/watchdog-amnezia-awg2.sh';
+        if (!is_file($sourcePath)) {
+            Logger::appendInstall($server->getId(), 'AWG2 watchdog skipped: local script not found');
+            return;
+        }
+
+        try {
+            $script = (string) file_get_contents($sourcePath);
+            $metadata = $protocol['definition']['metadata'] ?? [];
+            $containerName = trim((string) ($details['container_name'] ?? $metadata['container_name'] ?? 'amnezia-awg2'));
+            if ($containerName === '') {
+                $containerName = 'amnezia-awg2';
+            }
+
+            $vpnPort = (int) ($details['vpn_port'] ?? 0);
+            if ($vpnPort <= 0) {
+                $serverData = $server->getData();
+                $vpnPort = (int) ($serverData['vpn_port'] ?? 0);
+            }
+
+            $script = preg_replace('/^CONTAINER=.*$/m', 'CONTAINER=' . self::shellDoubleQuotedLiteral($containerName), $script);
+            $script = preg_replace('/^WG_IFACE=.*$/m', 'WG_IFACE="awg0"', $script);
+            if ($vpnPort > 0) {
+                $script = preg_replace('/^UDP_PORT=.*$/m', 'UDP_PORT="' . $vpnPort . '"', $script);
+            }
+
+            $remoteScript = '/usr/local/sbin/watchdog-amnezia-awg2.sh';
+            $cronPath = '/etc/cron.d/amnezia-awg2-watchdog';
+            $encodedScript = base64_encode($script);
+            $cronLine = '* * * * * root ' . $remoteScript . ' >/dev/null 2>&1';
+            $encodedCron = base64_encode($cronLine . "\n");
+
+            $cmd = implode(' && ', [
+                'mkdir -p /usr/local/sbin',
+                'printf %s ' . escapeshellarg($encodedScript) . ' | base64 -d > ' . escapeshellarg($remoteScript),
+                'chmod 0755 ' . escapeshellarg($remoteScript),
+                'printf %s ' . escapeshellarg($encodedCron) . ' | base64 -d > ' . escapeshellarg($cronPath),
+                'chmod 0644 ' . escapeshellarg($cronPath),
+                '(systemctl enable --now cron 2>/dev/null || systemctl enable --now crond 2>/dev/null || service cron start 2>/dev/null || true)',
+                '(systemctl reload cron 2>/dev/null || systemctl reload crond 2>/dev/null || true)',
+            ]);
+
+            $server->executeCommand($cmd, true);
+            Logger::appendInstall($server->getId(), 'AWG2 watchdog installed: ' . $remoteScript . ' cron=' . $cronPath);
+        } catch (Throwable $e) {
+            Logger::appendInstall($server->getId(), 'AWG2 watchdog install skipped: ' . $e->getMessage());
+        }
+    }
+
+    private static function removeAwg2Watchdog(VpnServer $server): void
+    {
+        try {
+            $server->executeCommand('rm -f /usr/local/sbin/watchdog-amnezia-awg2.sh /etc/cron.d/amnezia-awg2-watchdog 2>/dev/null || true', true);
+            Logger::appendInstall($server->getId(), 'AWG2 watchdog removed');
+        } catch (Throwable $e) {
+            Logger::appendInstall($server->getId(), 'AWG2 watchdog remove skipped: ' . $e->getMessage());
+        }
+    }
+
+    private static function shellDoubleQuotedLiteral(string $value): string
+    {
+        return '"' . str_replace(['\\', '"', '$', '`'], ['\\\\', '\\"', '\\$', '\\`'], $value) . '"';
+    }
+
     public static function getDefaultSlug(): string
     {
         return self::DEFAULT_SLUG;
@@ -261,6 +331,10 @@ class InstallProtocolManager
 
                 $res = self::restore($server, $protocol, $detectionPayload, $options);
                 Logger::appendInstall($serverId, 'Restore finished: ' . json_encode($res));
+                self::installAwg2WatchdogIfNeeded($server, $protocol, [
+                    'vpn_port' => $detectionPayload['details']['vpn_port'] ?? ($res['vpn_port'] ?? null),
+                    'container_name' => $detectionPayload['details']['container_name'] ?? ($res['container_name'] ?? null),
+                ]);
                 return $res;
             }
 
@@ -317,6 +391,10 @@ class InstallProtocolManager
                     'server_public_key' => $result['public_key'] ?? ($result['server_public_key'] ?? null),
                     'preshared_key' => $result['preshared_key'] ?? null,
                     'awg_params' => $result['awg_params'] ?? null,
+                ]);
+                self::installAwg2WatchdogIfNeeded($server, $protocol, [
+                    'vpn_port' => $result['vpn_port'] ?? null,
+                    'container_name' => $result['container_name'] ?? null,
                 ]);
                 return $result;
             } catch (Throwable $e) {
@@ -381,6 +459,10 @@ class InstallProtocolManager
                 $extras['result'] = $result;
             }
             self::markServerActive($serverId, null, $extras);
+            self::installAwg2WatchdogIfNeeded($server, $protocol, [
+                'vpn_port' => $resolvedPort,
+                'container_name' => $extras['container_name'] ?? null,
+            ]);
             return $result;
         } catch (Throwable $e) {
             Logger::appendInstall($serverId, 'Scripted install failed: ' . $e->getMessage());
@@ -1458,6 +1540,9 @@ class InstallProtocolManager
             // Remove on-disk data for AWG protocol config to avoid stale restore paths.
             $server->executeCommand("rm -rf " . escapeshellarg($configDir) . " 2>/dev/null || true", true);
             $server->executeCommand("rm -rf /opt/amnezia/amnezia-awg 2>/dev/null || true", true);
+            if (($protocol['slug'] ?? '') === 'awg2') {
+                self::removeAwg2Watchdog($server);
+            }
 
             // Clear server deployment metadata in database for this server
             $pdo = DB::conn();
@@ -1515,6 +1600,10 @@ class InstallProtocolManager
                         $stmt2 = $pdo->prepare('INSERT INTO server_protocols (server_id, protocol_id, config_data, applied_at, created_at) VALUES (?, ?, ?, NOW(), NOW()) ON DUPLICATE KEY UPDATE config_data = VALUES(config_data), applied_at = NOW()');
                         $stmt2->execute([$serverId, $pid, json_encode($config)]);
                     }
+                    self::installAwg2WatchdogIfNeeded($server, $protocol, [
+                        'vpn_port' => $detection['details']['vpn_port'] ?? null,
+                        'container_name' => $detection['details']['container_name'] ?? null,
+                    ]);
                     return array_merge($restoreResult, ['mode' => 'restore_existing']);
                 }
             }
@@ -1594,6 +1683,10 @@ class InstallProtocolManager
                 }
                 // Sync existing clients from DB to Container (Restore active clients)
                 self::syncClientsToContainer($server, $protocol);
+                self::installAwg2WatchdogIfNeeded($server, $protocol, [
+                    'vpn_port' => $resolvedPort,
+                    'container_name' => $res['container_name'] ?? null,
+                ]);
                 return ['success' => true, 'mode' => 'install', 'details' => $res];
             }
             if (!isset($options['server_port']) || !is_int($options['server_port'])) {
@@ -1753,6 +1846,11 @@ class InstallProtocolManager
                     self::markServerActive($serverId, null, []);
                 }
             }
+
+            self::installAwg2WatchdogIfNeeded($server, $protocol, [
+                'vpn_port' => $port,
+                'container_name' => $res['container_name'] ?? null,
+            ]);
 
             // ── WARP: Auto-patch X-Ray outbound to route through WARP ──
             if (self::resolveHandler($protocol) === 'warp') {

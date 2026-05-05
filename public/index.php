@@ -10,13 +10,33 @@ if (isset($_SERVER['REQUEST_URI']) && strpos($_SERVER['REQUEST_URI'], '/api/') !
     error_reporting(0);
 }
 
-session_name(getenv('SESSION_NAME') ?: 'amnezia_panel_session');
+// Load early dependencies/config before session initialization.
+require_once __DIR__ . '/../vendor/autoload.php';
+require_once __DIR__ . '/../inc/Config.php';
+
+// Load environment configuration
+Config::load(__DIR__ . '/../.env');
+
+$secureCookieRaw = Config::get('SESSION_COOKIE_SECURE');
+$secureCookie = $secureCookieRaw === null
+    ? ((!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https'))
+    : in_array(strtolower((string) $secureCookieRaw), ['1', 'true', 'yes', 'on'], true);
+
+@ini_set('session.use_strict_mode', '1');
+session_name(Config::get('SESSION_NAME', 'amnezia_panel_session'));
+session_set_cookie_params([
+    'lifetime' => 0,
+    'path' => '/',
+    'domain' => '',
+    'secure' => $secureCookie,
+    'httponly' => true,
+    'samesite' => Config::get('SESSION_COOKIE_SAMESITE', 'Lax'),
+]);
 session_start();
 
 // Load dependencies
-require_once __DIR__ . '/../vendor/autoload.php';
-require_once __DIR__ . '/../inc/Config.php';
 require_once __DIR__ . '/../inc/DB.php';
+require_once __DIR__ . '/../inc/SecretBox.php';
 require_once __DIR__ . '/../inc/Auth.php';
 require_once __DIR__ . '/../inc/Router.php';
 require_once __DIR__ . '/../inc/View.php';
@@ -26,13 +46,11 @@ require_once __DIR__ . '/../inc/Translator.php';
 require_once __DIR__ . '/../inc/JWT.php';
 require_once __DIR__ . '/../inc/PanelImporter.php';
 require_once __DIR__ . '/../inc/ServerMonitoring.php';
+require_once __DIR__ . '/../inc/AlertManager.php';
 require_once __DIR__ . '/../inc/BackupLibrary.php';
 require_once __DIR__ . '/../inc/InstallProtocolManager.php';
 require_once __DIR__ . '/../inc/ProtocolService.php';
 require_once __DIR__ . '/../inc/OpenRouterService.php';
-
-// Load environment configuration
-Config::load(__DIR__ . '/../.env');
 
 // Test database connection
 try {
@@ -84,9 +102,196 @@ function authenticateRequest(): ?array
     return null;
 }
 
+function jsonError(string $message, int $status = 400): void
+{
+    http_response_code($status);
+    echo json_encode(['success' => false, 'error' => $message]);
+}
+
+function canAccessServer(array $serverData, array $user): bool
+{
+    return (int) ($serverData['user_id'] ?? 0) === (int) ($user['id'] ?? 0) || ($user['role'] ?? '') === 'admin';
+}
+
+function getClientProtocolSlug(array $clientData): string
+{
+    $protocolId = (int) ($clientData['protocol_id'] ?? 0);
+    if ($protocolId <= 0) {
+        return '';
+    }
+
+    $stmt = DB::conn()->prepare('SELECT slug FROM protocols WHERE id = ? LIMIT 1');
+    $stmt->execute([$protocolId]);
+    return (string) ($stmt->fetchColumn() ?: '');
+}
+
+function resolveClientContainer(array $serverData, array $clientData): string
+{
+    $containerName = trim((string) ($serverData['container_name'] ?? ''));
+    $protocolId = (int) ($clientData['protocol_id'] ?? 0);
+    if ($protocolId > 0) {
+        try {
+            $stmt = DB::conn()->prepare('SELECT config_data FROM server_protocols WHERE server_id = ? AND protocol_id = ? LIMIT 1');
+            $stmt->execute([(int) $clientData['server_id'], $protocolId]);
+            $raw = (string) ($stmt->fetchColumn() ?: '');
+            $config = $raw !== '' ? json_decode($raw, true) : null;
+            if (is_array($config) && !empty($config['container_name'])) {
+                $containerName = trim((string) $config['container_name']);
+            }
+        } catch (Throwable $e) {
+            error_log('Failed to resolve client container: ' . $e->getMessage());
+        }
+    }
+
+    $slug = getClientProtocolSlug($clientData);
+    if ($containerName === '' && $slug === 'awg2') {
+        $containerName = 'amnezia-awg2';
+    }
+
+    return $containerName;
+}
+
+function getWireGuardPeerDiagnostics(VpnServer $server, string $containerName, array $clientData): array
+{
+    $clientPublicKey = trim((string) ($clientData['public_key'] ?? ''));
+    $clientIp = trim((string) ($clientData['client_ip'] ?? ''));
+    $checks = [];
+
+    if ($containerName === '') {
+        return [
+            'checks' => [[
+                'name' => 'container',
+                'ok' => false,
+                'severity' => 'critical',
+                'message' => 'Не найдено имя контейнера для протокола клиента',
+            ]],
+            'peer' => null,
+        ];
+    }
+
+    if ($clientPublicKey === '') {
+        return [
+            'checks' => [[
+                'name' => 'client_public_key',
+                'ok' => false,
+                'severity' => 'critical',
+                'message' => 'У клиента нет public key в базе',
+            ]],
+            'peer' => null,
+        ];
+    }
+
+    $script = <<<'SH'
+CONTAINER="$1"
+PUBLIC_KEY="$2"
+running="$(docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null || echo missing)"
+echo "container_running=${running}"
+if [ "$running" != "true" ]; then
+  exit 0
+fi
+iface=""
+for candidate in awg0 wg0; do
+  if docker exec "$CONTAINER" sh -lc "ip link show '$candidate' >/dev/null 2>&1"; then
+    iface="$candidate"
+    break
+  fi
+done
+echo "wg_iface=${iface}"
+if [ -z "$iface" ]; then
+  exit 0
+fi
+docker exec "$CONTAINER" sh -lc "awg show '$iface' dump 2>/dev/null || wg show '$iface' dump 2>/dev/null || true" \
+  | awk -v key="$PUBLIC_KEY" 'NR > 1 && $1 == key {print "peer_line="$0}'
+SH;
+    $cmd = 'bash -s -- ' . escapeshellarg($containerName) . ' ' . escapeshellarg($clientPublicKey)
+        . ' <<' . "'AMNEZIA_CLIENT_DIAG_SH'\n" . $script . "\nAMNEZIA_CLIENT_DIAG_SH";
+    $output = $server->executeCommand($cmd);
+    $values = [];
+    foreach (preg_split('/\R/', (string) $output) as $line) {
+        if (strpos($line, '=') === false) {
+            continue;
+        }
+        [$key, $value] = explode('=', $line, 2);
+        $values[trim($key)] = trim($value);
+    }
+
+    $running = ($values['container_running'] ?? '') === 'true';
+    $checks[] = [
+        'name' => 'container',
+        'ok' => $running,
+        'severity' => 'critical',
+        'message' => $running ? "Контейнер {$containerName} запущен" : "Контейнер {$containerName} не запущен или не найден",
+    ];
+
+    $iface = trim((string) ($values['wg_iface'] ?? ''));
+    $checks[] = [
+        'name' => 'wireguard_interface',
+        'ok' => $iface !== '',
+        'severity' => 'critical',
+        'message' => $iface !== '' ? "Интерфейс {$iface} найден" : 'Интерфейс awg0/wg0 не найден',
+    ];
+
+    $peerLine = trim((string) ($values['peer_line'] ?? ''));
+    $parts = $peerLine !== '' ? preg_split('/\s+/', $peerLine) : [];
+    $peer = null;
+    if (is_array($parts) && count($parts) >= 8) {
+        $latest = (int) ($parts[4] ?? 0);
+        $peer = [
+            'endpoint' => (string) ($parts[2] ?? ''),
+            'allowed_ips' => (string) ($parts[3] ?? ''),
+            'latest_handshake' => $latest,
+            'latest_handshake_age_seconds' => $latest > 0 ? max(0, time() - $latest) : null,
+            'rx_bytes' => (int) ($parts[5] ?? 0),
+            'tx_bytes' => (int) ($parts[6] ?? 0),
+        ];
+    }
+
+    $checks[] = [
+        'name' => 'peer_exists',
+        'ok' => $peer !== null,
+        'severity' => 'critical',
+        'message' => $peer ? 'Peer с public key клиента найден в контейнере' : 'Peer с public key клиента не найден в контейнере',
+    ];
+
+    if ($peer) {
+        $expectedIp = $clientIp !== '' ? $clientIp . '/32' : '';
+        $allowedOk = $expectedIp !== '' && str_contains($peer['allowed_ips'], $expectedIp);
+        $checks[] = [
+            'name' => 'allowed_ips',
+            'ok' => $allowedOk,
+            'severity' => 'critical',
+            'message' => $allowedOk ? "AllowedIPs содержит {$expectedIp}" : "AllowedIPs={$peer['allowed_ips']}, ожидалось {$expectedIp}",
+        ];
+
+        $staleSeconds = max(60, (int) Config::get('ALERT_HANDSHAKE_STALE_SECONDS', '1800'));
+        $age = $peer['latest_handshake_age_seconds'];
+        $recentOk = is_int($age) && $age <= $staleSeconds;
+        $checks[] = [
+            'name' => 'recent_handshake',
+            'ok' => $recentOk,
+            'severity' => 'warning',
+            'message' => $recentOk
+                ? "Последний handshake {$age}s назад"
+                : ($age === null ? 'Handshake еще не был зафиксирован' : "Последний handshake {$age}s назад, порог {$staleSeconds}s"),
+        ];
+
+        $endpoint = (string) ($peer['endpoint'] ?? '');
+        $endpointOk = $endpoint !== '' && $endpoint !== '(none)';
+        $checks[] = [
+            'name' => 'endpoint',
+            'ok' => $endpointOk,
+            'severity' => 'warning',
+            'message' => $endpointOk ? "Endpoint клиента: {$endpoint}" : 'Endpoint клиента пока не появился',
+        ];
+    }
+
+    return ['checks' => $checks, 'peer' => $peer];
+}
+
 View::init(__DIR__ . '/../templates', [
     'app_name' => $appName,
     'user' => $user,
+    'csrf_token' => csrfToken(),
     'current_language' => Translator::getCurrentLanguage(),
     'languages' => Translator::getSupportedLanguages(),
     'current_uri' => $_SERVER['REQUEST_URI'] ?? '/dashboard',
@@ -125,6 +330,163 @@ function debugRoutesEnabled(): bool
 {
     $val = strtolower((string) (getenv('ENABLE_DEBUG_ROUTES') ?: ''));
     return in_array($val, ['1', 'true', 'yes', 'on'], true);
+}
+
+function registrationEnabled(): bool
+{
+    $val = strtolower((string) (getenv('ALLOW_REGISTRATION') ?: ''));
+    return in_array($val, ['1', 'true', 'yes', 'on'], true);
+}
+
+function configInt(string $key, int $default): int
+{
+    $value = Config::get($key, (string) $default);
+    if (!is_numeric($value)) {
+        return $default;
+    }
+
+    return (int) $value;
+}
+
+function clientIp(): string
+{
+    $trustProxy = in_array(strtolower((string) Config::get('TRUST_PROXY_HEADERS', '0')), ['1', 'true', 'yes', 'on'], true);
+    $forwardedFor = $trustProxy ? trim((string) ($_SERVER['HTTP_X_FORWARDED_FOR'] ?? '')) : '';
+    if ($forwardedFor !== '') {
+        $parts = array_map('trim', explode(',', $forwardedFor));
+        return $parts[0] ?: ($_SERVER['REMOTE_ADDR'] ?? 'unknown');
+    }
+
+    return $_SERVER['REMOTE_ADDR'] ?? 'unknown';
+}
+
+function rateLimitPath(string $scope, string $identity): string
+{
+    $dir = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'amnezia_panel_rate_limits';
+    if (!is_dir($dir)) {
+        @mkdir($dir, 0700, true);
+    }
+
+    return $dir . DIRECTORY_SEPARATOR . hash('sha256', $scope . ':' . $identity) . '.json';
+}
+
+function rateLimitExceeded(string $scope, string $identity, int $limit, int $windowSeconds): array
+{
+    if ($limit <= 0 || $windowSeconds <= 0) {
+        return ['limited' => false, 'retry_after' => 0];
+    }
+
+    $path = rateLimitPath($scope, $identity);
+    $now = time();
+    $timestamps = [];
+    if (is_file($path)) {
+        $decoded = json_decode((string) @file_get_contents($path), true);
+        if (is_array($decoded)) {
+            $timestamps = array_values(array_filter(array_map('intval', $decoded), static fn($ts) => $ts > $now - $windowSeconds));
+        }
+    }
+
+    if (count($timestamps) < $limit) {
+        return ['limited' => false, 'retry_after' => 0];
+    }
+
+    $oldest = min($timestamps);
+    return ['limited' => true, 'retry_after' => max(1, $windowSeconds - ($now - $oldest))];
+}
+
+function recordRateLimitFailure(string $scope, string $identity, int $windowSeconds): void
+{
+    if ($windowSeconds <= 0) {
+        return;
+    }
+
+    $path = rateLimitPath($scope, $identity);
+    $now = time();
+    $fp = @fopen($path, 'c+');
+    if (!$fp) {
+        return;
+    }
+
+    try {
+        @flock($fp, LOCK_EX);
+        $contents = stream_get_contents($fp);
+        $decoded = json_decode((string) $contents, true);
+        $timestamps = is_array($decoded) ? array_map('intval', $decoded) : [];
+        $timestamps = array_values(array_filter($timestamps, static fn($ts) => $ts > $now - $windowSeconds));
+        $timestamps[] = $now;
+        ftruncate($fp, 0);
+        rewind($fp);
+        fwrite($fp, json_encode($timestamps));
+    } finally {
+        @flock($fp, LOCK_UN);
+        fclose($fp);
+    }
+}
+
+function clearRateLimit(string $scope, string $identity): void
+{
+    @unlink(rateLimitPath($scope, $identity));
+}
+
+function uploadMaxBytes(): int
+{
+    return max(1, configInt('AMNEZIA_UPLOAD_MAX_BYTES', 20 * 1024 * 1024));
+}
+
+function validateUploadedFileSize(array $file, string $label): void
+{
+    $size = (int) ($file['size'] ?? 0);
+    $maxBytes = uploadMaxBytes();
+    if ($size > $maxBytes) {
+        $maxMb = round($maxBytes / 1024 / 1024, 1);
+        throw new Exception($label . ' is too large. Maximum allowed size is ' . $maxMb . ' MB.');
+    }
+}
+
+function csrfToken(): string
+{
+    if (empty($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token'])) {
+        $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+    }
+
+    return $_SESSION['csrf_token'];
+}
+
+function csrfProtectedRequest(string $method, string $uri): bool
+{
+    if (!in_array(strtolower((string) Config::get('AMNEZIA_CSRF_ENABLED', '1')), ['1', 'true', 'yes', 'on'], true)) {
+        return false;
+    }
+
+    if (!in_array(strtoupper($method), ['POST', 'PUT', 'PATCH', 'DELETE'], true)) {
+        return false;
+    }
+
+    $path = parse_url($uri, PHP_URL_PATH) ?: '/';
+    if ($path === '/api/auth/token') {
+        return false;
+    }
+
+    $authHeader = $_SERVER['HTTP_AUTHORIZATION'] ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? '';
+    if (preg_match('/^Bearer\s+\S+/i', (string) $authHeader)) {
+        return false;
+    }
+
+    return true;
+}
+
+function verifyCsrfRequest(): bool
+{
+    $expected = csrfToken();
+    $provided = $_POST['_csrf_token'] ?? ($_SERVER['HTTP_X_CSRF_TOKEN'] ?? '');
+    return is_string($provided) && hash_equals($expected, $provided);
+}
+
+function rejectInvalidCsrf(): void
+{
+    http_response_code(419);
+    header('Content-Type: text/plain; charset=utf-8');
+    echo 'Invalid or missing CSRF token';
 }
 
 function requireDebugEnabledOrAdmin(): void
@@ -200,16 +562,34 @@ Router::get('/login', function () {
 Router::post('/login', function () {
     $email = trim($_POST['email'] ?? '');
     $password = $_POST['password'] ?? '';
+    $rateIdentity = strtolower($email) . '|' . clientIp();
+    $rateWindow = configInt('LOGIN_RATE_LIMIT_WINDOW_SECONDS', 300);
+    $rateLimit = configInt('LOGIN_RATE_LIMIT_ATTEMPTS', 10);
+    $rate = rateLimitExceeded('login', $rateIdentity, $rateLimit, $rateWindow);
+
+    if ($rate['limited']) {
+        http_response_code(429);
+        View::render('login.twig', ['error' => 'Too many login attempts. Try again in ' . $rate['retry_after'] . ' seconds.']);
+        return;
+    }
 
     if (Auth::login($email, $password)) {
+        clearRateLimit('login', $rateIdentity);
         redirect('/dashboard');
     }
 
+    recordRateLimitFailure('login', $rateIdentity, $rateWindow);
     View::render('login.twig', ['error' => 'Invalid credentials']);
 });
 
 // Register page
 Router::get('/register', function () {
+    if (!registrationEnabled()) {
+        http_response_code(404);
+        echo 'Not Found';
+        return;
+    }
+
     if (Auth::check()) {
         redirect('/dashboard');
     }
@@ -217,6 +597,12 @@ Router::get('/register', function () {
 });
 
 Router::post('/register', function () {
+    if (!registrationEnabled()) {
+        http_response_code(404);
+        echo 'Not Found';
+        return;
+    }
+
     $name = trim($_POST['name'] ?? '');
     $email = trim($_POST['email'] ?? '');
     $password = $_POST['password'] ?? '';
@@ -260,7 +646,7 @@ Router::get('/dashboard', function () {
     $user = Auth::user();
 
     // Get user's servers
-    $servers = VpnServer::listByUser($user['id']);
+    $servers = VpnServer::redactServerList(VpnServer::listByUser($user['id']));
 
     // Get user's clients
     $clients = VpnClient::listByUser($user['id']);
@@ -302,6 +688,7 @@ Router::get('/servers', function () {
     $servers = Auth::isAdmin()
         ? VpnServer::listAll()
         : VpnServer::listByUser($user['id']);
+    $servers = VpnServer::redactServerList($servers);
 
     View::render('servers/index.twig', ['servers' => $servers]);
 });
@@ -342,6 +729,19 @@ Router::post('/servers/create', function () {
             $originalName = $_FILES['backup_upload']['name'] ?? 'uploaded-backup.json';
             $tmpPath = $_FILES['backup_upload']['tmp_name'];
             $storagePath = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'amnezia_backup_' . bin2hex(random_bytes(16));
+
+            try {
+                validateUploadedFileSize($_FILES['backup_upload'], 'Backup file');
+            } catch (Exception $e) {
+                View::render('servers/create.twig', [
+                    'error' => $e->getMessage(),
+                    'selected_mode' => 'backup',
+                    'form_data' => $formData,
+                    'protocols' => $protocols,
+                    'default_protocol' => $defaultProtocol
+                ]);
+                return;
+            }
 
             if (!move_uploaded_file($tmpPath, $storagePath)) {
                 View::render('servers/create.twig', [
@@ -556,7 +956,7 @@ Router::get('/servers/{id}/deploy', function ($params) {
             return;
         }
 
-        View::render('servers/deploy.twig', ['server' => $serverData]);
+        View::render('servers/deploy.twig', ['server' => VpnServer::redactServerSecrets($serverData)]);
     } catch (Exception $e) {
         http_response_code(404);
         echo 'Server not found';
@@ -932,7 +1332,7 @@ Router::get('/servers/{id}', function ($params) {
         $onlineLogins = ServerMonitoring::getOnlineClientsForServer($serverData);
 
         View::render('servers/view.twig', [
-            'server' => $serverData,
+            'server' => VpnServer::redactServerSecrets($serverData),
             'clients' => $clients,
             'import_message' => $importMessage,
             'server_protocols' => $serverProtocols,
@@ -970,7 +1370,7 @@ Router::get('/servers/{id}/monitoring', function ($params) {
         $clients = VpnClient::listByServer($serverId);
 
         View::render('servers/monitoring.twig', [
-            'server' => $serverData,
+            'server' => VpnServer::redactServerSecrets($serverData),
             'clients' => $clients,
         ]);
     } catch (Exception $e) {
@@ -1000,6 +1400,8 @@ Router::post('/servers/{id}/config/import', function ($params) {
         if (!isset($_FILES['config_file']) || $_FILES['config_file']['error'] !== UPLOAD_ERR_OK) {
             throw new Exception('Файл конфигурации не загружен');
         }
+
+        validateUploadedFileSize($_FILES['config_file'], 'Config file');
 
         $tmpPath = $_FILES['config_file']['tmp_name'];
         if (!is_uploaded_file($tmpPath)) {
@@ -1283,21 +1685,30 @@ Router::get('/clients/{id}/download', function ($params) {
             return;
         }
 
-        // For WireGuard/AWG clients, regenerate config from current server state
-        // to avoid stale AWG parameters after reinstall/recreate.
-        // IMPORTANT: for amnezia-wg-advanced, never serve a config built with defaults.
-        try {
-            $regen = $client->regenerateConfigFromServer(true);
-            if (is_array($regen) && empty($regen['success']) && ($regen['error'] ?? '') === 'awg_params_missing') {
-                http_response_code(500);
-                echo 'AWG params are missing on server; cannot generate a valid config. Reinstall/repair AWG or check /opt/amnezia/awg/wg0.conf on the server.';
-                return;
+        $config = $client->getConfig();
+        $forceRefresh = isset($_GET['refresh']) && in_array(strtolower((string) $_GET['refresh']), ['1', 'true', 'yes'], true);
+
+        // Fast path: downloads serve the persisted config. Regeneration is expensive
+        // because it talks to the remote server; use ?refresh=1 or the API endpoint when needed.
+        if ($forceRefresh || trim($config) === '') {
+            try {
+                $regen = $client->regenerateConfigFromServer(true);
+                if (is_array($regen) && empty($regen['success']) && ($regen['error'] ?? '') === 'awg_params_missing') {
+                    http_response_code(500);
+                    echo 'AWG params are missing on server; cannot generate a valid config. Reinstall/repair AWG or check /opt/amnezia/awg/wg0.conf on the server.';
+                    return;
+                }
+                $config = $client->getConfig();
+            } catch (Throwable $e) {
+                error_log('Failed to regenerate client config: ' . $e->getMessage());
             }
-        } catch (Throwable $e) {
-            error_log('Failed to regenerate client config: ' . $e->getMessage());
         }
 
-        $config = $client->getConfig();
+        if (trim($config) === '') {
+            http_response_code(500);
+            echo 'Client config is empty. Try regenerating the config first.';
+            return;
+        }
 
         // Use login if available, fallback to name
         $baseName = !empty($clientData['login']) ? $clientData['login'] : $clientData['name'];
@@ -1774,6 +2185,17 @@ Router::post('/api/auth/token', function () {
 
     $email = $_POST['email'] ?? '';
     $password = $_POST['password'] ?? '';
+    $rateIdentity = strtolower(trim($email)) . '|' . clientIp();
+    $rateWindow = configInt('API_TOKEN_RATE_LIMIT_WINDOW_SECONDS', 300);
+    $rateLimit = configInt('API_TOKEN_RATE_LIMIT_ATTEMPTS', 10);
+    $rate = rateLimitExceeded('api_token', $rateIdentity, $rateLimit, $rateWindow);
+
+    if ($rate['limited']) {
+        http_response_code(429);
+        header('Retry-After: ' . $rate['retry_after']);
+        echo json_encode(['error' => 'Too many token requests', 'retry_after' => $rate['retry_after']]);
+        return;
+    }
 
     if (empty($email) || empty($password)) {
         http_response_code(400);
@@ -1783,16 +2205,20 @@ Router::post('/api/auth/token', function () {
 
     $user = Auth::getUserByEmail($email);
     if (!$user || !password_verify($password, $user['password_hash'])) {
+        recordRateLimitFailure('api_token', $rateIdentity, $rateWindow);
         http_response_code(401);
         echo json_encode(['error' => 'Invalid credentials']);
         return;
     }
 
+    clearRateLimit('api_token', $rateIdentity);
+
     try {
-        $token = JWT::generate($user['id']);
+        $tokenData = JWT::createApiToken($user['id'], 'Login API Token', 30 * 24 * 3600);
         echo json_encode([
             'success' => true,
-            'token' => $token,
+            'token' => $tokenData['token'],
+            'token_id' => $tokenData['id'],
             'type' => 'Bearer',
             'expires_in' => 30 * 24 * 3600 // 30 days
         ]);
@@ -1833,19 +2259,7 @@ Router::get('/api/tokens', function () {
     if (!$user)
         return;
 
-    $stmt = DB::conn()->prepare("
-        SELECT id, name, token, expires_at, created_at, last_used_at
-        FROM api_tokens
-        WHERE user_id = ? AND revoked_at IS NULL
-        ORDER BY created_at DESC
-    ");
-    $stmt->execute([$user['id']]);
-    $tokens = $stmt->fetchAll();
-
-    // Don't expose full token in list
-    foreach ($tokens as &$token) {
-        $token['token'] = substr($token['token'], 0, 10) . '...';
-    }
+    $tokens = JWT::getUserTokens($user['id']);
 
     echo json_encode(['tokens' => $tokens]);
 });
@@ -1875,7 +2289,7 @@ Router::get('/api/servers', function () {
     if (!$user)
         return;
 
-    $servers = VpnServer::listByUser($user['id']);
+    $servers = VpnServer::redactServerList(VpnServer::listByUser($user['id']));
 
     // Enrich with installed protocols
     $pdo = DB::conn();
@@ -2004,6 +2418,14 @@ Router::post('/api/servers/{id}/import', function ($params) {
     if (!isset($_FILES['backup_file']) || $_FILES['backup_file']['error'] !== UPLOAD_ERR_OK) {
         http_response_code(400);
         echo json_encode(['error' => 'No backup file uploaded']);
+        return;
+    }
+
+    try {
+        validateUploadedFileSize($_FILES['backup_file'], 'Backup file');
+    } catch (Exception $e) {
+        http_response_code(413);
+        echo json_encode(['error' => $e->getMessage()]);
         return;
     }
 
@@ -2283,6 +2705,85 @@ Router::get('/api/clients/{id}/details', function ($params) {
     }
 });
 
+// API: Diagnose client connectivity against the live WireGuard/AWG container
+Router::get('/api/clients/{id}/diagnostics', function ($params) {
+    header('Content-Type: application/json');
+
+    $user = authenticateRequest();
+    if (!$user) {
+        jsonError('Unauthorized', 401);
+        return;
+    }
+
+    $clientId = (int) $params['id'];
+
+    try {
+        $client = new VpnClient($clientId);
+        $clientData = $client->getData();
+        if (!$clientData) {
+            jsonError('Client not found', 404);
+            return;
+        }
+
+        $server = new VpnServer((int) $clientData['server_id']);
+        $serverData = $server->getData();
+        if (!$serverData || !canAccessServer($serverData, $user)) {
+            jsonError('Forbidden', 403);
+            return;
+        }
+
+        $protocolSlug = getClientProtocolSlug($clientData);
+        $containerName = resolveClientContainer($serverData, $clientData);
+        $checks = [
+            [
+                'name' => 'client_status',
+                'ok' => ($clientData['status'] ?? '') === 'active',
+                'severity' => 'warning',
+                'message' => (($clientData['status'] ?? '') === 'active')
+                    ? 'Клиент активен в панели'
+                    : 'Клиент не активен в панели: ' . (string) ($clientData['status'] ?? 'unknown'),
+            ],
+            [
+                'name' => 'server_status',
+                'ok' => ($serverData['status'] ?? '') === 'active',
+                'severity' => 'critical',
+                'message' => (($serverData['status'] ?? '') === 'active')
+                    ? 'Сервер активен в панели'
+                    : 'Сервер не активен в панели: ' . (string) ($serverData['status'] ?? 'unknown'),
+            ],
+        ];
+
+        if (stripos($protocolSlug, 'awg') !== false || stripos($protocolSlug, 'wireguard') !== false || $protocolSlug === '') {
+            $live = getWireGuardPeerDiagnostics($server, $containerName, $clientData);
+            $checks = array_merge($checks, $live['checks']);
+            $peer = $live['peer'];
+        } else {
+            $peer = null;
+            $checks[] = [
+                'name' => 'protocol',
+                'ok' => true,
+                'severity' => 'warning',
+                'message' => "Для протокола {$protocolSlug} доступна только базовая диагностика",
+            ];
+        }
+
+        echo json_encode([
+            'success' => true,
+            'client' => [
+                'id' => (int) $clientData['id'],
+                'name' => $clientData['name'],
+                'ip' => $clientData['client_ip'],
+                'protocol_slug' => $protocolSlug,
+                'container_name' => $containerName,
+            ],
+            'checks' => $checks,
+            'peer' => $peer,
+        ]);
+    } catch (Throwable $e) {
+        jsonError($e->getMessage(), 500);
+    }
+});
+
 // API: Get client QR code
 Router::get('/api/clients/{id}/qr', function ($params) {
     header('Content-Type: application/json');
@@ -2418,19 +2919,7 @@ Router::delete('/api/clients/{id}/delete', function ($params) {
 Router::get('/api/servers/{id}/metrics', function ($params) {
     header('Content-Type: application/json');
 
-    // Check authentication - either JWT or session
-    $user = null;
-    $authHeader = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
-
-    if ($authHeader && preg_match('/Bearer\s+(.*)$/i', $authHeader, $matches)) {
-        // JWT authentication
-        $token = $matches[1];
-        $user = JWT::verify($token);
-    } else if (isset($_SESSION['user_id'])) {
-        // Session authentication
-        $user = Auth::user();
-    }
-
+    $user = authenticateRequest();
     if (!$user) {
         http_response_code(401);
         echo json_encode(['error' => 'Unauthorized']);
@@ -2460,23 +2949,66 @@ Router::get('/api/servers/{id}/metrics', function ($params) {
     }
 });
 
+// API: Get live server health checks for the monitoring dashboard
+Router::get('/api/servers/{id}/health', function ($params) {
+    header('Content-Type: application/json');
+
+    $user = authenticateRequest();
+    if (!$user) {
+        jsonError('Unauthorized', 401);
+        return;
+    }
+
+    $serverId = (int) $params['id'];
+
+    try {
+        $server = new VpnServer($serverId);
+        $serverData = $server->getData();
+        if (!$serverData || !canAccessServer($serverData, $user)) {
+            jsonError('Forbidden', 403);
+            return;
+        }
+
+        $monitoring = new ServerMonitoring($serverId);
+        $checks = [];
+        foreach ($monitoring->collectHealthChecks() as $name => $check) {
+            $checks[] = [
+                'name' => $name,
+                'ok' => (bool) ($check['ok'] ?? false),
+                'severity' => (string) ($check['severity'] ?? 'warning'),
+                'message' => (string) ($check['message'] ?? ''),
+            ];
+        }
+
+        $stmt = DB::conn()->prepare("
+            SELECT alert_key, severity, status, fail_count, message, first_seen_at, last_seen_at, last_sent_at, resolved_at
+            FROM alert_states
+            WHERE server_id = ?
+            ORDER BY COALESCE(last_seen_at, first_seen_at, created_at) DESC
+            LIMIT 20
+        ");
+        $stmt->execute([$serverId]);
+
+        echo json_encode([
+            'success' => true,
+            'server' => [
+                'id' => $serverId,
+                'name' => $serverData['name'],
+                'status' => $serverData['status'],
+            ],
+            'checks' => $checks,
+            'alerts' => $stmt->fetchAll(PDO::FETCH_ASSOC),
+        ]);
+    } catch (Throwable $e) {
+        jsonError($e->getMessage(), 500);
+    }
+});
+
 // API: Get client metrics
 Router::get('/api/clients/{id}/metrics', function ($params) {
     header('Content-Type: application/json');
 
-    // Check authentication - either JWT or session
-    $user = null;
-    $authHeader = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
-
-    if ($authHeader && preg_match('/Bearer\s+(.*)$/i', $authHeader, $matches)) {
-        // JWT authentication
-        $token = $matches[1];
-        $user = JWT::verify($token);
-    } else if (isset($_SESSION['user_id'])) {
-        // Session authentication
-        $user = Auth::user();
-    }
-
+    $user = authenticateRequest();
     if (!$user) {
         http_response_code(401);
         echo json_encode(['error' => 'Unauthorized']);
@@ -2502,6 +3034,39 @@ Router::get('/api/clients/{id}/metrics', function ($params) {
         }
 
         $metrics = ServerMonitoring::getClientMetrics($clientId, $hours);
+
+        echo json_encode(['success' => true, 'metrics' => $metrics]);
+    } catch (Exception $e) {
+        http_response_code(500);
+        echo json_encode(['error' => $e->getMessage()]);
+    }
+});
+
+// API: Get all client metrics for a server
+Router::get('/api/servers/{id}/client-metrics', function ($params) {
+    header('Content-Type: application/json');
+
+    $user = authenticateRequest();
+    if (!$user) {
+        http_response_code(401);
+        echo json_encode(['error' => 'Unauthorized']);
+        return;
+    }
+
+    $serverId = (int) $params['id'];
+    $hours = isset($_GET['hours']) ? max(1, min(24, (int) $_GET['hours'])) : 24;
+
+    try {
+        $server = new VpnServer($serverId);
+        $serverData = $server->getData();
+
+        if ($serverData['user_id'] != $user['id'] && $user['role'] !== 'admin') {
+            http_response_code(403);
+            echo json_encode(['error' => 'Forbidden']);
+            return;
+        }
+
+        $metrics = ServerMonitoring::getClientMetricsForServer($serverId, $hours);
 
         echo json_encode(['success' => true, 'metrics' => $metrics]);
     } catch (Exception $e) {
@@ -3930,6 +4495,22 @@ Router::post('/settings/api-key', function () {
     $controller->saveApiKey();
 });
 
+Router::post('/settings/alerts/save', function () {
+    requireAdmin();
+
+    require_once __DIR__ . '/../controllers/SettingsController.php';
+    $controller = new SettingsController();
+    $controller->saveAlerts();
+});
+
+Router::post('/settings/alerts/test', function () {
+    requireAdmin();
+
+    require_once __DIR__ . '/../controllers/SettingsController.php';
+    $controller = new SettingsController();
+    $controller->testAlerts();
+});
+
 // Change password
 Router::post('/settings/change-password', function () {
     requireAuth();
@@ -4193,4 +4774,9 @@ Router::post('/admin/logs/stats', function () {
 });
 
 // Dispatch router
+if (csrfProtectedRequest($_SERVER['REQUEST_METHOD'], $_SERVER['REQUEST_URI']) && !verifyCsrfRequest()) {
+    rejectInvalidCsrf();
+    exit;
+}
+
 Router::dispatch($_SERVER['REQUEST_METHOD'], $_SERVER['REQUEST_URI']);

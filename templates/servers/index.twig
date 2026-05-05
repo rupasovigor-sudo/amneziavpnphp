@@ -98,6 +98,9 @@
             <a href="/servers/{{ server.id }}" class="text-purple-600 hover:text-purple-900">
               <i class="fas fa-eye mr-1"></i>{{ t('servers.view') }}
             </a>
+            <a href="/servers/{{ server.id }}/monitoring" class="text-blue-600 hover:text-blue-900">
+              <i class="fas fa-chart-line mr-1"></i>Мониторинг
+            </a>
             <form method="POST" action="/servers/{{ server.id }}/delete" class="inline" id="delete-form-{{ server.id }}">
               <button type="button" class="text-red-600 hover:text-red-900" onclick="(async()=>{ event.stopPropagation(); if(await showConfirmModal('Удалить сервер {{ server.name }}?', 'Удаление сервера')) { document.getElementById('delete-form-{{ server.id }}').submit(); } })()">
                 <i class="fas fa-trash mr-1"></i>{{ t('servers.delete') }}

@@ -46,6 +46,8 @@ class SettingsController {
             'translation_stats' => $stats,
             'users' => $users,
             'openrouter_key' => $apiKey,
+            'alert_settings' => $this->getAlertSettings(),
+            'alert_states' => $this->getAlertStates(),
             // LDAP
             'config' => $config,
             'mappings' => $mappings,
@@ -235,6 +237,217 @@ class SettingsController {
         $stmt->execute([$service]);
         $result = $stmt->fetch();
         return $result ? $result['api_key'] : null;
+    }
+
+    private function getAlertSettings(): array {
+        $get = fn(string $key, string $default = '') => (string) Config::get($key, $default);
+
+        return [
+            'ALERTS_ENABLED' => $get('ALERTS_ENABLED', '0'),
+            'ALERTS_FAILURE_THRESHOLD' => $get('ALERTS_FAILURE_THRESHOLD', '2'),
+            'ALERT_RESOURCE_FAILURE_THRESHOLD' => $get('ALERT_RESOURCE_FAILURE_THRESHOLD', '5'),
+            'ALERTS_COOLDOWN_SECONDS' => $get('ALERTS_COOLDOWN_SECONDS', '1800'),
+            'ALERT_CPU_WARNING_PERCENT' => $get('ALERT_CPU_WARNING_PERCENT', '80'),
+            'ALERT_CPU_CRITICAL_PERCENT' => $get('ALERT_CPU_CRITICAL_PERCENT', '95'),
+            'ALERT_RAM_WARNING_PERCENT' => $get('ALERT_RAM_WARNING_PERCENT', '80'),
+            'ALERT_RAM_CRITICAL_PERCENT' => $get('ALERT_RAM_CRITICAL_PERCENT', '95'),
+            'ALERT_DISK_WARNING_PERCENT' => $get('ALERT_DISK_WARNING_PERCENT', '80'),
+            'ALERT_DISK_CRITICAL_PERCENT' => $get('ALERT_DISK_CRITICAL_PERCENT', '90'),
+            'ALERT_WATCHDOG_RESTART_LOOKBACK_SECONDS' => $get('ALERT_WATCHDOG_RESTART_LOOKBACK_SECONDS', '900'),
+            'ALERT_HANDSHAKE_STALE_SECONDS' => $get('ALERT_HANDSHAKE_STALE_SECONDS', '1800'),
+            'ALERT_HANDSHAKE_STALE_PERCENT' => $get('ALERT_HANDSHAKE_STALE_PERCENT', '70'),
+            'ALERT_HANDSHAKE_MIN_PEERS' => $get('ALERT_HANDSHAKE_MIN_PEERS', '3'),
+            'TELEGRAM_ALERTS_ENABLED' => $get('TELEGRAM_ALERTS_ENABLED', '0'),
+            'TELEGRAM_CHAT_ID' => $get('TELEGRAM_CHAT_ID', ''),
+            'telegram_token_set' => trim($get('TELEGRAM_BOT_TOKEN', '')) !== '',
+            'EMAIL_ALERTS_ENABLED' => $get('EMAIL_ALERTS_ENABLED', '0'),
+            'ALERT_EMAIL_TO' => $get('ALERT_EMAIL_TO', ''),
+            'SMTP_HOST' => $get('SMTP_HOST', ''),
+            'SMTP_PORT' => $get('SMTP_PORT', '587'),
+            'SMTP_USERNAME' => $get('SMTP_USERNAME', ''),
+            'SMTP_FROM' => $get('SMTP_FROM', ''),
+            'SMTP_FROM_NAME' => $get('SMTP_FROM_NAME', 'Amnezia VPN Panel'),
+            'SMTP_TLS' => $get('SMTP_TLS', '1'),
+            'smtp_password_set' => trim($get('SMTP_PASSWORD', '')) !== '',
+        ];
+    }
+
+    private function getAlertStates(): array {
+        try {
+            $stmt = $this->pdo->query("
+                SELECT a.*, s.name AS server_name
+                FROM alert_states a
+                LEFT JOIN vpn_servers s ON s.id = a.server_id
+                ORDER BY COALESCE(a.last_seen_at, a.first_seen_at, a.created_at) DESC
+                LIMIT 50
+            ");
+            return $stmt->fetchAll();
+        } catch (Throwable $e) {
+            return [];
+        }
+    }
+
+    public function saveAlerts(): void {
+        $user = Auth::user();
+        if (($user['role'] ?? '') !== 'admin') {
+            http_response_code(403);
+            echo 'Forbidden';
+            return;
+        }
+
+        $envPath = __DIR__ . '/../.env';
+        if (!is_file($envPath) || !is_writable($envPath)) {
+            $_SESSION['settings_error'] = '.env недоступен для записи';
+            header('Location: /settings#alerts');
+            exit;
+        }
+
+        $checkboxKeys = [
+            'ALERTS_ENABLED',
+            'TELEGRAM_ALERTS_ENABLED',
+            'EMAIL_ALERTS_ENABLED',
+            'SMTP_TLS',
+        ];
+        $textKeys = [
+            'ALERTS_FAILURE_THRESHOLD',
+            'ALERT_RESOURCE_FAILURE_THRESHOLD',
+            'ALERTS_COOLDOWN_SECONDS',
+            'ALERT_CPU_WARNING_PERCENT',
+            'ALERT_CPU_CRITICAL_PERCENT',
+            'ALERT_RAM_WARNING_PERCENT',
+            'ALERT_RAM_CRITICAL_PERCENT',
+            'ALERT_DISK_WARNING_PERCENT',
+            'ALERT_DISK_CRITICAL_PERCENT',
+            'ALERT_WATCHDOG_RESTART_LOOKBACK_SECONDS',
+            'ALERT_HANDSHAKE_STALE_SECONDS',
+            'ALERT_HANDSHAKE_STALE_PERCENT',
+            'ALERT_HANDSHAKE_MIN_PEERS',
+            'TELEGRAM_CHAT_ID',
+            'ALERT_EMAIL_TO',
+            'SMTP_HOST',
+            'SMTP_PORT',
+            'SMTP_USERNAME',
+            'SMTP_FROM',
+            'SMTP_FROM_NAME',
+        ];
+        $secretKeys = [
+            'TELEGRAM_BOT_TOKEN',
+            'SMTP_PASSWORD',
+        ];
+
+        $updates = [];
+        foreach ($checkboxKeys as $key) {
+            $updates[$key] = isset($_POST[$key]) ? '1' : '0';
+        }
+        foreach ($textKeys as $key) {
+            $updates[$key] = trim((string) ($_POST[$key] ?? ''));
+        }
+        foreach ($secretKeys as $key) {
+            $value = trim((string) ($_POST[$key] ?? ''));
+            if ($value !== '') {
+                $updates[$key] = $value;
+            }
+        }
+
+        try {
+            $this->writeEnvValues($envPath, $updates);
+            foreach ($updates as $key => $value) {
+                @putenv($key . '=' . $value);
+            }
+            $this->restartMetricsCollector();
+        } catch (Throwable $e) {
+            $_SESSION['settings_error'] = $e->getMessage();
+            header('Location: /settings#alerts');
+            exit;
+        }
+
+        $_SESSION['settings_success'] = 'Настройки оповещений сохранены';
+        header('Location: /settings#alerts');
+        exit;
+    }
+
+    public function testAlerts(): void {
+        header('Content-Type: application/json');
+
+        $user = Auth::user();
+        if (($user['role'] ?? '') !== 'admin') {
+            http_response_code(403);
+            echo json_encode(['success' => false, 'message' => 'Forbidden']);
+            return;
+        }
+
+        $payload = json_decode(file_get_contents('php://input'), true);
+        $channel = is_array($payload) ? (string) ($payload['channel'] ?? 'all') : (string) ($_POST['channel'] ?? 'all');
+        if (!in_array($channel, ['telegram', 'email', 'all'], true)) {
+            $channel = 'all';
+        }
+
+        try {
+            $alerts = new AlertManager($this->pdo);
+            $ok = $alerts->sendTest($channel);
+            echo json_encode([
+                'success' => $ok,
+                'message' => $ok ? 'Тестовое уведомление отправлено' : 'Не удалось отправить уведомление. Проверьте настройки канала.',
+            ]);
+        } catch (Throwable $e) {
+            http_response_code(500);
+            echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+        }
+    }
+
+    private function writeEnvValues(string $envPath, array $updates): void {
+        $lines = file($envPath, FILE_IGNORE_NEW_LINES);
+        if ($lines === false) {
+            throw new RuntimeException('Не удалось прочитать .env');
+        }
+
+        $seen = [];
+        foreach ($lines as $i => $line) {
+            if (!preg_match('/^([A-Z0-9_]+)=/', trim($line), $m)) {
+                continue;
+            }
+            $key = $m[1];
+            if (!array_key_exists($key, $updates)) {
+                continue;
+            }
+            $lines[$i] = $key . '=' . $this->encodeEnvValue((string) $updates[$key]);
+            $seen[$key] = true;
+        }
+
+        foreach ($updates as $key => $value) {
+            if (!isset($seen[$key])) {
+                $lines[] = $key . '=' . $this->encodeEnvValue((string) $value);
+            }
+        }
+
+        $content = implode("\n", $lines) . "\n";
+        if (file_put_contents($envPath, $content, LOCK_EX) === false) {
+            throw new RuntimeException('Не удалось записать .env');
+        }
+    }
+
+    private function encodeEnvValue(string $value): string {
+        if ($value === '') {
+            return '';
+        }
+        if (preg_match('/[\s#"\'\\\\]/', $value)) {
+            return '"' . str_replace(['\\', '"'], ['\\\\', '\\"'], $value) . '"';
+        }
+        return $value;
+    }
+
+    private function restartMetricsCollector(): void {
+        $monitorScript = realpath(__DIR__ . '/../bin/monitor_metrics.sh');
+        if (!$monitorScript || !is_file($monitorScript)) {
+            return;
+        }
+
+        $cmd = sprintf(
+            '(pkill -f %s >/dev/null 2>&1 || true; sleep 1; bash %s >/dev/null 2>&1) &',
+            escapeshellarg('^/usr/local/bin/php /var/www/html/bin/collect_metrics.php$'),
+            escapeshellarg($monitorScript)
+        );
+        @exec($cmd);
     }
     
     public function saveApiKey() {

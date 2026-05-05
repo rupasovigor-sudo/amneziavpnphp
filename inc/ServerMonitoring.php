@@ -18,6 +18,7 @@ class ServerMonitoring
     private bool $xrayStatsFetched = false;
     private array $aivpnStatsCache = ['by_name' => [], 'by_id' => [], 'by_ip' => []];
     private bool $aivpnStatsFetched = false;
+    private array $wireguardDumpCache = [];
 
     /**
      * Fetch all X-ray user stats in one batch
@@ -89,9 +90,38 @@ class ServerMonitoring
     {
         // Combine all metric commands into one SSH call
         // Use semicolons instead of && to ensure all commands execute even if one fails
+        $cpuCommand = <<<'SH'
+tmp="/tmp/amnezia_cpu_stat_$$"
+awk 'NR==1 {
+  idle=$5+$6
+  total=0
+  for (i=2; i<=NF; i++) total+=$i
+  print idle, total
+}' /proc/stat > "$tmp"
+sleep 1
+awk -v file="$tmp" 'BEGIN {
+  getline line < file
+  split(line, first, " ")
+  idle1=first[1]
+  total1=first[2]
+}
+NR==1 {
+  idle2=$5+$6
+  total2=0
+  for (i=2; i<=NF; i++) total2+=$i
+  delta_total=total2-total1
+  delta_idle=idle2-idle1
+  if (delta_total > 0) {
+    printf "%.1f\n", 100 * (delta_total - delta_idle) / delta_total
+  } else {
+    print "0.0"
+  }
+}' /proc/stat
+rm -f "$tmp"
+SH;
         $combinedCmd = implode('; ', [
             "echo CPU_START",
-            "top -bn1 | grep 'Cpu(s)' | sed 's/.*, *\\([0-9.]*\\)%* id.*/\\1/' | awk '{print 100 - \$1}'",
+            $cpuCommand,
             "echo RAM_START",
             "free -m | grep Mem | awk '{print \$3, \$2}'",
             "echo DISK_START",
@@ -203,6 +233,192 @@ class ServerMonitoring
         $this->saveServerMetrics($metrics);
 
         return $metrics;
+    }
+
+    /**
+     * Collect lightweight service health checks for alerting.
+     *
+     * @return array<string, array{ok: bool, severity: string, message: string}>
+     */
+    public function collectHealthChecks(): array
+    {
+        $checks = [];
+        $containerName = trim((string) ($this->serverData['container_name'] ?? ''));
+        $vpnPort = (int) ($this->serverData['vpn_port'] ?? 0);
+
+        $probe = $this->execSSH('echo __AMNEZIA_SSH_OK__');
+        $sshOk = is_string($probe) && str_contains($probe, '__AMNEZIA_SSH_OK__');
+        $checks['ssh'] = [
+            'ok' => $sshOk,
+            'severity' => 'critical',
+            'message' => $sshOk ? 'SSH доступен' : 'SSH недоступен или команда не вернула ответ',
+        ];
+
+        if (!$sshOk || $containerName === '') {
+            return $checks;
+        }
+
+        $containerArg = escapeshellarg($containerName);
+        $script = <<<'SH'
+	CONTAINER="$1"
+	VPN_PORT="$2"
+	WATCHDOG_LOOKBACK="$3"
+	HANDSHAKE_STALE_SECONDS="$4"
+
+running="$(docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null || echo missing)"
+echo "container_running=${running}"
+
+if [ "$running" != "true" ]; then
+  exit 0
+fi
+
+is_wg=0
+case "$CONTAINER" in
+  *awg*|*wireguard*) is_wg=1 ;;
+esac
+echo "is_wireguard=${is_wg}"
+
+if [ "$is_wg" = "1" ]; then
+  iface=""
+  for candidate in awg0 wg0; do
+    if docker exec "$CONTAINER" sh -lc "ip link show '$candidate' >/dev/null 2>&1"; then
+      iface="$candidate"
+      break
+    fi
+  done
+
+  echo "wg_iface=${iface}"
+	  if [ -n "$iface" ]; then
+	    listen_port="$(docker exec "$CONTAINER" sh -lc "awg show '$iface' listen-port 2>/dev/null || wg show '$iface' listen-port 2>/dev/null || true" | head -1)"
+	    dump="$(docker exec "$CONTAINER" sh -lc "awg show '$iface' dump 2>/dev/null || wg show '$iface' dump 2>/dev/null || true")"
+	    peer_count="$(printf '%s\n' "$dump" | awk 'NR > 1 {count++} END {print count+0}')"
+	    recent_peer_count="$(printf '%s\n' "$dump" | awk -v now="$(date +%s)" -v stale="$HANDSHAKE_STALE_SECONDS" 'NR > 1 && $5 ~ /^[0-9]+$/ && $5 > 0 && (now - $5) <= stale {count++} END {print count+0}')"
+	    echo "wg_listen_port=${listen_port}"
+	    echo "wg_peer_count=${peer_count}"
+	    echo "wg_recent_peer_count=${recent_peer_count}"
+	  fi
+
+	  if [ -n "$VPN_PORT" ] && [ "$VPN_PORT" != "0" ]; then
+	    drops="$(docker exec "$CONTAINER" sh -lc "iptables -L INPUT -n --line-numbers 2>/dev/null | awk -v port='dpt:${VPN_PORT}' '\$2 == \"DROP\" && (\$3 == \"udp\" || \$3 == \"17\") && index(\$0, port) {count++} END {print count+0}'" 2>/dev/null || echo 0)"
+	    echo "vpn_port_drop_rules=${drops}"
+	  fi
+
+	  if [ -n "$WATCHDOG_LOOKBACK" ] && [ "$WATCHDOG_LOOKBACK" != "0" ] && [ -r /var/log/amnezia-awg2-watchdog.log ]; then
+	    latest="$(grep ' RESTART:' /var/log/amnezia-awg2-watchdog.log 2>/dev/null | tail -1 || true)"
+	    if [ -n "$latest" ]; then
+	      ts="$(printf '%s' "$latest" | cut -c1-19)"
+	      epoch="$(date -d "$ts" +%s 2>/dev/null || echo 0)"
+	      now="$(date +%s)"
+	      if [ "$epoch" -gt 0 ]; then
+	        age=$((now - epoch))
+	        echo "watchdog_restart_age=${age}"
+	        echo "watchdog_restart_line=${latest}"
+	      fi
+	    fi
+	  fi
+	fi
+SH;
+
+        $watchdogLookbackSeconds = max(0, (int) Config::get('ALERT_WATCHDOG_RESTART_LOOKBACK_SECONDS', '900'));
+        $handshakeStaleSeconds = max(60, (int) Config::get('ALERT_HANDSHAKE_STALE_SECONDS', '1800'));
+        $cmd = 'bash -s -- ' . $containerArg . ' ' . escapeshellarg((string) $vpnPort) . ' ' . escapeshellarg((string) $watchdogLookbackSeconds) . ' ' . escapeshellarg((string) $handshakeStaleSeconds) . ' <<' . "'AMNEZIA_HEALTH_SH'\n" . $script . "\nAMNEZIA_HEALTH_SH";
+        $output = $this->execSSH($cmd);
+        $values = $this->parseHealthOutput((string) $output);
+
+        $containerRunning = ($values['container_running'] ?? '') === 'true';
+        $checks['container_running'] = [
+            'ok' => $containerRunning,
+            'severity' => 'critical',
+            'message' => $containerRunning
+                ? "Контейнер {$containerName} запущен"
+                : "Контейнер {$containerName} не запущен или не найден",
+        ];
+
+        if (($values['is_wireguard'] ?? '0') === '1') {
+            $iface = trim((string) ($values['wg_iface'] ?? ''));
+            $checks['wireguard_interface'] = [
+                'ok' => $iface !== '',
+                'severity' => 'critical',
+                'message' => $iface !== '' ? "Интерфейс {$iface} существует" : 'WireGuard/AWG интерфейс awg0/wg0 не найден',
+            ];
+
+            if ($iface !== '' && $vpnPort > 0) {
+                $listenPort = (int) ($values['wg_listen_port'] ?? 0);
+                $checks['wireguard_port'] = [
+                    'ok' => $listenPort === $vpnPort,
+                    'severity' => 'critical',
+                    'message' => $listenPort === $vpnPort
+                        ? "WireGuard/AWG слушает порт {$vpnPort}"
+                        : "WireGuard/AWG слушает порт {$listenPort}, в панели указан {$vpnPort}",
+                ];
+            }
+
+            if ($vpnPort > 0) {
+                $drops = (int) ($values['vpn_port_drop_rules'] ?? 0);
+                $checks['wireguard_input_drops'] = [
+                    'ok' => $drops === 0,
+                    'severity' => 'critical',
+                    'message' => $drops === 0
+                        ? "DROP-правил на VPN UDP порт {$vpnPort} нет"
+                        : "Найдено DROP-правил на VPN UDP порт {$vpnPort}: {$drops}",
+                ];
+            }
+
+            $peerCount = (int) ($values['wg_peer_count'] ?? 0);
+            $recentPeerCount = (int) ($values['wg_recent_peer_count'] ?? 0);
+            $minPeers = max(1, (int) Config::get('ALERT_HANDSHAKE_MIN_PEERS', '3'));
+            $stalePercentThreshold = max(1, min(100, (float) Config::get('ALERT_HANDSHAKE_STALE_PERCENT', '70')));
+            if ($peerCount >= $minPeers) {
+                $staleCount = max(0, $peerCount - $recentPeerCount);
+                $stalePercent = $peerCount > 0 ? ($staleCount / $peerCount * 100) : 0.0;
+                $checks['wireguard_mass_stale_handshake'] = [
+                    'ok' => $stalePercent < $stalePercentThreshold,
+                    'severity' => $stalePercent >= 90 ? 'critical' : 'warning',
+                    'message' => sprintf(
+                        'Свежий handshake за %ds: %d/%d peers, stale %.1f%% (порог %.1f%%)',
+                        $handshakeStaleSeconds,
+                        $recentPeerCount,
+                        $peerCount,
+                        $stalePercent,
+                        $stalePercentThreshold
+                    ),
+                ];
+            }
+
+            $restartAge = isset($values['watchdog_restart_age']) ? (int) $values['watchdog_restart_age'] : null;
+            if ($restartAge !== null && $watchdogLookbackSeconds > 0) {
+                $line = trim((string) ($values['watchdog_restart_line'] ?? ''));
+                $checks['watchdog_restart_recent'] = [
+                    'ok' => $restartAge > $watchdogLookbackSeconds,
+                    'severity' => 'warning',
+                    'message' => $restartAge > $watchdogLookbackSeconds
+                        ? 'Watchdog restart в недавнем окне не найден'
+                        : "Watchdog перезапускал контейнер {$restartAge}s назад" . ($line !== '' ? ": {$line}" : ''),
+                ];
+            }
+        }
+
+        return $checks;
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function parseHealthOutput(string $output): array
+    {
+        $values = [];
+        foreach (preg_split('/\r?\n/', $output) ?: [] as $line) {
+            if (!str_contains($line, '=')) {
+                continue;
+            }
+            [$key, $value] = explode('=', $line, 2);
+            $key = trim($key);
+            if ($key !== '') {
+                $values[$key] = trim($value);
+            }
+        }
+
+        return $values;
     }
 
     /**
@@ -411,20 +627,13 @@ class ServerMonitoring
                 $bytesSent = (int) ($currentDbStats['bytes_sent'] ?? 0);
                 $bytesReceived = (int) ($currentDbStats['bytes_received'] ?? 0);
             } else {
-            // wg show all dump format (tab-separated):
-            // $1=interface $2=pubkey $3=psk $4=endpoint $5=allowed-ips $6=latest-handshake $7=rx-bytes $8=tx-bytes $9=keepalive
-            // rx-bytes = bytes received by server = client's upload (bytes_sent)
-            // tx-bytes = bytes transmitted by server = client's download (bytes_received)
-            $cmd = "docker exec {$containerName} wg show all dump | grep '{$publicKey}' | awk '{print \$6, \$7, \$8}'";
-            $result = $this->execSSH($cmd);
+                $peerStats = $this->getWireguardPeerStats($containerName, $publicKey);
 
-            if ($result) {
-                $parts = explode(' ', trim($result));
-                if (count($parts) >= 3) {
-                    $handshakeTs = (int)$parts[0];
-                    $bytesSent = (int)$parts[1];     // server's rx = client's upload
-                    $bytesReceived = (int)$parts[2]; // server's tx = client's download
-                    
+                if ($peerStats) {
+                    $handshakeTs = (int) $peerStats['handshake_ts'];
+                    $bytesSent = (int) $peerStats['bytes_sent'];
+                    $bytesReceived = (int) $peerStats['bytes_received'];
+
                     // Update last_handshake if there was a recent handshake
                     if ($handshakeTs > 0) {
                         $handshakeDate = date('Y-m-d H:i:s', $handshakeTs);
@@ -432,7 +641,6 @@ class ServerMonitoring
                         $stmtHs->execute([$handshakeDate, $client['id']]);
                     }
                 }
-            }
             }
         }
 
@@ -511,19 +719,32 @@ class ServerMonitoring
     {
         $db = DB::conn();
 
+        $stmtExists = $db->prepare('SELECT id FROM vpn_clients WHERE id = ? LIMIT 1');
+        $stmtExists->execute([$clientId]);
+        if (!$stmtExists->fetchColumn()) {
+            return;
+        }
+
         $stmt = $db->prepare("
             INSERT INTO client_metrics 
             (client_id, bytes_sent, bytes_received, speed_up_kbps, speed_down_kbps)
             VALUES (?, ?, ?, ?, ?)
         ");
 
-        $stmt->execute([
-            $clientId,
-            $stats['bytes_sent'],
-            $stats['bytes_received'],
-            $stats['speed_up_kbps'],
-            $stats['speed_down_kbps'],
-        ]);
+        try {
+            $stmt->execute([
+                $clientId,
+                $stats['bytes_sent'],
+                $stats['bytes_received'],
+                $stats['speed_up_kbps'],
+                $stats['speed_down_kbps'],
+            ]);
+        } catch (PDOException $e) {
+            if ($e->getCode() === '23000') {
+                return;
+            }
+            throw $e;
+        }
 
         // Update vpn_clients table with latest stats (don't touch last_handshake - it's set separately for WG/AWG)
         $stmt = $db->prepare("
@@ -606,6 +827,27 @@ class ServerMonitoring
     }
 
     /**
+     * Get metrics for all clients on a server in one query.
+     */
+    public static function getClientMetricsForServer(int $serverId, int $hours = 24): array
+    {
+        $db = DB::conn();
+
+        $stmt = $db->prepare("
+            SELECT cm.*
+            FROM client_metrics cm
+            INNER JOIN vpn_clients vc ON vc.id = cm.client_id
+            WHERE vc.server_id = ?
+            AND cm.collected_at >= DATE_SUB(NOW(), INTERVAL ? HOUR)
+            ORDER BY cm.client_id ASC, cm.collected_at ASC
+        ");
+
+        $stmt->execute([$serverId, $hours]);
+
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    /**
      * Clean old metrics (older than 24 hours)
      */
     public static function cleanOldMetrics(): void
@@ -631,8 +873,17 @@ class ServerMonitoring
         $sshKey = $this->serverData['ssh_key'] ?? '';
         $password = $this->serverData['password'] ?? '';
 
-        $sshOptions = '-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o LogLevel=ERROR';
+        $timeoutSeconds = max(5, (int) Config::get('AMNEZIA_SSH_COMMAND_TIMEOUT_SECONDS', '20'));
+        $sshOptions = [
+            '-o', 'StrictHostKeyChecking=no',
+            '-o', 'UserKnownHostsFile=/dev/null',
+            '-o', 'ConnectTimeout=10',
+            '-o', 'ServerAliveInterval=5',
+            '-o', 'ServerAliveCountMax=2',
+            '-o', 'LogLevel=ERROR',
+        ];
         $keyFile = '';
+        $env = null;
 
         if (!empty($sshKey)) {
             // SSH key authentication
@@ -645,30 +896,22 @@ class ServerMonitoring
             }
             file_put_contents($keyFile, $sshKey);
             chmod($keyFile, 0600);
-            $sshOptions .= " -i {$keyFile} -o IdentitiesOnly=yes -o PubkeyAuthentication=yes -o PreferredAuthentications=publickey";
-            $sshCmd = sprintf(
-                "ssh -p %d %s %s@%s %s 2>/dev/null",
-                $port,
+            $command = array_merge(
+                ['timeout', '--kill-after=5s', $timeoutSeconds . 's', 'ssh', '-p', (string) $port],
                 $sshOptions,
-                $username,
-                $host,
-                escapeshellarg($cmd)
+                ['-i', $keyFile, '-o', 'IdentitiesOnly=yes', '-o', 'PubkeyAuthentication=yes', '-o', 'PreferredAuthentications=publickey', "{$username}@{$host}", $cmd]
             );
         } else {
             // Password authentication
-            $sshOptions .= " -o PreferredAuthentications=password -o PubkeyAuthentication=no";
-            $sshCmd = sprintf(
-                "sshpass -p %s ssh -p %d %s %s@%s %s 2>/dev/null",
-                escapeshellarg($password),
-                $port,
+            $env = array_merge(is_array(getenv()) ? getenv() : [], ['SSHPASS' => $password]);
+            $command = array_merge(
+                ['timeout', '--kill-after=5s', $timeoutSeconds . 's', 'sshpass', '-e', 'ssh', '-p', (string) $port],
                 $sshOptions,
-                $username,
-                $host,
-                escapeshellarg($cmd)
+                ['-o', 'PreferredAuthentications=password', '-o', 'PubkeyAuthentication=no', "{$username}@{$host}", $cmd]
             );
         }
 
-        $output = shell_exec($sshCmd);
+        $output = $this->runProcess($command, $env);
 
         // Clean up temp key file
         if ($keyFile && file_exists($keyFile)) {
@@ -676,6 +919,25 @@ class ServerMonitoring
         }
 
         return $output ?: null;
+    }
+
+    private function runProcess(array $command, ?array $env = null): ?string
+    {
+        $descriptors = [
+            1 => ['pipe', 'w'],
+            2 => ['file', '/dev/null', 'w'],
+        ];
+
+        $process = proc_open($command, $descriptors, $pipes, null, $env);
+        if (!is_resource($process)) {
+            return null;
+        }
+
+        $output = stream_get_contents($pipes[1]);
+        fclose($pipes[1]);
+        proc_close($process);
+
+        return is_string($output) && $output !== '' ? $output : null;
     }
 
     /**
@@ -872,6 +1134,56 @@ class ServerMonitoring
         }
 
         return $default;
+    }
+
+    private function getWireguardPeerStats(string $containerName, string $publicKey): ?array
+    {
+        $containerName = trim($containerName);
+        $publicKey = trim($publicKey);
+
+        if ($containerName === '' || $publicKey === '') {
+            return null;
+        }
+
+        if (!array_key_exists($containerName, $this->wireguardDumpCache)) {
+            $this->wireguardDumpCache[$containerName] = $this->fetchWireguardDump($containerName);
+        }
+
+        return $this->wireguardDumpCache[$containerName][$publicKey] ?? null;
+    }
+
+    private function fetchWireguardDump(string $containerName): array
+    {
+        $containerArg = escapeshellarg($containerName);
+        $cmd = "docker exec {$containerArg} wg show all dump 2>/dev/null || docker exec {$containerArg} awg show all dump 2>/dev/null";
+        $result = $this->execSSH($cmd);
+
+        if (!$result || trim($result) === '') {
+            return [];
+        }
+
+        $peers = [];
+        foreach (explode("\n", trim($result)) as $line) {
+            $parts = preg_split('/\s+/', trim($line));
+            if (!$parts || count($parts) < 8) {
+                continue;
+            }
+
+            // wg show all dump:
+            // interface pubkey psk endpoint allowed-ips latest-handshake rx-bytes tx-bytes keepalive
+            $peerKey = (string) $parts[1];
+            if ($peerKey === '' || $peerKey === '(none)') {
+                continue;
+            }
+
+            $peers[$peerKey] = [
+                'handshake_ts' => (int) $parts[5],
+                'bytes_sent' => (int) $parts[6],
+                'bytes_received' => (int) $parts[7],
+            ];
+        }
+
+        return $peers;
     }
 
     /**
@@ -1081,6 +1393,40 @@ class ServerMonitoring
                 $rmCmd = "docker exec $containerName iptables -D INPUT $ruleNum 2>/dev/null || true";
                 $this->execSSH($rmCmd);
             }
+        }
+    }
+
+    /**
+     * Remove DROP rules that were created by the legacy AWG single-endpoint enforcement.
+     */
+    public function clearAwgSingleIpBlocks(): void
+    {
+        $containerName = trim((string) ($this->serverData['container_name'] ?? ''));
+        if ($containerName === '' || (strpos($containerName, 'awg') === false && strpos($containerName, 'wireguard') === false)) {
+            return;
+        }
+
+        $wgPort = (int) ($this->serverData['vpn_port'] ?? 51820);
+        if ($wgPort <= 0) {
+            $wgPort = 51820;
+        }
+
+        $containerArg = escapeshellarg($containerName);
+        $cmd = "docker exec -e WG_PORT={$wgPort} {$containerArg} sh -lc " . escapeshellarg(<<<'SH'
+set -e
+removed=0
+while :; do
+  rule="$(iptables -L INPUT -n --line-numbers 2>/dev/null | awk -v port="dpt:${WG_PORT}" '$2 == "DROP" && ($3 == "udp" || $3 == "17") && index($0, port) {print $1; exit}')"
+  [ -n "$rule" ] || break
+  iptables -D INPUT "$rule" 2>/dev/null || break
+  removed=$((removed + 1))
+done
+echo "$removed"
+SH);
+
+        $result = trim((string) $this->execSSH($cmd));
+        if ($result !== '' && $result !== '0') {
+            error_log("[AWG Enforcement] Removed {$result} legacy endpoint block rule(s) on {$containerName}:{$wgPort}");
         }
     }
 

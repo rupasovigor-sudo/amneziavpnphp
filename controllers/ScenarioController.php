@@ -6,6 +6,10 @@
  * Allows administrators to view, create, edit, and delete VPN protocol deployment scenarios
  */
 class ScenarioController {
+    private function uploadMaxBytes(): int {
+        $value = Config::get('AMNEZIA_UPLOAD_MAX_BYTES', (string) (20 * 1024 * 1024));
+        return is_numeric($value) ? max(1, (int) $value) : 20 * 1024 * 1024;
+    }
 
     /**
      * List all protocol scenarios
@@ -328,6 +332,16 @@ class ScenarioController {
             echo json_encode([
                 'success' => false,
                 'message' => 'No file provided'
+            ]);
+            return;
+        }
+
+        if ((int) ($file['size'] ?? 0) > $this->uploadMaxBytes()) {
+            header('Content-Type: application/json');
+            http_response_code(413);
+            echo json_encode([
+                'success' => false,
+                'message' => 'File is too large. Maximum allowed size is ' . round($this->uploadMaxBytes() / 1024 / 1024, 1) . ' MB.'
             ]);
             return;
         }

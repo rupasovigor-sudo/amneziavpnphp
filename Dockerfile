@@ -65,6 +65,10 @@ service cron start\n\
 mkdir -p /var/www/html/backups /var/www/html/logs\n\
 chown www-data:www-data /var/www/html/backups /var/www/html/logs\n\
 chmod 775 /var/www/html/backups /var/www/html/logs\n\
+if [ -f /var/www/html/.env ]; then\n\
+  chgrp www-data /var/www/html/.env || true\n\
+  chmod 664 /var/www/html/.env || true\n\
+fi\n\
 # Ensure www-data can talk to host docker socket if mounted\n\
 if [ -S /var/run/docker.sock ]; then\n\
   SOCK_GID=$(stat -c %g /var/run/docker.sock)\n\

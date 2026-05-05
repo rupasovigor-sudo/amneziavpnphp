@@ -7,6 +7,7 @@ if (php_sapi_name() !== 'cli') {
 }
 
 require_once __DIR__ . '/../inc/Config.php';
+Config::load(__DIR__ . '/../.env');
 require_once __DIR__ . '/../inc/DB.php';
 require_once __DIR__ . '/../inc/VpnServer.php';
 
