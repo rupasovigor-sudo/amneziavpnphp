@@ -6,6 +6,7 @@
 class Translator {
     private static ?string $currentLanguage = null;
     private static array $translations = [];
+    private static array $fallback = [];
     private static array $supportedLanguages = [];
     
     /**
@@ -82,9 +83,19 @@ class Translator {
         $pdo = DB::conn();
         $stmt = $pdo->prepare('SELECT CONCAT(category, ".", key_name) as trans_key, translation FROM translations WHERE locale = ?');
         $stmt->execute([$languageCode]);
-        
+
         $translations = $stmt->fetchAll(PDO::FETCH_KEY_PAIR);
         self::$translations = $translations ?: [];
+
+        // English fallback so a key missing in a partially-translated locale
+        // degrades to English instead of showing the raw key.
+        if ($languageCode === 'en') {
+            self::$fallback = self::$translations;
+        } elseif (empty(self::$fallback)) {
+            $stmt = $pdo->prepare('SELECT CONCAT(category, ".", key_name) as trans_key, translation FROM translations WHERE locale = ?');
+            $stmt->execute(['en']);
+            self::$fallback = $stmt->fetchAll(PDO::FETCH_KEY_PAIR) ?: [];
+        }
     }
     
     /**
@@ -95,8 +106,8 @@ class Translator {
      * @return string Translated text
      */
     public static function translate(string $key, array $params = []): string {
-        $translation = self::$translations[$key] ?? $key;
-        
+        $translation = self::$translations[$key] ?? self::$fallback[$key] ?? $key;
+
         if (!empty($params)) {
             return sprintf($translation, ...$params);
         }
