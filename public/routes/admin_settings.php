@@ -374,7 +374,7 @@ Router::get('/api/clients/overlimit', function () {
 Router::get('/settings', function () {
     requireAuth();
 
-    require_once __DIR__ . '/../controllers/SettingsController.php';
+    require_once __DIR__ . '/../../controllers/SettingsController.php';
     $controller = new SettingsController();
     $controller->index();
 });
@@ -401,7 +401,7 @@ Router::get('/settings/protocols-management', function () {
 });
 Router::get('/settings/protocols/new', function () {
     requireAdmin();
-    require_once __DIR__ . '/../controllers/ProtocolManagementController.php';
+    require_once __DIR__ . '/../../controllers/ProtocolManagementController.php';
     $controller = new ProtocolManagementController();
     $_GET['new'] = 1;
     $controller->index();
@@ -409,7 +409,7 @@ Router::get('/settings/protocols/new', function () {
 
 Router::get('/settings/protocols/{id}/edit', function ($params) {
     requireAdmin();
-    require_once __DIR__ . '/../controllers/ProtocolManagementController.php';
+    require_once __DIR__ . '/../../controllers/ProtocolManagementController.php';
     $controller = new ProtocolManagementController();
     $_GET['id'] = $params['id'];
     $controller->index();
@@ -417,7 +417,7 @@ Router::get('/settings/protocols/{id}/edit', function ($params) {
 
 Router::get('/settings/protocols/{id}/template', function ($params) {
     requireAdmin();
-    require_once __DIR__ . '/../controllers/ProtocolManagementController.php';
+    require_once __DIR__ . '/../../controllers/ProtocolManagementController.php';
     $controller = new ProtocolManagementController();
     // This will render the template editor component
     $_GET['id'] = $params['id'];
@@ -428,7 +428,7 @@ Router::get('/settings/protocols/{id}/template', function ($params) {
 // POST route to save/update protocol
 Router::post('/settings/protocols/save', function () {
     requireAdmin();
-    require_once __DIR__ . '/../controllers/ProtocolManagementController.php';
+    require_once __DIR__ . '/../../controllers/ProtocolManagementController.php';
     $controller = new ProtocolManagementController();
     $controller->save();
 });
@@ -436,56 +436,56 @@ Router::post('/settings/protocols/save', function () {
 // API ROUTES FOR PROTOCOLS
 Router::get('/api/protocols', function () {
     requireAdmin();
-    require_once __DIR__ . '/../controllers/ProtocolManagementController.php';
+    require_once __DIR__ . '/../../controllers/ProtocolManagementController.php';
     $controller = new ProtocolManagementController();
     $controller->apiGetProtocols();
 });
 
 Router::get('/api/protocols/{id}', function ($params) {
     requireAdmin();
-    require_once __DIR__ . '/../controllers/ProtocolManagementController.php';
+    require_once __DIR__ . '/../../controllers/ProtocolManagementController.php';
     $controller = new ProtocolManagementController();
     $controller->apiGetProtocol((int) $params['id']);
 });
 
 Router::post('/api/protocols', function () {
     requireAdmin();
-    require_once __DIR__ . '/../controllers/ProtocolManagementController.php';
+    require_once __DIR__ . '/../../controllers/ProtocolManagementController.php';
     $controller = new ProtocolManagementController();
     $controller->apiCreateProtocol();
 });
 
 Router::put('/api/protocols/{id}', function ($params) {
     requireAdmin();
-    require_once __DIR__ . '/../controllers/ProtocolManagementController.php';
+    require_once __DIR__ . '/../../controllers/ProtocolManagementController.php';
     $controller = new ProtocolManagementController();
     $controller->apiUpdateProtocol((int) $params['id']);
 });
 
 Router::delete('/api/protocols/{id}', function ($params) {
     requireAdmin();
-    require_once __DIR__ . '/../controllers/ProtocolManagementController.php';
+    require_once __DIR__ . '/../../controllers/ProtocolManagementController.php';
     $controller = new ProtocolManagementController();
     $controller->apiDeleteProtocol((int) $params['id']);
 });
 
 Router::post('/api/protocols/{id}/test-install', function ($params) {
     requireAdmin();
-    require_once __DIR__ . '/../controllers/ProtocolManagementController.php';
+    require_once __DIR__ . '/../../controllers/ProtocolManagementController.php';
     $controller = new ProtocolManagementController();
     $controller->apiTestInstallProtocol((int) $params['id']);
 });
 
 Router::get('/api/protocols/{id}/test-install/stream', function ($params) {
     requireAdmin();
-    require_once __DIR__ . '/../controllers/ProtocolManagementController.php';
+    require_once __DIR__ . '/../../controllers/ProtocolManagementController.php';
     $controller = new ProtocolManagementController();
     $controller->apiTestInstallProtocolStream((int) $params['id']);
 });
 
 Router::get('/api/protocols/{id}/test-uninstall/stream', function ($params) {
     requireAdmin();
-    require_once __DIR__ . '/../controllers/ProtocolManagementController.php';
+    require_once __DIR__ . '/../../controllers/ProtocolManagementController.php';
     $controller = new ProtocolManagementController();
     $controller->apiTestUninstallProtocolStream((int) $params['id']);
 });
@@ -493,42 +493,42 @@ Router::get('/api/protocols/{id}/test-uninstall/stream', function ($params) {
 // AI ASSISTANT ROUTES
 Router::post('/api/ai/assist', function () {
     requireAdmin();
-    require_once __DIR__ . '/../controllers/AIController.php';
+    require_once __DIR__ . '/../../controllers/AIController.php';
     $controller = new AIController();
     $controller->assist();
 });
 
 Router::get('/api/ai/models', function () {
     requireAdmin();
-    require_once __DIR__ . '/../controllers/AIController.php';
+    require_once __DIR__ . '/../../controllers/AIController.php';
     $controller = new AIController();
     $controller->getModels();
 });
 
 Router::post('/api/ai/test-model', function () {
     requireAdmin();
-    require_once __DIR__ . '/../controllers/AIController.php';
+    require_once __DIR__ . '/../../controllers/AIController.php';
     $controller = new AIController();
     $controller->testModel();
 });
 
 Router::get('/api/protocols/{id}/ai-history', function ($params) {
     requireAdmin();
-    require_once __DIR__ . '/../controllers/AIController.php';
+    require_once __DIR__ . '/../../controllers/AIController.php';
     $controller = new AIController();
     $controller->getGenerationHistory((int) $params['id']);
 });
 
 Router::post('/api/ai/generations/{id}/apply', function ($params) {
     requireAdmin();
-    require_once __DIR__ . '/../controllers/AIController.php';
+    require_once __DIR__ . '/../../controllers/AIController.php';
     $controller = new AIController();
     $controller->applyGeneration((int) $params['id']);
 });
 
 Router::get('/ai/preview/{id}', function ($params) {
     requireAdmin();
-    require_once __DIR__ . '/../controllers/AIController.php';
+    require_once __DIR__ . '/../../controllers/AIController.php';
     $controller = new AIController();
     $controller->previewGeneration((int) $params['id']);
 });
@@ -537,7 +537,7 @@ Router::get('/ai/preview/{id}', function ($params) {
 Router::post('/settings/api-key', function () {
     requireAdmin();
 
-    require_once __DIR__ . '/../controllers/SettingsController.php';
+    require_once __DIR__ . '/../../controllers/SettingsController.php';
     $controller = new SettingsController();
     $controller->saveApiKey();
 });
@@ -545,7 +545,7 @@ Router::post('/settings/api-key', function () {
 Router::post('/settings/alerts/save', function () {
     requireAdmin();
 
-    require_once __DIR__ . '/../controllers/SettingsController.php';
+    require_once __DIR__ . '/../../controllers/SettingsController.php';
     $controller = new SettingsController();
     $controller->saveAlerts();
 });
@@ -553,7 +553,7 @@ Router::post('/settings/alerts/save', function () {
 Router::post('/settings/alerts/test', function () {
     requireAdmin();
 
-    require_once __DIR__ . '/../controllers/SettingsController.php';
+    require_once __DIR__ . '/../../controllers/SettingsController.php';
     $controller = new SettingsController();
     $controller->testAlerts();
 });
@@ -562,7 +562,7 @@ Router::post('/settings/alerts/test', function () {
 Router::post('/settings/change-password', function () {
     requireAuth();
 
-    require_once __DIR__ . '/../controllers/SettingsController.php';
+    require_once __DIR__ . '/../../controllers/SettingsController.php';
     $controller = new SettingsController();
     $controller->changePassword();
 });
@@ -571,7 +571,7 @@ Router::post('/settings/change-password', function () {
 Router::post('/settings/profile', function () {
     requireAuth();
 
-    require_once __DIR__ . '/../controllers/SettingsController.php';
+    require_once __DIR__ . '/../../controllers/SettingsController.php';
     $controller = new SettingsController();
     $controller->updateProfile();
 });
@@ -580,7 +580,7 @@ Router::post('/settings/profile', function () {
 Router::post('/settings/add-user', function () {
     requireAdmin();
 
-    require_once __DIR__ . '/../controllers/SettingsController.php';
+    require_once __DIR__ . '/../../controllers/SettingsController.php';
     $controller = new SettingsController();
     $controller->addUser();
 });
@@ -589,7 +589,7 @@ Router::post('/settings/add-user', function () {
 Router::post('/settings/delete-user/{id}', function ($params) {
     requireAdmin();
 
-    require_once __DIR__ . '/../controllers/SettingsController.php';
+    require_once __DIR__ . '/../../controllers/SettingsController.php';
     $controller = new SettingsController();
     $controller->deleteUser($params['id']);
 });
@@ -604,8 +604,8 @@ Router::get('/settings/ldap', function () {
 Router::post('/settings/ldap/save', function () {
     requireAdmin();
 
-    require_once __DIR__ . '/../controllers/SettingsController.php';
-    require_once __DIR__ . '/../inc/LdapSync.php';
+    require_once __DIR__ . '/../../controllers/SettingsController.php';
+    require_once __DIR__ . '/../../inc/LdapSync.php';
     $controller = new SettingsController();
     $controller->saveLdapSettings();
 });
@@ -614,8 +614,8 @@ Router::post('/settings/ldap/save', function () {
 Router::post('/settings/ldap/test', function () {
     requireAdmin();
 
-    require_once __DIR__ . '/../controllers/SettingsController.php';
-    require_once __DIR__ . '/../inc/LdapSync.php';
+    require_once __DIR__ . '/../../controllers/SettingsController.php';
+    require_once __DIR__ . '/../../inc/LdapSync.php';
     $controller = new SettingsController();
     $controller->testLdapConnection();
 });
@@ -775,7 +775,7 @@ Router::post('/admin/scenario/import', function () {
 // List and view logs
 Router::get('/admin/logs', function () {
     requireAdmin();
-    require_once __DIR__ . '/../controllers/LogsController.php';
+    require_once __DIR__ . '/../../controllers/LogsController.php';
     $controller = new LogsController();
     $controller->index();
 });
@@ -783,7 +783,7 @@ Router::get('/admin/logs', function () {
 // Download log file
 Router::get('/admin/logs/download', function () {
     requireAdmin();
-    require_once __DIR__ . '/../controllers/LogsController.php';
+    require_once __DIR__ . '/../../controllers/LogsController.php';
     $controller = new LogsController();
     $controller->download();
 });
@@ -791,7 +791,7 @@ Router::get('/admin/logs/download', function () {
 // Delete log file
 Router::post('/admin/logs/delete', function () {
     requireAdmin();
-    require_once __DIR__ . '/../controllers/LogsController.php';
+    require_once __DIR__ . '/../../controllers/LogsController.php';
     $controller = new LogsController();
     $controller->delete();
 });
@@ -799,7 +799,7 @@ Router::post('/admin/logs/delete', function () {
 // Clear all logs
 Router::post('/admin/logs/clear-all', function () {
     requireAdmin();
-    require_once __DIR__ . '/../controllers/LogsController.php';
+    require_once __DIR__ . '/../../controllers/LogsController.php';
     $controller = new LogsController();
     $controller->clearAll();
 });
@@ -807,7 +807,7 @@ Router::post('/admin/logs/clear-all', function () {
 // Search logs
 Router::post('/admin/logs/search', function () {
     requireAdmin();
-    require_once __DIR__ . '/../controllers/LogsController.php';
+    require_once __DIR__ . '/../../controllers/LogsController.php';
     $controller = new LogsController();
     $controller->search();
 });
@@ -815,7 +815,7 @@ Router::post('/admin/logs/search', function () {
 // Get log statistics
 Router::post('/admin/logs/stats', function () {
     requireAdmin();
-    require_once __DIR__ . '/../controllers/LogsController.php';
+    require_once __DIR__ . '/../../controllers/LogsController.php';
     $controller = new LogsController();
     $controller->stats();
 });

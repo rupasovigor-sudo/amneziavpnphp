@@ -1029,7 +1029,7 @@ Router::get('/api/servers/{id}/online', function ($params) {
             return;
         }
 
-        require_once __DIR__ . '/../inc/ServerMonitoring.php';
+        require_once __DIR__ . '/../../inc/ServerMonitoring.php';
         $onlineLogins = ServerMonitoring::getOnlineClientsForServer($serverData);
 
         echo json_encode(['success' => true, 'online' => $onlineLogins]);
