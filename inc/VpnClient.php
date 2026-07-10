@@ -1413,6 +1413,27 @@ BASH;
                     error_log('Failed to remove client from server: ' . $e->getMessage());
                 }
             }
+
+            // Failover pool: the peer was synced to every member, so remove it
+            // from the other members too — otherwise it lingers as an orphan on
+            // standby members (shows up in the live-clients count, etc.).
+            $poolId = (int) ($serverData['pool_id'] ?? 0);
+            if ($poolId > 0) {
+                $homeId = (int) $this->data['server_id'];
+                $pk = (string) $this->data['public_key'];
+                $stmtM = DB::conn()->prepare('SELECT id FROM vpn_servers WHERE pool_id = ? AND id <> ?');
+                $stmtM->execute([$poolId, $homeId]);
+                foreach ($stmtM->fetchAll(PDO::FETCH_COLUMN) as $mid) {
+                    try {
+                        $md = (new VpnServer((int) $mid))->getData();
+                        if ($md && $md['status'] === 'active') {
+                            self::removeClientFromServer($md, $pk);
+                        }
+                    } catch (Throwable $e) {
+                        error_log("revoke: pool peer removal failed on server {$mid}: " . $e->getMessage());
+                    }
+                }
+            }
         }
 
         // Mark as disabled in database
