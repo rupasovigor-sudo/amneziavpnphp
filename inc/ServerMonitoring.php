@@ -371,7 +371,20 @@ SH;
         // member it was created on — so match peers by pubkey, not server_id.
         $this->refreshHandshakes();
 
-        $clients = VpnClient::listByServer($this->serverData['id']);
+        // Speed/traffic must be read from the awg0 where clients are actually
+        // connected. In a failover pool that is the ACTIVE member: collect the
+        // whole pool's clients there; standby members skip (reading their idle
+        // awg0 would overwrite the real figures with zeros).
+        $serverId = (int) ($this->serverData['id'] ?? 0);
+        $poolId = (int) ($this->serverData['pool_id'] ?? 0);
+        if ($poolId > 0) {
+            $stmt = DB::conn()->prepare('SELECT active_server_id FROM server_pools WHERE id = ?');
+            $stmt->execute([$poolId]);
+            $activeId = (int) $stmt->fetchColumn();
+            $clients = ($serverId === $activeId) ? VpnClient::listByPool($poolId) : [];
+        } else {
+            $clients = VpnClient::listByServer($serverId);
+        }
         $results = [];
 
         foreach ($clients as $client) {

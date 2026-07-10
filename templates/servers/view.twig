@@ -1119,7 +1119,7 @@ async function diagnoseClient(clientId) {
       return `${status} ${check.name}: ${check.message}`;
     });
 
-    alert(header.concat('', checks).join('\n'));
+    showToast(header.concat('', checks).join('\n'), data.checks.every(c => c.ok) ? 'success' : 'error');
   } catch (e) {
     showToast('Диагностика: ' + e.message, 'error');
   }
