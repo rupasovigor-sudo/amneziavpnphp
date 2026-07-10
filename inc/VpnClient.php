@@ -453,6 +453,15 @@ class VpnClient
                 'server_id' => $serverId,
                 'protocol' => $slug,
             ], fn() => self::addClientToServer($serverData, $keys['public'], $clientIP));
+
+            // Failover pool: the peer must exist on every member so the client
+            // config (shared identity + domain) works against any of them.
+            if (!empty($serverData['pool_id'])) {
+                self::timed('create.push_peer_to_pool', [
+                    'server_id' => $serverId,
+                    'pool_id' => (int) $serverData['pool_id'],
+                ], fn() => ServerPool::pushPeerToMembers((int) $serverData['pool_id'], $keys['public'], $clientIP, $serverId));
+            }
             $qrCode = self::timed('create.generate_qr_code', [
                 'server_id' => $serverId,
                 'protocol' => $slug,

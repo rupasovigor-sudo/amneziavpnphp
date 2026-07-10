@@ -94,7 +94,13 @@ class TimewebDnsService
     }
 
     /**
-     * Create or update the A-record for $fqdn to point at $ip.
+     * Create or update the A-record for $fqdn to point at $ip, and remove any
+     * duplicate A-records so the domain resolves to exactly one IP (required
+     * for clean failover).
+     *
+     * Timeweb addresses records by the FULL domain path
+     * (/api/v1/domains/{fqdn}/dns-records) — subdomains are their own resource,
+     * not a `subdomain` field on the apex — and the value lives at data.value.
      *
      * @return array{success: bool, message: string, action?: string, record_id?: int, status?: int, response?: mixed}
      */
@@ -114,74 +120,64 @@ class TimewebDnsService
             return ['success' => false, 'message' => 'Timeweb API token is not configured (Settings → API)'];
         }
 
-        [$baseDomain, $subdomain] = self::splitDomain($fqdn);
+        $base = "/api/v1/domains/{$fqdn}/dns-records";
 
-        // 1. Look for an existing matching A-record.
-        $list = self::request('GET', "/api/v1/domains/{$baseDomain}/dns-records", null, $token);
+        // 1. List existing A-records for this fqdn.
+        $list = self::request('GET', $base, null, $token);
         if (!$list['ok']) {
             return ['success' => false, 'message' => "Failed to list DNS records: {$list['error']}", 'status' => $list['status'], 'response' => $list['body']];
         }
+        $aRecordIds = self::aRecordIds($list['body']);
+        $payload = ['type' => 'A', 'value' => $ip];
 
-        $existingId = self::findARecordId($list['body'], $subdomain);
-        $payload = self::buildPayload($subdomain, $ip);
-
-        if ($existingId !== null) {
-            $res = self::request('PATCH', "/api/v1/domains/{$baseDomain}/dns-records/{$existingId}", $payload, $token);
-            $action = 'updated';
-        } else {
-            $res = self::request('POST', "/api/v1/domains/{$baseDomain}/dns-records", $payload, $token);
-            $action = 'created';
+        if (empty($aRecordIds)) {
+            $res = self::request('POST', $base, $payload, $token);
+            if (!$res['ok']) {
+                return ['success' => false, 'message' => "Failed to create A-record: {$res['error']}", 'status' => $res['status'], 'response' => $res['body']];
+            }
+            error_log("TimewebDnsService: A-record created {$fqdn} -> {$ip}");
+            return ['success' => true, 'action' => 'created', 'message' => "A-record created: {$fqdn} → {$ip}", 'record_id' => self::extractRecordId($res['body'])];
         }
 
+        // 2. Update the first, delete the rest (dedup to a single record).
+        $keepId = array_shift($aRecordIds);
+        $res = self::request('PATCH', "{$base}/{$keepId}", $payload, $token);
         if (!$res['ok']) {
-            return ['success' => false, 'message' => "Failed to {$action} A-record: {$res['error']}", 'status' => $res['status'], 'response' => $res['body']];
+            return ['success' => false, 'message' => "Failed to update A-record: {$res['error']}", 'status' => $res['status'], 'response' => $res['body']];
         }
-
-        error_log("TimewebDnsService: A-record {$action} {$fqdn} -> {$ip}");
+        $removed = 0;
+        foreach ($aRecordIds as $dupId) {
+            $del = self::request('DELETE', "{$base}/{$dupId}", null, $token);
+            if ($del['ok']) {
+                $removed++;
+            }
+        }
+        error_log("TimewebDnsService: A-record updated {$fqdn} -> {$ip}" . ($removed ? " (removed {$removed} duplicate(s))" : ''));
         return [
             'success' => true,
-            'message' => "A-record {$action}: {$fqdn} → {$ip}",
-            'action' => $action,
-            'record_id' => $existingId ?? self::extractRecordId($res['body']),
+            'action' => 'updated',
+            'message' => "A-record updated: {$fqdn} → {$ip}" . ($removed ? " (cleaned {$removed} duplicate(s))" : ''),
+            'record_id' => $keepId,
         ];
     }
 
-    private static function buildPayload(string $subdomain, string $ip): array
+    /** All A-record ids for the fqdn from a dns-records list response. */
+    private static function aRecordIds($body): array
     {
-        $payload = ['type' => 'A', 'value' => $ip];
-        if ($subdomain !== '') {
-            $payload['subdomain'] = $subdomain;
-        }
-        return $payload;
-    }
-
-    /** Find an A-record id matching $subdomain in a dns-records list response. */
-    private static function findARecordId($body, string $subdomain): ?int
-    {
-        $records = [];
-        if (is_array($body)) {
-            $records = $body['dns_records'] ?? ($body['dns-records'] ?? (isset($body[0]) ? $body : []));
-        }
+        $records = is_array($body) ? ($body['dns_records'] ?? ($body['dns-records'] ?? (isset($body[0]) ? $body : []))) : [];
         if (!is_array($records)) {
-            return null;
+            return [];
         }
+        $ids = [];
         foreach ($records as $rec) {
-            if (!is_array($rec)) {
-                continue;
-            }
-            $type = strtoupper((string) ($rec['type'] ?? ''));
-            if ($type !== 'A') {
-                continue;
-            }
-            $recSub = strtolower(trim((string) ($rec['subdomain'] ?? '')));
-            if ($recSub === strtolower($subdomain)) {
+            if (is_array($rec) && strtoupper((string) ($rec['type'] ?? '')) === 'A') {
                 $id = $rec['id'] ?? ($rec['record_id'] ?? null);
                 if ($id !== null) {
-                    return (int) $id;
+                    $ids[] = (int) $id;
                 }
             }
         }
-        return null;
+        return $ids;
     }
 
     private static function extractRecordId($body): ?int

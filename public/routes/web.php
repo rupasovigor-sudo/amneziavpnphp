@@ -791,6 +791,74 @@ Router::post('/servers/{id}/dns/update', function ($params) {
     }
 });
 
+// Failover pool status for a server (AJAX)
+Router::get('/servers/{id}/pool/status', function ($params) {
+    requireAuth();
+    header('Content-Type: application/json');
+    $serverId = (int) $params['id'];
+    try {
+        $server = new VpnServer($serverId);
+        $serverData = $server->getData();
+        $user = Auth::user();
+        if ($serverData['user_id'] != $user['id'] && !Auth::isAdmin()) {
+            http_response_code(403);
+            echo json_encode(['error' => 'Forbidden']);
+            return;
+        }
+        $poolId = (int) ($serverData['pool_id'] ?? 0);
+        if ($poolId <= 0) {
+            echo json_encode(['success' => true, 'in_pool' => false, 'server_id' => $serverId]);
+            return;
+        }
+        $status = ServerPool::status($poolId);
+        echo json_encode(array_merge(['success' => true, 'in_pool' => true, 'server_id' => $serverId], $status ?? []), JSON_UNESCAPED_SLASHES);
+    } catch (Exception $e) {
+        http_response_code(500);
+        echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+    }
+});
+
+// Create a failover pool by adopting this server's awg2 identity (AJAX, admin)
+Router::post('/servers/{id}/pool/create', function ($params) {
+    requireAdmin();
+    header('Content-Type: application/json');
+    $serverId = (int) $params['id'];
+    $input = json_decode(file_get_contents('php://input'), true) ?: [];
+    $name = trim((string) ($input['name'] ?? ''));
+    if ($name === '') {
+        $name = 'pool-' . $serverId;
+    }
+    try {
+        $res = ServerPool::createFromServer($serverId, $name);
+        echo json_encode($res, JSON_UNESCAPED_SLASHES);
+    } catch (Exception $e) {
+        http_response_code(500);
+        echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+    }
+});
+
+// Make this server the active member (repoint the pool domain here) (AJAX, admin)
+Router::post('/servers/{id}/pool/activate', function ($params) {
+    requireAdmin();
+    header('Content-Type: application/json');
+    $serverId = (int) $params['id'];
+    try {
+        $server = new VpnServer($serverId);
+        $serverData = $server->getData();
+        $poolId = (int) ($serverData['pool_id'] ?? 0);
+        if ($poolId <= 0) {
+            http_response_code(400);
+            echo json_encode(['success' => false, 'error' => 'Server is not in a pool']);
+            return;
+        }
+        $res = ServerPool::setActive($poolId, $serverId, 'manual_ui');
+        echo json_encode($res, JSON_UNESCAPED_SLASHES);
+    } catch (Exception $e) {
+        http_response_code(500);
+        echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+    }
+});
+
 // View server
 Router::get('/servers/{id}', function ($params) {
     requireAuth();

@@ -734,6 +734,28 @@ class InstallProtocolManager
                     : ''),
         ];
 
+        // Shared pool identity: deploy this member with the pool's awg2 keypair /
+        // PSK / obfuscation params / interface address instead of generating fresh
+        // ones, so every member runs an identical server identity (failover pool).
+        if (!empty($options['pool_identity']) && is_array($options['pool_identity'])) {
+            $pi = $options['pool_identity'];
+            if (!empty($pi['private_key']))   $pairs['SERVER_PRIVATE_KEY'] = $pi['private_key'];
+            if (!empty($pi['public_key']))    $pairs['SERVER_PUBLIC_KEY'] = $pi['public_key'];
+            if (!empty($pi['preshared_key'])) $pairs['SERVER_PRESHARED_KEY'] = $pi['preshared_key'];
+            if (!empty($pi['server_address'])) $pairs['SERVER_ADDRESS'] = $pi['server_address'];
+            $paramMap = [
+                'Jc' => 'JC', 'Jmin' => 'JMIN', 'Jmax' => 'JMAX',
+                'S1' => 'S1_VAL', 'S2' => 'S2_VAL', 'S3' => 'S3_VAL', 'S4' => 'S4_VAL',
+                'H1' => 'H1_VAL', 'H2' => 'H2_VAL', 'H3' => 'H3_VAL', 'H4' => 'H4_VAL',
+                'I1' => 'I1_VAL', 'I2' => 'I2_VAL', 'I3' => 'I3_VAL', 'I4' => 'I4_VAL', 'I5' => 'I5_VAL',
+            ];
+            foreach (($pi['awg_params'] ?? []) as $k => $v) {
+                if (isset($paramMap[$k]) && $v !== null && $v !== '') {
+                    $pairs[$paramMap[$k]] = $v;
+                }
+            }
+        }
+
         // Check for saved Reality keys in server_protocols table
         $serverId = $serverData['id'] ?? null;
         if ($serverId) {
