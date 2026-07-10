@@ -249,13 +249,16 @@ class ServerPool
                 $reason,
                 $dnsNote
             );
+            // Short (≈2 min) flap window in the dedupe key: rapid flapping is
+            // suppressed, but genuine active-server changes minutes apart each
+            // notify (a long cooldown would hide a real re-failover).
             (new AlertManager())->recordEvent(
                 $newId,
                 (string) $target['name'],
                 'pool_active_changed',
                 $msg,
                 strpos($reason, 'failover') !== false ? 'critical' : 'warning',
-                'pool:' . $poolId . ':active:' . $newId
+                'pool:' . $poolId . ':active:' . $newId . ':' . floor(time() / 120)
             );
         } catch (Throwable $e) {
             error_log('ServerPool::notifyActiveChange failed: ' . $e->getMessage());
