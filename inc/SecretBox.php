@@ -17,8 +17,14 @@ class SecretBox
 
         $key = self::key();
         if ($key === null) {
-            error_log('SecretBox: APP_ENCRYPTION_KEY is missing; storing server secret in plaintext');
-            return $value;
+            // Fail closed: refuse to persist a secret in plaintext. A local dev
+            // install can opt out explicitly with AMNEZIA_ALLOW_PLAINTEXT_SECRETS=1.
+            $allowPlain = in_array(strtolower((string) Config::get('AMNEZIA_ALLOW_PLAINTEXT_SECRETS', '0')), ['1', 'true', 'yes', 'on'], true);
+            if ($allowPlain) {
+                error_log('SecretBox: APP_ENCRYPTION_KEY is missing; storing secret in PLAINTEXT (AMNEZIA_ALLOW_PLAINTEXT_SECRETS is on)');
+                return $value;
+            }
+            throw new RuntimeException('APP_ENCRYPTION_KEY is required to store secrets securely. Set it (base64 32 bytes / 64 hex), or set AMNEZIA_ALLOW_PLAINTEXT_SECRETS=1 for local dev only.');
         }
 
         $nonce = random_bytes(SODIUM_CRYPTO_SECRETBOX_NONCEBYTES);

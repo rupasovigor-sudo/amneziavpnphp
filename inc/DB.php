@@ -16,10 +16,14 @@ class DB {
       PDO::ATTR_EMULATE_PREPARES => false,
     ];
     self::$pdo = new PDO($dsn, $user, $pass, $options);
-    
+
     // Explicitly set UTF-8 encoding for connection
     self::$pdo->exec("SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci");
-    
+
+    // Pin the session timezone to UTC so MySQL NOW()/DATE_SUB match the UTC
+    // timestamps written by PHP (handshake age, expiry, metric retention).
+    self::$pdo->exec("SET time_zone = '+00:00'");
+
     return self::$pdo;
   }
 }

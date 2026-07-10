@@ -209,23 +209,28 @@ $collectorCfg = [
 foreach (array_slice($argv ?? [], 1) as $arg) {
     if (preg_match('/^--server-id=(\d+)$/', $arg, $m)) {
         $childServerId = (int) $m[1];
-        foreach (VpnServer::listAll() as $server) {
-            if ((int) $server['id'] === $childServerId && $server['status'] === 'active') {
-                try {
-                    collectForServer($server, new AlertManager(), $collectorCfg);
-                } catch (Throwable $e) {
-                    echo "  ERROR: " . $e->getMessage() . "\n";
-                    try {
-                        (new AlertManager())->recordProblem($childServerId, (string) $server['name'], 'collector_exception', $e->getMessage(), 'critical');
-                    } catch (Throwable $alertError) {
-                        error_log('Failed to record collector alert: ' . $alertError->getMessage());
-                    }
-                    exit(1);
-                }
-                exit(0);
-            }
+        // Load just this one server (decrypts its secrets once) instead of
+        // listAll() which decrypts every server's secrets just to find one.
+        try {
+            $server = (new VpnServer($childServerId))->getData();
+        } catch (Throwable $e) {
+            $server = null;
         }
-        echo "Server #{$childServerId} not found or not active\n";
+        if (!$server || ($server['status'] ?? '') !== 'active') {
+            echo "Server #{$childServerId} not found or not active\n";
+            exit(0);
+        }
+        try {
+            collectForServer($server, new AlertManager(), $collectorCfg);
+        } catch (Throwable $e) {
+            echo "  ERROR: " . $e->getMessage() . "\n";
+            try {
+                (new AlertManager())->recordProblem($childServerId, (string) ($server['name'] ?? ''), 'collector_exception', $e->getMessage(), 'critical');
+            } catch (Throwable $alertError) {
+                error_log('Failed to record collector alert: ' . $alertError->getMessage());
+            }
+            exit(1);
+        }
         exit(0);
     }
 }

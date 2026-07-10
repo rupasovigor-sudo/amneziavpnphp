@@ -17,6 +17,9 @@ require_once __DIR__ . '/../inc/Config.php';
 // Load environment configuration
 Config::load(__DIR__ . '/../.env');
 
+// Work in UTC everywhere; the DB session is also pinned to UTC (inc/DB.php).
+date_default_timezone_set('UTC');
+
 $secureCookieRaw = Config::get('SESSION_COOKIE_SECURE');
 $secureCookie = $secureCookieRaw === null
     ? ((!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https'))
@@ -142,6 +145,11 @@ function jsonError(string $message, int $status = 400): void
 function canAccessServer(array $serverData, array $user): bool
 {
     return (int) ($serverData['user_id'] ?? 0) === (int) ($user['id'] ?? 0) || ($user['role'] ?? '') === 'admin';
+}
+
+function canAccessClient(array $clientData, array $user): bool
+{
+    return (int) ($clientData['user_id'] ?? 0) === (int) ($user['id'] ?? 0) || ($user['role'] ?? '') === 'admin';
 }
 
 function getClientProtocolSlug(array $clientData): string

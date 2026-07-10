@@ -21,31 +21,23 @@ class ProtocolManagementController
                 $editing = $this->getProtocolById($selectedId);
             }
 
-            $pdo = DB::conn();
-            $stmt = $pdo->prepare("SELECT api_key FROM api_keys WHERE service_name = 'openrouter' AND is_active = 1 LIMIT 1");
-            $stmt->execute();
-            $openrouterKey = $stmt->fetchColumn() ?: '';
-
             if ($isTemplate && $editing) {
                 View::render('settings/protocol_template_editor.twig', [
                     'protocol' => $editing,
                     'success' => $_SESSION['protocol_success'] ?? null,
                     'error' => $_SESSION['protocol_error'] ?? null,
-                    'openrouter_key' => $openrouterKey,
                 ]);
             } elseif ($editing || $isNew) {
                 View::render('settings/protocol_form.twig', [
                     'editing' => $editing,
                     'success' => $_SESSION['protocol_success'] ?? null,
                     'error' => $_SESSION['protocol_error'] ?? null,
-                    'openrouter_key' => $openrouterKey,
                 ]);
             } else {
                 View::render('settings/protocols_management.twig', [
                     'protocols' => $protocols,
                     'success' => $_SESSION['protocol_success'] ?? null,
                     'error' => $_SESSION['protocol_error'] ?? null,
-                    'openrouter_key' => $openrouterKey,
                 ]);
             }
 

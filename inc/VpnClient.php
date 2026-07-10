@@ -715,8 +715,18 @@ class VpnClient
         }
         $usedIPs = $stmt->fetchAll(PDO::FETCH_COLUMN);
 
-        // Reserve network address and server gateway (.1)
-        $used = ['10.8.1.0' => true, '10.8.1.1' => true];
+        // Reserve the network (.0) and gateway (.1) of the server's ACTUAL
+        // subnet — not a hardcoded 10.8.1.x. A pool on a different subnet would
+        // otherwise hand the gateway address to the first client.
+        $parts = explode('/', (string) ($serverData['vpn_subnet'] ?? ''));
+        $networkLong = ip2long($parts[0] ?? '');
+        if ($networkLong === false) {
+            throw new Exception('Invalid or missing vpn_subnet: ' . ($serverData['vpn_subnet'] ?? ''));
+        }
+        $used = [
+            long2ip($networkLong) => true,       // network address (.0)
+            long2ip($networkLong + 1) => true,   // gateway (.1)
+        ];
         foreach ($usedIPs as $ip) {
             $used[$ip] = true;
         }
@@ -745,12 +755,8 @@ class VpnClient
             }
         }
 
-        // Parse subnet
-        $parts = explode('/', $serverData['vpn_subnet']);
-        $networkLong = ip2long($parts[0]);
-
-        // Find next free IP starting from .1
-        for ($i = 1; $i <= 253; $i++) {
+        // Find next free IP starting from .2 (network and gateway reserved above).
+        for ($i = 2; $i <= 253; $i++) {
             $candidate = long2ip($networkLong + $i);
             if (!isset($used[$candidate])) {
                 return $candidate;

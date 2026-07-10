@@ -1054,7 +1054,7 @@ class InstallProtocolManager
                     $clientId = $m[1];
                 }
             }
-            Logger::appendInstall($serverId, 'Scripted install parsed port ' . ($port ?? 0) . ' password ' . ($password ?? ''));
+            Logger::appendInstall($serverId, 'Scripted install parsed port ' . ($port ?? 0) . ' password ' . (($password ?? '') !== '' ? '[redacted]' : '(none)'));
             $pdo = DB::conn();
             $pid = self::resolveProtocolId($protocol);
             if ($pid) {

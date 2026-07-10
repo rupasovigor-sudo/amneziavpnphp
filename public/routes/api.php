@@ -244,8 +244,7 @@ Router::get('/api/clients/{id}/details', function ($params) {
         $client = new VpnClient($clientId);
         $clientData = $client->getData();
 
-        // Check ownership
-        if ($clientData['user_id'] != $user['id']) {
+        if (!canAccessClient($clientData, $user)) {
             http_response_code(403);
             echo json_encode(['error' => 'Forbidden']);
             return;
@@ -375,8 +374,7 @@ Router::get('/api/clients/{id}/qr', function ($params) {
         $client = new VpnClient($clientId);
         $clientData = $client->getData();
 
-        // Check ownership
-        if ($clientData['user_id'] != $user['id']) {
+        if (!canAccessClient($clientData, $user)) {
             http_response_code(403);
             echo json_encode(['error' => 'Forbidden']);
             return;
@@ -407,8 +405,7 @@ Router::post('/api/clients/{id}/revoke', function ($params) {
         $client = new VpnClient($clientId);
         $clientData = $client->getData();
 
-        // Check ownership
-        if ($clientData['user_id'] != $user['id']) {
+        if (!canAccessClient($clientData, $user)) {
             http_response_code(403);
             echo json_encode(['error' => 'Forbidden']);
             return;
@@ -440,8 +437,7 @@ Router::post('/api/clients/{id}/restore', function ($params) {
         $client = new VpnClient($clientId);
         $clientData = $client->getData();
 
-        // Check ownership
-        if ($clientData['user_id'] != $user['id']) {
+        if (!canAccessClient($clientData, $user)) {
             http_response_code(403);
             echo json_encode(['error' => 'Forbidden']);
             return;

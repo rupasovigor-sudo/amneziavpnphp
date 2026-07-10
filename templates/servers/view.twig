@@ -947,9 +947,7 @@ async function updateServerMetrics() {
     });
     
     const data = await response.json();
-    
-    console.log('Metrics response:', data);
-    
+
     if (data.success && data.metrics.length > 0) {
       const metrics = data.metrics.slice(-20); // Last 20 points
       const latest = metrics[metrics.length - 1];

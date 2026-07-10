@@ -258,16 +258,6 @@ document.addEventListener('DOMContentLoaded', function() {
             }, 1000);
         });
     });
-
-    // Auto-save functionality (optional)
-    let autoSaveTimeout;
-    templateEditor.addEventListener('input', function() {
-        clearTimeout(autoSaveTimeout);
-        autoSaveTimeout = setTimeout(function() {
-            // Could implement auto-save here
-            console.log('Template changed, could auto-save...');
-        }, 2000);
-    });
 });
 </script>
 {% endblock %}
