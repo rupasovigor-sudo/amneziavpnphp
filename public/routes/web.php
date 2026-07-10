@@ -673,9 +673,9 @@ Router::post('/servers/{id}/warp/action', function ($params) {
     $serverId = (int) $params['id'];
     $input = json_decode(file_get_contents('php://input'), true);
     $action = $input['action'] ?? '';
-    if (!in_array($action, ['connect', 'disconnect', 'reconnect'], true)) {
+    if (!in_array($action, ['connect', 'disconnect', 'reconnect', 'rotate'], true)) {
         http_response_code(400);
-        echo json_encode(['error' => 'Invalid action. Allowed: connect, disconnect, reconnect']);
+        echo json_encode(['error' => 'Invalid action. Allowed: connect, disconnect, reconnect, rotate']);
         return;
     }
     try {
@@ -687,31 +687,19 @@ Router::post('/servers/{id}/warp/action', function ($params) {
             echo json_encode(['error' => 'Forbidden']);
             return;
         }
-        $hasNetnsWarp = trim($server->executeCommand('systemctl is-enabled awg2-warp-egress.service 2>/dev/null || echo ""', true)) !== ''
-            || trim($server->executeCommand('ip netns list 2>/dev/null | grep -w awg2warp || echo ""', true)) !== '';
+        // cf-warp v3 is always the WireGuard-netns profile pool; drive it via
+        // systemd and the runtime engine (no legacy warp-cli path).
         switch ($action) {
             case 'connect':
-                if ($hasNetnsWarp) {
-                    $server->executeCommand('systemctl restart awg2-warp-egress.service 2>/dev/null || { /usr/local/sbin/awg2-warp-egress cleanup 2>/dev/null || true; systemctl reset-failed awg2-warp-egress.service 2>/dev/null || true; }', true);
-                } else {
-                    $server->executeCommand('warp-cli --accept-tos connect 2>/dev/null', true);
-                }
+            case 'reconnect':
+                $server->executeCommand('systemctl restart awg2-warp-egress.service 2>/dev/null || { /usr/local/sbin/awg2-warp-egress cleanup 2>/dev/null || true; systemctl reset-failed awg2-warp-egress.service 2>/dev/null || true; }', true);
                 break;
             case 'disconnect':
-                if ($hasNetnsWarp) {
-                    $server->executeCommand('systemctl stop awg2-warp-egress.service 2>/dev/null || true; systemctl reset-failed awg2-warp-egress.service 2>/dev/null || true', true);
-                } else {
-                    $server->executeCommand('warp-cli --accept-tos disconnect 2>/dev/null', true);
-                }
+                $server->executeCommand('systemctl stop awg2-warp-egress.service 2>/dev/null || true; systemctl reset-failed awg2-warp-egress.service 2>/dev/null || true', true);
                 break;
-            case 'reconnect':
-                if ($hasNetnsWarp) {
-                    $server->executeCommand('systemctl restart awg2-warp-egress.service 2>/dev/null || { /usr/local/sbin/awg2-warp-egress cleanup 2>/dev/null || true; systemctl reset-failed awg2-warp-egress.service 2>/dev/null || true; }', true);
-                } else {
-                    $server->executeCommand('warp-cli --accept-tos disconnect 2>/dev/null || true', true);
-                    sleep(1);
-                    $server->executeCommand('warp-cli --accept-tos connect 2>/dev/null', true);
-                }
+            case 'rotate':
+                // Switch to the next profile in the pool without dropping the tunnel.
+                $server->executeCommand('/usr/local/sbin/awg2-warp-egress rotate manual_ui 2>/dev/null || true', true);
                 break;
         }
         sleep(2);

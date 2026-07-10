@@ -182,12 +182,16 @@
 
                 <div id="warpDetails" class="space-y-1 text-xs">
                   <div class="flex items-center justify-between text-gray-400">
-                    <span>Прокси</span>
-                    <span id="warpProxy" class="font-mono text-gray-300">—</span>
-                  </div>
-                  <div class="flex items-center justify-between text-gray-400">
                     <span>WARP IP</span>
                     <span id="warpExitIp" class="font-mono text-gray-300">—</span>
+                  </div>
+                  <div class="flex items-center justify-between text-gray-400">
+                    <span>Пул профилей</span>
+                    <span id="warpPool" class="text-gray-300">—</span>
+                  </div>
+                  <div class="flex items-center justify-between text-gray-400">
+                    <span>Ротаций</span>
+                    <span id="warpRotations" class="text-gray-300">—</span>
                   </div>
                   <div class="flex items-center justify-between text-gray-400">
                     <span>Режим</span>
@@ -200,14 +204,17 @@
                 </div>
 
                 <div class="flex gap-2 mt-3">
-                  <button id="warpBtnConnect" onclick="warpAction('connect')" class="flex-1 px-2 py-1 rounded text-xs font-medium text-white" style="background:#22c55e;opacity:0.9" disabled>
-                    <i class="fas fa-play mr-1"></i>Connect
-                  </button>
-                  <button id="warpBtnDisconnect" onclick="warpAction('disconnect')" class="flex-1 px-2 py-1 rounded text-xs font-medium text-white" style="background:#ef4444;opacity:0.9" disabled>
-                    <i class="fas fa-stop mr-1"></i>Disconnect
+                  <button id="warpBtnRotate" onclick="warpAction('rotate')" class="flex-1 px-2 py-1 rounded text-xs font-medium text-white" style="background:#8b5cf6;opacity:0.9" disabled>
+                    <i class="fas fa-random mr-1"></i>Ротация
                   </button>
                   <button id="warpBtnReconnect" onclick="warpAction('reconnect')" class="flex-1 px-2 py-1 rounded text-xs font-medium text-white" style="background:#3b82f6;opacity:0.9" disabled>
                     <i class="fas fa-sync-alt mr-1"></i>Reconnect
+                  </button>
+                  <button id="warpBtnDisconnect" onclick="warpAction('disconnect')" class="flex-1 px-2 py-1 rounded text-xs font-medium text-white" style="background:#ef4444;opacity:0.9" disabled>
+                    <i class="fas fa-stop mr-1"></i>Stop
+                  </button>
+                  <button id="warpBtnConnect" onclick="warpAction('connect')" class="flex-1 px-2 py-1 rounded text-xs font-medium text-white" style="background:#22c55e;opacity:0.9" disabled>
+                    <i class="fas fa-play mr-1"></i>Start
                   </button>
                 </div>
 
@@ -750,13 +757,15 @@ async function syncAllStats(serverId) {
 // ── WARP Status Widget ──
 function updateWarpWidget(data) {
   const badge = document.getElementById('warpStatusBadge');
-  const proxy = document.getElementById('warpProxy');
   const exitIp = document.getElementById('warpExitIp');
+  const pool = document.getElementById('warpPool');
+  const rotations = document.getElementById('warpRotations');
   const mode = document.getElementById('warpMode');
   const svc = document.getElementById('warpSvc');
   const btnConnect = document.getElementById('warpBtnConnect');
   const btnDisconnect = document.getElementById('warpBtnDisconnect');
   const btnReconnect = document.getElementById('warpBtnReconnect');
+  const btnRotate = document.getElementById('warpBtnRotate');
 
   if (!badge) return;
 
@@ -771,14 +780,16 @@ function updateWarpWidget(data) {
     badge.innerHTML = '<span class="px-2 py-0.5 rounded text-xs text-white" style="background:#ef4444"><i class="fas fa-times-circle mr-1"></i>Disconnected</span>';
   }
 
-  if (proxy) proxy.textContent = data.proxy_listening ? ('socks5h://127.0.0.1:' + (data.proxy_port || 40000)) : '—';
   if (exitIp) exitIp.textContent = data.warp_ip || '—';
+  if (pool) pool.textContent = (data.pool_size != null) ? ((data.active_profile || '?') + ' / ' + data.pool_size) : '—';
+  if (rotations) rotations.textContent = (data.rotations != null) ? data.rotations : '—';
   if (mode) mode.textContent = data.mode || '—';
   if (svc) svc.textContent = data.service_status || '—';
 
   if (btnConnect) { btnConnect.disabled = false; }
   if (btnDisconnect) { btnDisconnect.disabled = false; }
   if (btnReconnect) { btnReconnect.disabled = false; }
+  if (btnRotate) { btnRotate.disabled = false; }
 }
 
 async function loadWarpStatus() {
@@ -799,9 +810,11 @@ async function warpAction(action) {
   const btnConnect = document.getElementById('warpBtnConnect');
   const btnDisconnect = document.getElementById('warpBtnDisconnect');
   const btnReconnect = document.getElementById('warpBtnReconnect');
+  const btnRotate = document.getElementById('warpBtnRotate');
   if (btnConnect) btnConnect.disabled = true;
   if (btnDisconnect) btnDisconnect.disabled = true;
   if (btnReconnect) btnReconnect.disabled = true;
+  if (btnRotate) btnRotate.disabled = true;
 
   const badge = document.getElementById('warpStatusBadge');
   if (badge) badge.innerHTML = '<span class="px-2 py-0.5 rounded text-xs bg-gray-600 text-gray-300"><i class="fas fa-spinner fa-spin mr-1"></i>' + action + '...</span>';
@@ -825,6 +838,7 @@ async function warpAction(action) {
   if (btnConnect) btnConnect.disabled = false;
   if (btnDisconnect) btnDisconnect.disabled = false;
   if (btnReconnect) btnReconnect.disabled = false;
+  if (btnRotate) btnRotate.disabled = false;
 }
 
 // WARP auto-refresh

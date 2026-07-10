@@ -1030,7 +1030,7 @@ class InstallProtocolManager
                 $clientId = $res['client_id'];
             }
             if (is_string($res['output'] ?? '')) {
-                $out = $res['output'];
+                $out = $res['output'] ?? '';
                 if (preg_match('/Port:\s*(\d+)/i', $out, $m)) {
                     $port = (int) $m[1];
                 }
@@ -1470,6 +1470,9 @@ if [ -n "$egress_unit" ] || [ -n "$egress_ns" ]; then
   printf 'mode_type=netns\n'
   printf 'service_status=%s\n' "$svc_status"
   printf 'trace_b64=%s\n' "$(printf '%s' "$trace_out" | b64)"
+  printf 'active_profile=%s\n' "$(cat /var/lib/cloudflare-warp/awg2-egress/active 2>/dev/null)"
+  printf 'pool_size=%s\n' "$(find /var/lib/cloudflare-warp/awg2-egress/profiles -mindepth 2 -maxdepth 2 -name profile.setconf 2>/dev/null | wc -l | tr -d ' ')"
+  printf 'rotations=%s\n' "$(cat /var/lib/cloudflare-warp/awg2-egress/rotation_count 2>/dev/null || echo 0)"
   exit 0
 fi
 
@@ -1524,10 +1527,13 @@ SH;
                 'installed' => true,
                 'connected' => (bool) preg_match('/warp=on/i', $traceOut),
                 'service_status' => trim((string) ($values['service_status'] ?? 'inactive')),
-                'mode' => 'wireguard_netns',
+                'mode' => 'wireguard_netns_pool',
                 'proxy_port' => null,
                 'proxy_listening' => false,
                 'warp_ip' => $warpIp,
+                'pool_size' => (int) ($values['pool_size'] ?? 0),
+                'active_profile' => trim((string) ($values['active_profile'] ?? '')),
+                'rotations' => (int) ($values['rotations'] ?? 0),
                 'warp_status_raw' => $traceOut,
             ];
             @file_put_contents($cacheFile, json_encode($status));
