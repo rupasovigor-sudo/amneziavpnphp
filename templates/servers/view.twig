@@ -77,10 +77,9 @@
           <span id="poolBadge" class="px-2 py-0.5 rounded text-xs bg-gray-200 text-gray-600">…</span>
         </div>
         <div class="mb-2 flex items-center gap-2">
-          <button id="udpCheckBtn" class="px-2 py-1 rounded text-xs bg-slate-600 text-white" title="Проверить, проходит ли входящий UDP на этот сервер (проба с другого сервера)">
-            <i class="fas fa-satellite-dish mr-1"></i>Проверить входящий UDP
-          </button>
-          <span id="udpCheckMsg" class="text-[11px] text-gray-500"></span>
+          <span class="text-[11px] text-gray-600"><i class="fas fa-signal mr-1 text-purple-600"></i>Живые клиенты:</span>
+          <span id="liveClientsVal" class="text-[11px] text-gray-500">…</span>
+          <button id="liveRefreshBtn" class="px-2 py-0.5 rounded text-[10px] bg-slate-500 text-white" title="Обновить — показывает пиров с недавним рукопожатием (реальный трафик, доказывает, что сервер принимает клиентов)"><i class="fas fa-rotate"></i></button>
         </div>
 
         {# Standalone (not in a pool): manage the domain + optionally create a pool #}
@@ -205,20 +204,25 @@
             .catch(e => { alert('Ошибка: ' + e); load(); });
         });
 
-        const udpBtn = document.getElementById('udpCheckBtn');
-        if (udpBtn) udpBtn.addEventListener('click', () => {
-          const msg = document.getElementById('udpCheckMsg');
-          udpBtn.disabled = true;
-          msg.textContent = 'Проверка (~10 сек, проба с другого сервера)…';
-          msg.className = 'text-[11px] text-gray-500';
-          fetch('/servers/' + SID + '/net/udp-check', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' })
-            .then(r => r.json()).then(d => {
-              msg.textContent = d.message || (d.success ? '' : (d.error || 'Ошибка'));
-              msg.className = 'text-[11px] ' + (d.checked === false ? 'text-amber-600' : (d.reachable ? 'text-green-600' : 'text-red-600'));
-            })
-            .catch(e => { msg.textContent = 'Ошибка/таймаут: ' + e; msg.className = 'text-[11px] text-red-600'; })
-            .finally(() => { udpBtn.disabled = false; });
-        });
+        function fmtAge(sec) {
+          if (sec == null) return 'никогда';
+          if (sec < 60) return sec + 'с назад';
+          if (sec < 3600) return Math.floor(sec / 60) + 'м назад';
+          return Math.floor(sec / 3600) + 'ч назад';
+        }
+        function loadLiveClients() {
+          const val = document.getElementById('liveClientsVal');
+          if (!val) return;
+          val.textContent = '…'; val.className = 'text-[11px] text-gray-500';
+          fetch('/servers/' + SID + '/net/live-clients').then(r => r.json()).then(d => {
+            if (!d.success) { val.textContent = d.error || 'ошибка'; val.className = 'text-[11px] text-red-600'; return; }
+            val.textContent = d.active_peers + ' активных / ' + d.total_peers + ' всего · рукопожатие ' + fmtAge(d.last_handshake_age);
+            val.className = 'text-[11px] ' + (d.active_peers > 0 ? 'text-green-600' : (d.total_peers > 0 ? 'text-amber-600' : 'text-gray-500'));
+          }).catch(e => { val.textContent = 'ошибка: ' + e; val.className = 'text-[11px] text-red-600'; });
+        }
+        const liveBtn = document.getElementById('liveRefreshBtn');
+        if (liveBtn) liveBtn.addEventListener('click', loadLiveClients);
+        loadLiveClients();
 
         const joinBtn = document.getElementById('poolJoinBtn');
         if (joinBtn) joinBtn.addEventListener('click', () => {

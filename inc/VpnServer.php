@@ -804,6 +804,53 @@ BASH;
         return $this->data;
     }
 
+    /**
+     * Live client summary from the awg2 interface: how many peers have handshaked
+     * recently. A real handshake proves the server actually receives client UDP
+     * (unlike a synthetic server-to-server probe), so this is the honest
+     * "is this node serving clients" signal.
+     *
+     * @return array{total_peers:int, active_peers:int, last_handshake_age:?int}
+     */
+    public function liveClientSummary(int $recentSeconds = 180): array
+    {
+        $container = trim((string) ($this->data['container_name'] ?? 'amnezia-awg2')) ?: 'amnezia-awg2';
+        $dump = (string) $this->executeCommand(
+            'docker exec ' . escapeshellarg($container) . ' awg show awg0 dump 2>/dev/null '
+            . '|| docker exec ' . escapeshellarg($container) . ' wg show wg0 dump 2>/dev/null',
+            true
+        );
+        $lines = array_values(array_filter(explode("\n", trim($dump)), static fn($l) => trim($l) !== ''));
+
+        $now = time();
+        $total = 0;
+        $active = 0;
+        $lastHs = 0;
+        foreach ($lines as $i => $line) {
+            if ($i === 0) {
+                continue; // interface line (private/public key, listen-port, fwmark)
+            }
+            $f = explode("\t", $line);
+            if (count($f) < 5) {
+                continue;
+            }
+            $total++;
+            $hs = (int) $f[4];
+            if ($hs > 0) {
+                $lastHs = max($lastHs, $hs);
+                if (($now - $hs) <= $recentSeconds) {
+                    $active++;
+                }
+            }
+        }
+
+        return [
+            'total_peers' => $total,
+            'active_peers' => $active,
+            'last_handshake_age' => $lastHs > 0 ? ($now - $lastHs) : null,
+        ];
+    }
+
     public static function decryptServerSecrets(array $serverData): array
     {
         foreach (['password', 'ssh_key'] as $field) {
