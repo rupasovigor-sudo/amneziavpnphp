@@ -794,9 +794,22 @@ class VpnClient
     {
         $pdo = DB::conn();
 
-        // Get used IPs from database
-        $stmt = $pdo->prepare('SELECT client_ip FROM vpn_clients WHERE server_id = ?');
-        $stmt->execute([$serverData['id']]);
+        // Get used IPs from database. In a failover pool the client IP must be
+        // unique across ALL members (every peer is synced to all of them), so
+        // allocate pool-wide, not per-server — otherwise two clients get the same
+        // IP and collide on the shared awg0 (one peer loses its allowed-ips).
+        $poolId = (int) ($serverData['pool_id'] ?? 0);
+        if ($poolId > 0) {
+            $stmt = $pdo->prepare(
+                'SELECT c.client_ip FROM vpn_clients c
+                 JOIN vpn_servers s ON s.id = c.server_id
+                 WHERE s.pool_id = ?'
+            );
+            $stmt->execute([$poolId]);
+        } else {
+            $stmt = $pdo->prepare('SELECT client_ip FROM vpn_clients WHERE server_id = ?');
+            $stmt->execute([$serverData['id']]);
+        }
         $usedIPs = $stmt->fetchAll(PDO::FETCH_COLUMN);
 
         // Reserve network address and server gateway (.1)

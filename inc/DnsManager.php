@@ -55,4 +55,13 @@ class DnsManager
             default => ['success' => false, 'message' => 'Unknown DNS provider: ' . self::provider()],
         };
     }
+
+    /** Authoritative current A-record IPs for a domain (from the provider). */
+    public static function currentARecordIps(string $fqdn): array
+    {
+        return match (self::provider()) {
+            'timeweb' => TimewebDnsService::currentARecordIps($fqdn),
+            default => [],
+        };
+    }
 }

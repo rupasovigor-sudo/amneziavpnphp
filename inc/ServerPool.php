@@ -60,11 +60,16 @@ class ServerPool
         $activeId = (int) ($pool['active_server_id'] ?? 0);
         $domain = trim((string) ($pool['domain'] ?? ''));
 
+        // Use the provider's authoritative record, not the local resolver cache
+        // (which can lag by the record TTL and show a stale IP after failover).
         $resolved = [];
         if ($domain !== '') {
-            foreach (@dns_get_record($domain, DNS_A) ?: [] as $rec) {
-                if (!empty($rec['ip'])) {
-                    $resolved[] = $rec['ip'];
+            $resolved = DnsManager::currentARecordIps($domain);
+            if (empty($resolved)) {
+                foreach (@dns_get_record($domain, DNS_A) ?: [] as $rec) {
+                    if (!empty($rec['ip'])) {
+                        $resolved[] = $rec['ip'];
+                    }
                 }
             }
         }

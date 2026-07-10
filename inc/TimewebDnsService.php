@@ -164,6 +164,34 @@ class TimewebDnsService
         ];
     }
 
+    /**
+     * Current A-record IPs for $fqdn straight from the provider (authoritative,
+     * not the local resolver cache). Empty array if unavailable.
+     */
+    public static function currentARecordIps(string $fqdn): array
+    {
+        $fqdn = strtolower(trim($fqdn, ". \t\n"));
+        $token = self::getToken();
+        if ($fqdn === '' || $token === null) {
+            return [];
+        }
+        $res = self::request('GET', "/api/v1/domains/{$fqdn}/dns-records", null, $token);
+        if (!$res['ok']) {
+            return [];
+        }
+        $records = is_array($res['body']) ? ($res['body']['dns_records'] ?? []) : [];
+        $ips = [];
+        foreach ((is_array($records) ? $records : []) as $rec) {
+            if (is_array($rec) && strtoupper((string) ($rec['type'] ?? '')) === 'A') {
+                $ip = $rec['data']['value'] ?? ($rec['value'] ?? null);
+                if ($ip) {
+                    $ips[] = (string) $ip;
+                }
+            }
+        }
+        return $ips;
+    }
+
     /** All A-record ids for the fqdn from a dns-records list response. */
     private static function aRecordIds($body): array
     {
