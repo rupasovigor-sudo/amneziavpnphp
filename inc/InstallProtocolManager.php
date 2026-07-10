@@ -997,13 +997,14 @@ class InstallProtocolManager
             // ── Check for existing installation before doing anything destructive ──
             $slug = $protocol['slug'] ?? '';
 
-            // For Cloudflare WARP — always run install script even if WARP binary exists
-            // because the script is idempotent and handles redsocks/iptables setup
+            // For Cloudflare WARP — always run the install script even when egress
+            // already exists; it is idempotent (re-registers the pool, rewrites
+            // systemd units, restarts the netns egress).
             if (self::resolveHandler($protocol) === 'warp') {
                 $warpDetection = self::detectBuiltinWarp($server, $protocol);
                 Logger::appendInstall($serverId, 'WARP detect result: status=' . ($warpDetection['status'] ?? 'null'));
                 if (($warpDetection['status'] ?? '') === 'existing') {
-                    Logger::appendInstall($serverId, 'Existing WARP found, running install script anyway for redsocks/iptables setup');
+                    Logger::appendInstall($serverId, 'Existing WARP egress found, re-running install script (idempotent)');
                     // Don't return — fall through to run the install script
                 }
             }
@@ -1151,8 +1152,9 @@ class InstallProtocolManager
     }
 
     // ─────────────────────────────────────────────────────────────────
-    // Cloudflare WARP — builtin detection, uninstall, status
-    // WARP runs as a systemd service (warp-svc), NOT as a Docker container
+    // Cloudflare WARP egress — builtin detection, uninstall, status.
+    // A pool of WARP WireGuard profiles routed through the awg2warp netns,
+    // driven by systemd (awg2-warp-egress.service + health timer).
     // ─────────────────────────────────────────────────────────────────
 
     /**
@@ -1160,125 +1162,46 @@ class InstallProtocolManager
      */
     private static function detectBuiltinWarp(VpnServer $server, array $protocol): array
     {
-        $metadata = $protocol['definition']['metadata'] ?? [];
-        $proxyPort = $metadata['proxy_port'] ?? 40000;
-
         $egressUnit = trim($server->executeCommand('systemctl is-enabled awg2-warp-egress.service 2>/dev/null || echo ""', true));
         $egressNs = trim($server->executeCommand('ip netns list 2>/dev/null | grep -w awg2warp || echo ""', true));
-        if ($egressUnit !== '' || $egressNs !== '') {
-            $egressStatus = trim($server->executeCommand('systemctl is-active awg2-warp-egress.service 2>/dev/null || echo "inactive"', true));
-            $traceOut = trim($server->executeCommand(
-                'ip netns exec awg2warp curl -4 -s --max-time 5 --resolve cloudflare.com:443:104.16.132.229 https://cloudflare.com/cdn-cgi/trace 2>/dev/null || echo ""',
-                true
-            ));
-            $warpIp = '';
-            $warpOn = false;
-            if (preg_match('/ip=([^\s]+)/', $traceOut, $m)) {
-                $warpIp = $m[1];
-            }
-            if (preg_match('/warp=on/i', $traceOut)) {
-                $warpOn = true;
-            }
-
-            return [
-                'status' => 'existing',
-                'message' => 'Cloudflare WARP egress установлен' . ($warpOn ? ' и подключён' : ''),
-                'details' => [
-                    'service_status' => $egressStatus,
-                    'connected' => $warpOn,
-                    'registered' => true,
-                    'warp_mode' => 'wireguard_netns',
-                    'warp_proxy_port' => null,
-                    'warp_ip' => $warpIp,
-                    'port_listening' => false,
-                    'summary' => sprintf(
-                        'WARP client egress %s, mode=wireguard_netns%s',
-                        $warpOn ? 'connected' : 'installed',
-                        $warpIp !== '' ? ', exit_ip=' . $warpIp : ''
-                    )
-                ]
-            ];
-        }
-
-        // Check if warp-cli binary exists
-        $warpCliCheck = trim($server->executeCommand('command -v warp-cli 2>/dev/null || echo ""', true));
-        if ($warpCliCheck === '') {
+        if ($egressUnit === '' && $egressNs === '') {
             return [
                 'status' => 'absent',
-                'message' => 'Cloudflare WARP не установлен на сервере'
+                'message' => 'Cloudflare WARP egress не установлен на сервере'
             ];
         }
 
-        // Check warp-svc service status
-        $svcStatus = trim($server->executeCommand('systemctl is-active warp-svc 2>/dev/null || echo "inactive"', true));
-
-        // Get WARP connection status
-        $warpStatus = trim($server->executeCommand('warp-cli --accept-tos status 2>/dev/null || echo "error"', true));
-
-        $isConnected = (bool) preg_match('/Connected/i', $warpStatus);
-        $isRegistered = !preg_match('/Registration Missing|unregistered/i', $warpStatus);
-
-        if (!$isRegistered) {
-            return [
-                'status' => 'partial',
-                'message' => 'WARP установлен, но не зарегистрирован',
-                'details' => [
-                    'warp_cli' => $warpCliCheck,
-                    'service_status' => $svcStatus,
-                    'warp_status' => $warpStatus,
-                ]
-            ];
-        }
-
-        // Get WARP mode
-        $warpMode = '';
-        if (preg_match('/Mode:\s*(\S+)/i', $warpStatus, $m)) {
-            $warpMode = $m[1];
-        }
-
-        // Get WARP account info
-        $accountInfo = trim($server->executeCommand('warp-cli --accept-tos registration show 2>/dev/null || echo ""', true));
-        $accountId = '';
-        if (preg_match('/Account\s*ID[:\s]+([a-zA-Z0-9-]+)/i', $accountInfo, $m)) {
-            $accountId = $m[1];
-        }
-
-        // Check if proxy port is listening
-        $portListening = trim($server->executeCommand(
-            'ss -tlnp 2>/dev/null | grep ":' . (int) $proxyPort . '" | head -1 || echo ""', true
+        $egressStatus = trim($server->executeCommand('systemctl is-active awg2-warp-egress.service 2>/dev/null || echo "inactive"', true));
+        $traceOut = trim($server->executeCommand(
+            'ip netns exec awg2warp curl -4 -s --max-time 5 --resolve cloudflare.com:443:104.16.132.229 https://cloudflare.com/cdn-cgi/trace 2>/dev/null || echo ""',
+            true
         ));
-
-        // Get WARP IP (best-effort)
         $warpIp = '';
-        if ($isConnected && $portListening !== '') {
-            $traceOut = trim($server->executeCommand(
-                'curl -x socks5h://127.0.0.1:' . (int) $proxyPort . ' -s --max-time 5 https://cloudflare.com/cdn-cgi/trace 2>/dev/null || echo ""', true
-            ));
-            if (preg_match('/ip=([^\s]+)/', $traceOut, $m)) {
-                $warpIp = $m[1];
-            }
+        $warpOn = (bool) preg_match('/warp=on/i', $traceOut);
+        if (preg_match('/ip=([^\s]+)/', $traceOut, $m)) {
+            $warpIp = $m[1];
         }
+        $poolSize = (int) trim($server->executeCommand(
+            'find /var/lib/cloudflare-warp/awg2-egress/profiles -mindepth 2 -maxdepth 2 -name profile.setconf 2>/dev/null | wc -l',
+            true
+        ));
+        $activeProfile = trim($server->executeCommand('cat /var/lib/cloudflare-warp/awg2-egress/active 2>/dev/null || echo ""', true));
 
         return [
             'status' => 'existing',
-            'message' => 'Cloudflare WARP установлен и ' . ($isConnected ? 'подключён' : 'отключён'),
+            'message' => 'Cloudflare WARP egress установлен' . ($warpOn ? ' и подключён' : ''),
             'details' => [
-                'warp_cli' => $warpCliCheck,
-                'service_status' => $svcStatus,
-                'warp_status_raw' => $warpStatus,
-                'connected' => $isConnected,
-                'registered' => $isRegistered,
-                'warp_mode' => $warpMode,
-                'warp_proxy_port' => (int) $proxyPort,
+                'service_status' => $egressStatus,
+                'connected' => $warpOn,
+                'registered' => true,
+                'warp_mode' => 'wireguard_netns_pool',
                 'warp_ip' => $warpIp,
-                'warp_account' => $accountId,
-                'port_listening' => $portListening !== '',
+                'pool_size' => $poolSize,
+                'active_profile' => $activeProfile,
                 'summary' => sprintf(
-                    'WARP %s, mode=%s, proxy=%s:%d%s',
-                    $isConnected ? 'connected' : 'disconnected',
-                    $warpMode ?: 'unknown',
-                    '127.0.0.1',
-                    (int) $proxyPort,
+                    'WARP client egress %s, mode=wireguard_netns_pool%s%s',
+                    $warpOn ? 'connected' : 'installed',
+                    $poolSize > 0 ? ', pool=' . ($activeProfile !== '' ? $activeProfile . '/' : '') . $poolSize : '',
                     $warpIp !== '' ? ', exit_ip=' . $warpIp : ''
                 )
             ]
@@ -1291,157 +1214,26 @@ class InstallProtocolManager
     private static function uninstallBuiltinWarp(VpnServer $server, array $protocol, array $options = []): array
     {
         $serverId = $server->getId();
-        Logger::appendInstall($serverId, 'Uninstalling Cloudflare WARP (full cleanup)...');
+        Logger::appendInstall($serverId, 'Uninstalling Cloudflare WARP egress (pool)...');
 
-        try {
-            // Run entire uninstall as a single remote script to avoid SSH escaping issues
-            $script = <<<'BASH'
-#!/bin/bash
-echo "WARP_UNINSTALL_START"
+        // The teardown lives in the protocol's uninstall_script (migration 085:
+        // stop systemd units, cleanup netns/veth/mangle/routing, remove profiles).
+        // Legacy warp-cli / redsocks / X-Ray-warp-out removal is gone with the
+        // v3 rewrite — this protocol only ever installs the WireGuard-netns pool.
+        $result = self::runScript($server, $protocol, 'uninstall', $options);
+        $output = (string) ($result['output'] ?? '');
+        $success = ($result['success'] ?? false) === true
+            || strpos($output, 'WARP_UNINSTALL_DONE') !== false;
 
-# 1. Restore X-Ray config
-XRAY_NAME=$(docker ps 2>/dev/null | grep -i xray | awk '{ print $NF }' | head -1)
-if [ -n "$XRAY_NAME" ]; then
-  # Try server.json first (actual runtime config), then config.json
-  XRAY_CFG_PATH=""
-  for P in /opt/amnezia/xray/server.json /etc/xray/config.json; do
-    CONTENT=$(docker exec "$XRAY_NAME" cat "$P" 2>/dev/null || echo "")
-    if [ -n "$CONTENT" ] && echo "$CONTENT" | grep -q "warp-out"; then
-      XRAY_CFG_PATH="$P"
-      XRAY_CFG="$CONTENT"
-      break
-    fi
-  done
-  if [ -n "$XRAY_CFG_PATH" ]; then
-    echo "$XRAY_CFG" | python3 -c "
-import sys, json
-try:
-    cfg = json.load(sys.stdin)
-    cfg['outbounds'] = [o for o in cfg.get('outbounds',[]) if o.get('tag') != 'warp-out']
-    if 'routing' in cfg:
-        cfg['routing']['rules'] = [r for r in cfg['routing'].get('rules',[]) if r.get('outboundTag') != 'warp-out']
-        if not cfg['routing']['rules']: del cfg['routing']
-    print(json.dumps(cfg, indent=2))
-except: pass
-" 2>/dev/null | docker exec -i "$XRAY_NAME" tee "$XRAY_CFG_PATH" > /dev/null 2>&1
-    docker restart "$XRAY_NAME" 2>/dev/null || true
-    echo "xray_restored"
-  fi
-fi
+        Logger::appendInstall($serverId, $success
+            ? 'WARP egress uninstalled successfully'
+            : 'WARP egress uninstall may have partially failed');
 
-# 2. Remove DNAT rules
-DOCKER_GW=$(docker network inspect bridge 2>/dev/null | grep Gateway | head -1 | awk -F'"' '{print $4}')
-if [ -z "$DOCKER_GW" ]; then DOCKER_GW="172.17.0.1"; fi
-iptables -t nat -D OUTPUT -d "$DOCKER_GW" -p tcp --dport 40000 -j DNAT --to-destination 127.0.0.1:40000 2>/dev/null || true
-iptables -t nat -D PREROUTING -d "$DOCKER_GW" -p tcp --dport 40000 -j DNAT --to-destination 127.0.0.1:40000 2>/dev/null || true
-iptables -t nat -D PREROUTING -d "$DOCKER_GW" -p tcp --dport 40000 -j DNAT --to-destination 127.0.0.1:40000 2>/dev/null || true
-echo "dnat_removed"
-
-# 3. Remove AWG2 WARP netns egress and legacy REDSOCKS chains
-systemctl stop awg2-warp-egress.service 2>/dev/null || true
-systemctl disable awg2-warp-egress.service 2>/dev/null || true
-
-STATE_DIR_AWG2="/var/lib/cloudflare-warp/awg2-egress"
-NS_AWG2="awg2warp"
-VETH_AWG2="awg2warp0"
-VETH_CIDR_AWG2="10.255.0.0/30"
-TABLE_AWG2="51888"
-MARK_AWG2="0x2cf2"
-CHAIN_AWG2="AWG2_WARP_EGRESS"
-OLD_CHAIN_AWG2="AWG2_WARP_TCP"
-
-AWG2_IPS=$(cat "$STATE_DIR_AWG2/container_ips" 2>/dev/null || docker exec amnezia-awg2 hostname -i 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9]+(\.[0-9]+){3}$' || true)
-for IP in $AWG2_IPS; do
-  while iptables -t mangle -D PREROUTING -s "$IP/32" -j "$CHAIN_AWG2" 2>/dev/null; do :; done
-  while iptables -t nat -D PREROUTING -s "$IP/32" -p tcp -j "$OLD_CHAIN_AWG2" 2>/dev/null; do :; done
-done
-
-iptables -t mangle -F "$CHAIN_AWG2" 2>/dev/null || true
-iptables -t mangle -X "$CHAIN_AWG2" 2>/dev/null || true
-iptables -t nat -F "$OLD_CHAIN_AWG2" 2>/dev/null || true
-iptables -t nat -X "$OLD_CHAIN_AWG2" 2>/dev/null || true
-while iptables -D FORWARD -i "$VETH_AWG2" -o eth0 -j ACCEPT 2>/dev/null; do :; done
-while iptables -D FORWARD -i eth0 -o "$VETH_AWG2" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null; do :; done
-while iptables -t nat -D POSTROUTING -s "$VETH_CIDR_AWG2" -o eth0 -j MASQUERADE 2>/dev/null; do :; done
-
-while ip rule del fwmark "$MARK_AWG2" table "$TABLE_AWG2" 2>/dev/null; do :; done
-ip route flush table "$TABLE_AWG2" 2>/dev/null || true
-ip link del "$VETH_AWG2" 2>/dev/null || true
-ip netns del "$NS_AWG2" 2>/dev/null || true
-rm -f /etc/systemd/system/awg2-warp-egress.service
-rm -f /usr/local/sbin/awg2-warp-egress
-rm -f /etc/wireguard/awg2-warp-egress.conf
-rm -rf "$STATE_DIR_AWG2"
-echo "awg2_warp_netns_removed"
-
-# 4. Remove REDSOCKS_WARP chain
-SUBNETS=$(cat /var/lib/cloudflare-warp/routed_subnets 2>/dev/null || echo "10.8.1.0/24 10.0.0.0/24")
-for S in $SUBNETS; do
-  iptables -t nat -D PREROUTING -s "$S" -p tcp -j REDSOCKS_WARP 2>/dev/null || true
-done
-iptables -t nat -F REDSOCKS_WARP 2>/dev/null || true
-iptables -t nat -X REDSOCKS_WARP 2>/dev/null || true
-echo "iptables_cleaned"
-
-# 5. Remove redsocks
-systemctl stop redsocks-warp 2>/dev/null || true
-systemctl disable redsocks-warp 2>/dev/null || true
-rm -f /etc/systemd/system/redsocks-warp.service
-rm -rf /etc/redsocks
-systemctl daemon-reload 2>/dev/null || true
-echo "redsocks_removed"
-
-# 6. Disconnect and remove WARP
-warp-cli --accept-tos disconnect 2>/dev/null || true
-warp-cli --accept-tos registration delete 2>/dev/null || true
-systemctl stop warp-svc 2>/dev/null || true
-systemctl disable warp-svc 2>/dev/null || true
-DEBIAN_FRONTEND=noninteractive apt-get remove -y cloudflare-warp >/dev/null 2>&1 || true
-apt-get autoremove -y >/dev/null 2>&1 || true
-echo "warp_removed"
-
-# 7. Cleanup
-rm -rf /var/lib/cloudflare-warp 2>/dev/null || true
-rm -f /etc/apt/sources.list.d/cloudflare-client.list 2>/dev/null || true
-rm -f /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg 2>/dev/null || true
-rm -f /etc/sysctl.d/99-warp.conf 2>/dev/null || true
-sysctl -w net.ipv4.conf.docker0.route_localnet=0 2>/dev/null || true
-sysctl -w net.ipv4.conf.all.route_localnet=0 2>/dev/null || true
-
-# 8. Save iptables
-mkdir -p /etc/iptables
-iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
-
-echo "WARP_UNINSTALL_DONE"
-BASH;
-
-            Logger::appendInstall($serverId, 'WARP uninstall: writing script to server...');
-            $b64 = base64_encode($script);
-            // Phase 1: write script file
-            $server->executeCommand("echo " . $b64 . " | base64 -d > /tmp/_warp_uninstall.sh && chmod +x /tmp/_warp_uninstall.sh", true);
-            Logger::appendInstall($serverId, 'WARP uninstall: executing script...');
-            // Phase 2: execute script
-            $output = $server->executeCommand("bash /tmp/_warp_uninstall.sh 2>&1; rm -f /tmp/_warp_uninstall.sh", true);
-            $outputStr = (string) $output;
-            Logger::appendInstall($serverId, 'WARP uninstall output: ' . substr(str_replace(["\r", "\n"], ' ', $outputStr), 0, 500));
-
-            $success = strpos($outputStr, 'WARP_UNINSTALL_DONE') !== false;
-
-            if ($success) {
-                Logger::appendInstall($serverId, 'WARP uninstalled successfully (full cleanup)');
-            } else {
-                Logger::appendInstall($serverId, 'WARP uninstall script may have partially failed');
-            }
-
-            return [
-                'success' => $success,
-                'message' => $success ? 'Cloudflare WARP удалён' : 'WARP удалён частично, проверьте логи',
-                'mode' => 'uninstall'
-            ];
-        } catch (Throwable $e) {
-            Logger::appendInstall($serverId, 'WARP uninstall exception: ' . $e->getMessage());
-            throw new Exception('WARP uninstall failed: ' . $e->getMessage());
-        }
+        return [
+            'success' => $success,
+            'message' => $success ? 'Cloudflare WARP удалён' : 'WARP удалён частично, проверьте логи',
+            'mode' => 'uninstall',
+        ];
     }
 
     /**
@@ -1464,39 +1256,18 @@ set +e
 b64() { base64 -w0 2>/dev/null || base64; }
 egress_unit="$(systemctl is-enabled awg2-warp-egress.service 2>/dev/null || true)"
 egress_ns="$(ip netns list 2>/dev/null | grep -w awg2warp || true)"
-if [ -n "$egress_unit" ] || [ -n "$egress_ns" ]; then
-  svc_status="$(systemctl is-active awg2-warp-egress.service 2>/dev/null || echo inactive)"
-  trace_out="$(ip netns exec awg2warp curl -4 -s --max-time 3 --resolve cloudflare.com:443:104.16.132.229 https://cloudflare.com/cdn-cgi/trace 2>/dev/null || true)"
-  printf 'mode_type=netns\n'
-  printf 'service_status=%s\n' "$svc_status"
-  printf 'trace_b64=%s\n' "$(printf '%s' "$trace_out" | b64)"
-  printf 'active_profile=%s\n' "$(cat /var/lib/cloudflare-warp/awg2-egress/active 2>/dev/null)"
-  printf 'pool_size=%s\n' "$(find /var/lib/cloudflare-warp/awg2-egress/profiles -mindepth 2 -maxdepth 2 -name profile.setconf 2>/dev/null | wc -l | tr -d ' ')"
-  printf 'rotations=%s\n' "$(cat /var/lib/cloudflare-warp/awg2-egress/rotation_count 2>/dev/null || echo 0)"
-  exit 0
-fi
-
-warp_cli="$(command -v warp-cli 2>/dev/null || true)"
-if [ -z "$warp_cli" ]; then
+if [ -z "$egress_unit" ] && [ -z "$egress_ns" ]; then
   printf 'mode_type=missing\n'
   exit 0
 fi
-
-svc_status="$(systemctl is-active warp-svc 2>/dev/null || echo inactive)"
-warp_status="$(warp-cli --accept-tos status 2>/dev/null || echo error)"
-proxy_port="$(warp-cli --accept-tos settings 2>/dev/null | grep -i 'proxy port' | grep -oE '[0-9]+' | head -1)"
-[ -n "$proxy_port" ] || proxy_port=40000
-port_check="$(ss -tlnp 2>/dev/null | grep ":${proxy_port}" | head -1 || true)"
-trace_out=""
-if printf '%s' "$warp_status" | grep -qi Connected && [ -n "$port_check" ]; then
-  trace_out="$(curl -x "socks5h://127.0.0.1:${proxy_port}" -s --max-time 3 https://cloudflare.com/cdn-cgi/trace 2>/dev/null || true)"
-fi
-printf 'mode_type=warp_cli\n'
+svc_status="$(systemctl is-active awg2-warp-egress.service 2>/dev/null || echo inactive)"
+trace_out="$(ip netns exec awg2warp curl -4 -s --max-time 3 --resolve cloudflare.com:443:104.16.132.229 https://cloudflare.com/cdn-cgi/trace 2>/dev/null || true)"
+printf 'mode_type=netns\n'
 printf 'service_status=%s\n' "$svc_status"
-printf 'warp_status_b64=%s\n' "$(printf '%s' "$warp_status" | b64)"
-printf 'proxy_port=%s\n' "$proxy_port"
-printf 'proxy_listening=%s\n' "$([ -n "$port_check" ] && echo 1 || echo 0)"
 printf 'trace_b64=%s\n' "$(printf '%s' "$trace_out" | b64)"
+printf 'active_profile=%s\n' "$(cat /var/lib/cloudflare-warp/awg2-egress/active 2>/dev/null)"
+printf 'pool_size=%s\n' "$(find /var/lib/cloudflare-warp/awg2-egress/profiles -mindepth 2 -maxdepth 2 -name profile.setconf 2>/dev/null | wc -l | tr -d ' ')"
+printf 'rotations=%s\n' "$(cat /var/lib/cloudflare-warp/awg2-egress/rotation_count 2>/dev/null || echo 0)"
 SH;
 
         $output = (string) $server->executeCommand($script, true);
@@ -1540,120 +1311,13 @@ SH;
             return $status;
         }
 
-        if (($values['mode_type'] ?? '') === 'missing') {
-            $status = [
-                'installed' => false,
-                'connected' => false,
-                'message' => 'WARP не установлен'
-            ];
-            @file_put_contents($cacheFile, json_encode($status));
-            return $status;
-        }
-
-        if (($values['mode_type'] ?? '') === 'warp_cli') {
-            $warpStatus = $decode('warp_status_b64');
-            $traceOut = $decode('trace_b64');
-            $warpIp = '';
-            if (preg_match('/ip=([^\s]+)/', $traceOut, $m)) {
-                $warpIp = $m[1];
-            }
-            $warpMode = '';
-            if (preg_match('/Mode:\s*(\S+)/i', $warpStatus, $m)) {
-                $warpMode = $m[1];
-            }
-            $status = [
-                'installed' => true,
-                'connected' => (bool) preg_match('/Connected/i', $warpStatus),
-                'service_status' => trim((string) ($values['service_status'] ?? 'inactive')),
-                'mode' => $warpMode,
-                'proxy_port' => (int) ($values['proxy_port'] ?? 40000),
-                'proxy_listening' => ($values['proxy_listening'] ?? '0') === '1',
-                'warp_ip' => $warpIp,
-                'warp_status_raw' => $warpStatus,
-            ];
-            @file_put_contents($cacheFile, json_encode($status));
-            return $status;
-        }
-
-        $egressUnit = trim($server->executeCommand('systemctl is-enabled awg2-warp-egress.service 2>/dev/null || echo ""', true));
-        $egressNs = trim($server->executeCommand('ip netns list 2>/dev/null | grep -w awg2warp || echo ""', true));
-        if ($egressUnit !== '' || $egressNs !== '') {
-            $svcStatus = trim($server->executeCommand('systemctl is-active awg2-warp-egress.service 2>/dev/null || echo "inactive"', true));
-            $traceOut = trim($server->executeCommand(
-                'ip netns exec awg2warp curl -4 -s --max-time 5 --resolve cloudflare.com:443:104.16.132.229 https://cloudflare.com/cdn-cgi/trace 2>/dev/null || echo ""',
-                true
-            ));
-            $warpIp = '';
-            if (preg_match('/ip=([^\s]+)/', $traceOut, $m)) {
-                $warpIp = $m[1];
-            }
-            $isConnected = (bool) preg_match('/warp=on/i', $traceOut);
-
-            return [
-                'installed' => true,
-                'connected' => $isConnected,
-                'service_status' => $svcStatus,
-                'mode' => 'wireguard_netns',
-                'proxy_port' => null,
-                'proxy_listening' => false,
-                'warp_ip' => $warpIp,
-                'warp_status_raw' => $traceOut,
-            ];
-        }
-
-        $warpCliCheck = trim($server->executeCommand('command -v warp-cli 2>/dev/null || echo ""', true));
-        if ($warpCliCheck === '') {
-            return [
-                'installed' => false,
-                'connected' => false,
-                'message' => 'WARP не установлен'
-            ];
-        }
-
-        $svcStatus = trim($server->executeCommand('systemctl is-active warp-svc 2>/dev/null || echo "inactive"', true));
-        $warpStatus = trim($server->executeCommand('warp-cli --accept-tos status 2>/dev/null || echo "error"', true));
-        $isConnected = (bool) preg_match('/Connected/i', $warpStatus);
-
-        $warpMode = '';
-        if (preg_match('/Mode:\s*(\S+)/i', $warpStatus, $m)) {
-            $warpMode = $m[1];
-        }
-
-        // Get proxy port from settings
-        $proxyPortRaw = trim($server->executeCommand('warp-cli --accept-tos settings 2>/dev/null | grep -i "proxy port" || echo ""', true));
-        $proxyPort = 40000;
-        if (preg_match('/(\d+)/', $proxyPortRaw, $m)) {
-            $proxyPort = (int) $m[1];
-        }
-
-        $warpIp = '';
-        $portListening = false;
-        if ($isConnected) {
-            $portCheck = trim($server->executeCommand(
-                'ss -tlnp 2>/dev/null | grep ":' . $proxyPort . '" | head -1 || echo ""', true
-            ));
-            $portListening = $portCheck !== '';
-
-            if ($portListening) {
-                $traceOut = trim($server->executeCommand(
-                    'curl -x socks5h://127.0.0.1:' . $proxyPort . ' -s --max-time 5 https://cloudflare.com/cdn-cgi/trace 2>/dev/null || echo ""', true
-                ));
-                if (preg_match('/ip=([^\s]+)/', $traceOut, $m)) {
-                    $warpIp = $m[1];
-                }
-            }
-        }
-
-        return [
-            'installed' => true,
-            'connected' => $isConnected,
-            'service_status' => $svcStatus,
-            'mode' => $warpMode,
-            'proxy_port' => $proxyPort,
-            'proxy_listening' => $portListening,
-            'warp_ip' => $warpIp,
-            'warp_status_raw' => $warpStatus,
+        $status = [
+            'installed' => false,
+            'connected' => false,
+            'message' => 'WARP egress не установлен',
         ];
+        @file_put_contents($cacheFile, json_encode($status));
+        return $status;
     }
 
 }
