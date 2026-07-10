@@ -1,12 +1,15 @@
 <style>
+/* Fixed layout so async metric updates never reflow / shift the columns. */
+.servers-table { table-layout: fixed; min-width: 720px; }
+.servers-table td, .servers-table th { overflow: hidden; }
 .server-metrics {
     display: flex;
-    gap: 12px;
+    flex-wrap: wrap;
+    gap: 6px;
     font-size: 0.75rem;
-    margin-top: 4px;
 }
 .metric-badge {
-    display: flex;
+    display: inline-flex;
     align-items: center;
     gap: 4px;
     padding: 2px 6px;
@@ -14,91 +17,91 @@
     border-radius: 4px;
     white-space: nowrap;
 }
-.metric-badge i {
-    font-size: 10px;
-}
-.metric-sparkline {
-    height: 20px;
-    width: 40px;
+.metric-badge i { font-size: 10px; }
+.metric-val {
     display: inline-block;
+    min-width: 2.6rem;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
 }
+.metric-val.net { min-width: 4.5rem; }
 </style>
 
 <div class="overflow-x-auto">
-  <table class="w-full" style="min-width: 760px;">
+  <table class="servers-table w-full">
+    <colgroup>
+      <col style="width: 24%">
+      <col style="width: 17%">
+      <col style="width: 12%">
+      <col style="width: 32%">
+      <col style="width: 15%">
+    </colgroup>
     <thead class="bg-gray-50">
       <tr>
-        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('servers.name') }}</th>
-        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('servers.host') }}</th>
-        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Пул</th>
-        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('servers.status') }}</th>
-        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('common.metrics') }}</th>
-        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('servers.actions') }}</th>
+        <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('servers.name') }}</th>
+        <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Пул</th>
+        <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('servers.status') }}</th>
+        <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('common.metrics') }}</th>
+        <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">{{ t('servers.actions') }}</th>
       </tr>
     </thead>
     <tbody>
       {% for server in servers %}
-      <tr class="border-t" data-server-id="{{ server.id }}">
-        <td class="px-6 py-4 font-medium">
-          {{ server.name }}
+      <tr class="border-t align-top" data-server-id="{{ server.id }}">
+        <td class="px-4 py-3">
+          <div class="font-medium text-gray-900 truncate">{{ server.name }}</div>
+          <div class="text-xs text-gray-400 font-mono truncate">{{ server.host }}</div>
         </td>
-        <td class="px-6 py-4">{{ server.host }}</td>
-        <td class="px-6 py-4">
+        <td class="px-4 py-3">
           {% if server.pool_name %}
-            <span class="text-sm text-gray-700">{{ server.pool_name }}</span>
+            <div class="text-xs text-gray-500 truncate mb-1">{{ server.pool_name }}</div>
             {% if server.pool_role == 'active' %}
-              <span class="inline-flex items-center gap-1 px-2 py-1 bg-green-100 text-green-800 rounded text-xs"><i class="fas fa-circle text-[7px]"></i>ACTIVE</span>
+              <span class="inline-flex items-center gap-1 px-2 py-0.5 bg-green-100 text-green-800 rounded text-xs"><i class="fas fa-circle text-[7px]"></i>ACTIVE</span>
             {% elseif server.pool_role == 'standby' %}
-              <span class="inline-flex items-center gap-1 px-2 py-1 bg-gray-100 text-gray-600 rounded text-xs"><i class="fas fa-clock"></i>STANDBY</span>
+              <span class="inline-flex items-center gap-1 px-2 py-0.5 bg-gray-100 text-gray-600 rounded text-xs"><i class="fas fa-clock"></i>STANDBY</span>
             {% endif %}
           {% else %}
             <span class="text-gray-400">—</span>
           {% endif %}
         </td>
-        <td class="px-6 py-4">
+        <td class="px-4 py-3">
           {% if server.status == 'active' %}
-            <span class="inline-flex items-center gap-1 px-2 py-1 bg-green-100 text-green-800 rounded text-sm"><i class="fas fa-circle text-[7px]"></i>{{ t('status.active') }}</span>
+            <span class="inline-flex items-center gap-1 px-2 py-1 bg-green-100 text-green-800 rounded text-xs"><i class="fas fa-circle text-[7px]"></i>{{ t('status.active') }}</span>
           {% elseif server.status == 'error' %}
-            <span class="inline-flex items-center gap-1 px-2 py-1 bg-red-100 text-red-800 rounded text-sm"><i class="fas fa-exclamation-circle"></i>{{ server.status }}</span>
+            <span class="inline-flex items-center gap-1 px-2 py-1 bg-red-100 text-red-800 rounded text-xs"><i class="fas fa-exclamation-circle"></i>{{ server.status }}</span>
           {% else %}
-            <span class="inline-flex items-center gap-1 px-2 py-1 bg-yellow-100 text-yellow-800 rounded text-sm"><i class="fas fa-clock"></i>{{ server.status }}</span>
+            <span class="inline-flex items-center gap-1 px-2 py-1 bg-yellow-100 text-yellow-800 rounded text-xs"><i class="fas fa-clock"></i>{{ server.status }}</span>
           {% endif %}
         </td>
-        <td class="px-6 py-4">
+        <td class="px-4 py-3">
           {% if server.status == 'active' %}
           <div class="server-metrics" id="metrics-{{ server.id }}">
-            <div class="metric-badge">
+            <div class="metric-badge" title="CPU">
               <i class="fas fa-microchip" style="color:#dc3545"></i>
               <span class="metric-val" data-metric="cpu">--</span>
             </div>
-            <div class="metric-badge">
+            <div class="metric-badge" title="RAM">
               <i class="fas fa-memory" style="color:#ffc107"></i>
               <span class="metric-val" data-metric="ram">--</span>
             </div>
-            <div class="metric-badge">
+            <div class="metric-badge" title="Disk">
               <i class="fas fa-hdd" style="color:#17a2b8"></i>
               <span class="metric-val" data-metric="disk">--</span>
             </div>
-            <div class="metric-badge">
+            <div class="metric-badge" title="Network ↓↑ Mbps">
               <i class="fas fa-network-wired" style="color:#28a745"></i>
-              <span class="metric-val" data-metric="network">--</span>
+              <span class="metric-val net" data-metric="network">--</span>
             </div>
           </div>
           {% else %}
           <span class="text-gray-400 text-xs">Не развёрнут</span>
           {% endif %}
         </td>
-        <td class="px-6 py-4 space-x-3">
-          <a href="/servers/{{ server.id }}" class="text-purple-600 hover:text-purple-900">
-            <i class="fas fa-eye mr-1"></i>{{ t('servers.view') }}
-          </a>
-          <a href="/servers/{{ server.id }}/monitoring" class="text-blue-600 hover:text-blue-900">
-            <i class="fas fa-chart-line mr-1"></i>Мониторинг
-          </a>
+        <td class="px-4 py-3 text-right whitespace-nowrap">
+          <a href="/servers/{{ server.id }}" class="text-purple-600 hover:text-purple-800 px-1.5" title="{{ t('servers.view') }}" aria-label="{{ t('servers.view') }}"><i class="fas fa-eye"></i></a>
+          <a href="/servers/{{ server.id }}/monitoring" class="text-blue-600 hover:text-blue-800 px-1.5" title="{{ t('monitoring.title') }}" aria-label="{{ t('monitoring.title') }}"><i class="fas fa-chart-line"></i></a>
           <form method="POST" action="/servers/{{ server.id }}/delete" class="inline" id="delete-form-{{ server.id }}">
-            <button type="button" class="text-red-600 hover:text-red-900" onclick="(async()=>{ event.stopPropagation(); if(await showConfirmModal('Удалить сервер {{ server.name }}?', 'Удаление сервера')) { document.getElementById('delete-form-{{ server.id }}').submit(); } })()">
-              <i class="fas fa-trash mr-1"></i>{{ t('servers.delete') }}
-            </button>
+            <button type="button" class="text-red-600 hover:text-red-800 px-1.5" title="{{ t('servers.delete') }}" aria-label="{{ t('servers.delete') }}" onclick="showConfirmModal('Сервер {{ server.name }} будет удалён. Контейнер будет остановлен.', 'Удалить сервер?', '{{ t('servers.delete') }}').then(function(ok){ if(ok) document.getElementById('delete-form-{{ server.id }}').submit(); })"><i class="fas fa-trash"></i></button>
           </form>
         </td>
       </tr>
@@ -125,13 +128,13 @@
         const metricsDiv = document.getElementById(`metrics-${serverId}`);
 
         if (metricsDiv) {
-          const cpuVal = parseFloat(latest.cpu_percent).toFixed(1);
+          const cpuVal = parseFloat(latest.cpu_percent).toFixed(0);
           metricsDiv.querySelector('[data-metric="cpu"]').textContent = `${cpuVal}%`;
 
-          const ramPercent = (latest.ram_used_mb / latest.ram_total_mb * 100).toFixed(0);
+          const ramPercent = (latest.ram_total_mb > 0 ? latest.ram_used_mb / latest.ram_total_mb * 100 : 0).toFixed(0);
           metricsDiv.querySelector('[data-metric="ram"]').textContent = `${ramPercent}%`;
 
-          const diskPercent = (latest.disk_used_gb / latest.disk_total_gb * 100).toFixed(0);
+          const diskPercent = (latest.disk_total_gb > 0 ? latest.disk_used_gb / latest.disk_total_gb * 100 : 0).toFixed(0);
           metricsDiv.querySelector('[data-metric="disk"]').textContent = `${diskPercent}%`;
 
           const netRx = parseFloat(latest.network_rx_mbps).toFixed(1);
