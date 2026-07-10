@@ -205,13 +205,13 @@ document.addEventListener('DOMContentLoaded', function() {
         .then(response => response.json())
         .then(result => {
             if (result.success) {
-                alert('{{ t('protocols.template_saved_successfully') }}');
+                showToast('{{ t('protocols.template_saved_successfully') }}', 'success');
             } else {
-                alert('{{ t('protocols.error_saving_template') }}: ' + result.error);
+                showToast('{{ t('protocols.error_saving_template') }}: ' + result.error, 'error');
             }
         })
         .catch(error => {
-            alert('{{ t('protocols.error_saving_template') }}: ' + error.message);
+            showToast('{{ t('protocols.error_saving_template') }}: ' + error.message, 'error');
         });
     });
 
@@ -227,15 +227,16 @@ document.addEventListener('DOMContentLoaded', function() {
         }
         
         templateEditor.value = template;
-        alert('{{ t('protocols.template_formatted') }}');
+        showToast('{{ t('protocols.template_formatted') }}', 'success');
     });
 
     // Clear template
     clearBtn.addEventListener('click', function() {
-        if (confirm('{{ t('protocols.confirm_clear_template') }}')) {
+        showConfirmModal('{{ t('protocols.confirm_clear_template') }}', 'Подтверждение', 'Очистить').then(function(ok) {
+            if (!ok) return;
             templateEditor.value = '';
             templatePreview.textContent = '{{ t('protocols.click_preview_to_see_output') }}';
-        }
+        });
     });
 
     // Copy variables

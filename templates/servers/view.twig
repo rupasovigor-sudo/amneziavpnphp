@@ -193,8 +193,8 @@
           if (!name) return;
           createBtn.disabled = true; createBtn.textContent = '…';
           fetch('/servers/' + SID + '/pool/create', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ name }) })
-            .then(r => r.json()).then(d => { alert(d.message || (d.success ? 'Пул создан' : d.error)); load(); })
-            .catch(e => { alert('Ошибка: ' + e); load(); });
+            .then(r => r.json()).then(d => { showToast(d.message || (d.success ? 'Пул создан' : d.error), d.success ? 'success' : 'error'); load(); })
+            .catch(e => { showToast('Ошибка: ' + e, 'error'); load(); });
         });
 
         function fmtAge(sec) {
@@ -218,16 +218,16 @@
         loadLiveClients();
 
         const joinBtn = document.getElementById('poolJoinBtn');
-        if (joinBtn) joinBtn.addEventListener('click', () => {
+        if (joinBtn) joinBtn.addEventListener('click', async () => {
           const sel = document.getElementById('poolJoinSelect');
           const poolId = sel && sel.value;
           if (!poolId) return;
-          if (!confirm('Добавить сервер в пул? Он будет передеплоен с общими ключами пула (~2 мин) и станет резервным (STANDBY). Текущая awg2-идентичность и клиенты этого сервера будут заменены на общие.')) return;
+          if (!(await showConfirmModal('Сервер будет передеплоен с общими ключами пула (~2 мин) и станет резервным (STANDBY). Текущая awg2-идентичность и клиенты этого сервера будут заменены на общие.', 'Добавить сервер в пул?', 'Добавить'))) return;
           joinBtn.disabled = true; joinBtn.textContent = '…';
           document.getElementById('standaloneMsg').textContent = 'Добавление в пул (передеплой ~2 мин, не закрывайте страницу)…';
           fetch('/servers/' + SID + '/pool/join', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ pool_id: Number(poolId) }) })
-            .then(r => r.json()).then(d => { alert(d.message || (d.success ? 'Добавлено в пул' : (d.error || 'Ошибка'))); load(); })
-            .catch(e => { alert('Ошибка/таймаут: ' + e + '\nОперация могла завершиться на сервере — обновите страницу.'); load(); })
+            .then(r => r.json()).then(d => { showToast(d.message || (d.success ? 'Добавлено в пул' : (d.error || 'Ошибка')), d.success ? 'success' : 'error'); load(); })
+            .catch(e => { showToast('Ошибка/таймаут: ' + e + '. Операция могла завершиться на сервере — обновите страницу.', 'error'); load(); })
             .finally(() => { joinBtn.disabled = false; joinBtn.textContent = 'Добавить в пул'; });
         });
 
@@ -239,7 +239,7 @@
         <button type="button" id="uninstallAllBtn" class="px-3 py-1 bg-gray-600 text-white rounded text-sm">Удалить все протоколы</button>
         <form method="POST" action="/servers/{{ server.id }}/delete" class="inline" id="deleteServerForm">
           <button type="button" class="px-3 py-1 bg-red-600 text-white rounded text-sm"
-            onclick="if(confirm('Удалить сервер {{ server.name }} из панели? Контейнер будет остановлен. Это действие необратимо.')){document.getElementById('deleteServerForm').submit();}">
+            onclick="showConfirmModal('Контейнер будет остановлен. Это действие необратимо.', 'Удалить сервер {{ server.name }}?', 'Удалить').then(function(ok){ if(ok) document.getElementById('deleteServerForm').submit(); })">
             <i class="fas fa-trash mr-1"></i>Удалить сервер
           </button>
         </form>
@@ -570,7 +570,7 @@ document.addEventListener('DOMContentLoaded', function() {
     uninstallAllBtn.addEventListener('click', async function(e) {
       e.preventDefault();
       e.stopPropagation();
-      if (!confirm('Удалить все Amnezia-контейнеры на сервере?')) return;
+      if (!(await showConfirmModal('Все Amnezia-контейнеры на сервере будут удалены.', 'Удалить все протоколы?', 'Удалить'))) return;
 
       const origHTML = uninstallAllBtn.innerHTML;
       uninstallAllBtn.disabled = true;
@@ -777,10 +777,10 @@ async function syncAllStats(serverId) {
     if (data.success) {
       location.reload();
     } else {
-      alert('Failed to sync stats: ' + (data.error || 'Unknown error'));
+      showToast('Ошибка синхронизации: ' + (data.error || 'Unknown error'), 'error');
     }
   } catch (error) {
-    alert('Error: ' + error.message);
+    showToast('Ошибка: ' + error.message, 'error');
   }
 }
 
@@ -1104,7 +1104,7 @@ async function diagnoseClient(clientId) {
     });
     const data = await response.json();
     if (!data.success) {
-      alert('Диагностика: ' + (data.error || 'ошибка'));
+      showToast('Диагностика: ' + (data.error || 'ошибка'), 'error');
       return;
     }
 
@@ -1121,7 +1121,7 @@ async function diagnoseClient(clientId) {
 
     alert(header.concat('', checks).join('\n'));
   } catch (e) {
-    alert('Диагностика: ' + e.message);
+    showToast('Диагностика: ' + e.message, 'error');
   }
 }
 

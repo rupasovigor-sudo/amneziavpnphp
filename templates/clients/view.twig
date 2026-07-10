@@ -27,7 +27,7 @@
         </a>
         {% if client.status == 'active' %}
           <form method="POST" action="/clients/{{ client.id }}/revoke" style="display:inline;">
-            <button type="submit" class="bg-orange-500 hover:bg-orange-600 text-white px-4 py-2 rounded" onclick="return confirm('Revoke access for this client?')">
+            <button type="button" class="bg-orange-500 hover:bg-orange-600 text-white px-4 py-2 rounded" onclick="showConfirmModal('Отозвать доступ у этого клиента?', 'Подтверждение', 'Отозвать').then(function(ok){ if(ok) this.closest('form').submit(); }.bind(this))">
               <i class="fas fa-ban"></i> Revoke
             </button>
           </form>
@@ -234,7 +234,7 @@ async function updateExpiration(event, clientId) {
     expiresAt = date.toISOString().slice(0, 19).replace('T', ' ');
     displayText = `${expiresAt} (${days} {{ t("common.days") }})`;
   } else {
-    alert('Please select an option');
+    showToast('Выберите значение', 'error');
     return;
   }
   
@@ -251,17 +251,17 @@ async function updateExpiration(event, clientId) {
     const data = await response.json();
     
     if (response.ok && data.success === true) {
-      alert('Expiration updated successfully');
+      showToast('Срок действия обновлён', 'success');
       document.getElementById('currentExpiration').textContent = displayText;
       // Reset form
       select.value = '';
       customInput.value = '';
       customInput.style.display = 'none';
     } else {
-      alert('Error: ' + (data.error || 'Unknown error'));
+      showToast('Ошибка: ' + (data.error || 'Unknown error'), 'error');
     }
   } catch (error) {
-    alert('Error: ' + error.message);
+    showToast('Ошибка: ' + error.message, 'error');
   }
 }
 
@@ -288,7 +288,7 @@ async function updateTrafficLimit(event, clientId) {
     limitBytes = parseFloat(select.value) * 1073741824;
     displayText = `${parseFloat(select.value).toFixed(2)} GB`;
   } else {
-    alert('Please select an option');
+    showToast('Выберите значение', 'error');
     return;
   }
   
@@ -305,14 +305,13 @@ async function updateTrafficLimit(event, clientId) {
     const data = await response.json();
     
     if (response.ok && data.success === true) {
-      alert('Traffic limit updated successfully');
-      // Reload page to show updated traffic info
-      window.location.reload();
+      showToast('Лимит трафика обновлён', 'success');
+      setTimeout(() => window.location.reload(), 900);
     } else {
-      alert('Error: ' + (data.error || 'Unknown error'));
+      showToast('Ошибка: ' + (data.error || 'Unknown error'), 'error');
     }
   } catch (error) {
-    alert('Error: ' + error.message);
+    showToast('Ошибка: ' + error.message, 'error');
   }
 }
 
@@ -333,10 +332,10 @@ async function syncStats(clientId) {
         ? '<span class="text-green-600"><i class="fas fa-circle text-xs"></i> ' + data.stats.last_seen + '</span>'
         : data.stats.last_seen;
     } else {
-      alert('Failed to sync stats: ' + (data.error || 'Unknown error'));
+      showToast('Ошибка синхронизации: ' + (data.error || 'Unknown error'), 'error');
     }
   } catch (error) {
-    alert('Error: ' + error.message);
+    showToast('Ошибка: ' + error.message, 'error');
   }
 }
 </script>

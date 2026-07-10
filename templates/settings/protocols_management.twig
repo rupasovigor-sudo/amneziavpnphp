@@ -147,7 +147,8 @@ document.addEventListener('DOMContentLoaded', function() {
             const protocolId = this.dataset.protocolId;
             const protocolName = this.dataset.protocolName;
 
-            if (confirm(`{{ t('protocols.confirm_delete_protocol') }} '${protocolName}'?`)) {
+            showConfirmModal(`{{ t('protocols.confirm_delete_protocol') }} '${protocolName}'?`, 'Подтверждение', 'Удалить').then(function(ok) {
+                if (!ok) return;
                 fetch(`/api/protocols/${protocolId}`, {
                     method: 'DELETE'
                 })
@@ -156,13 +157,13 @@ document.addEventListener('DOMContentLoaded', function() {
                     if (result.success) {
                         location.reload();
                     } else {
-                        alert('{{ t('protocols.error_deleting_protocol') }}: ' + result.error);
+                        showToast('{{ t('protocols.error_deleting_protocol') }}: ' + result.error, 'error');
                     }
                 })
                 .catch(error => {
-                    alert('{{ t('protocols.error_deleting_protocol') }}: ' + error.message);
+                    showToast('{{ t('protocols.error_deleting_protocol') }}: ' + error.message, 'error');
                 });
-            }
+            });
         });
     });
 });

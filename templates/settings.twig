@@ -241,7 +241,7 @@
                         <td class="px-6 py-4 text-sm text-gray-500">{{ u.created_at|date('Y-m-d') }}</td>
                         <td class="px-6 py-4 text-sm">
                             {% if u.id != user.id %}
-                            <form method="POST" action="/settings/delete-user/{{ u.id }}" class="inline" onsubmit="return confirm('{{ t('users.delete_confirm', [u.name]) }}')">
+                            <form method="POST" action="/settings/delete-user/{{ u.id }}" class="inline" onsubmit="var f=this; showConfirmModal('{{ t('users.delete_confirm', [u.name]) }}', 'Подтверждение', 'Удалить').then(function(ok){ if(ok) f.submit(); }); return false;">
                                 <button type="submit" class="text-red-600 hover:text-red-900">
                                     <i class="fas fa-trash"></i> {{ t('clients.delete') }}
                                 </button>
@@ -486,10 +486,10 @@ document.addEventListener('click', function(e) {
         })
             .then(r => r.json())
             .then(result => {
-                alert((result.success ? '✓ ' : '✗ ') + (result.message || 'Готово'));
+                showToast(result.message || 'Готово', result.success ? 'success' : 'error');
             })
             .catch(err => {
-                alert('Ошибка отправки: ' + err.message);
+                showToast('Ошибка отправки: ' + err.message, 'error');
             })
             .finally(() => {
                 alertButton.disabled = false;

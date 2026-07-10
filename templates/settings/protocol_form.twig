@@ -244,13 +244,13 @@ document.addEventListener('DOMContentLoaded', function() {
         
         if (!name || !slug) {
             e.preventDefault();
-            alert('{{ t('protocols.please_fill_required_fields') }}');
+            showToast('{{ t('protocols.please_fill_required_fields') }}', 'error');
             return;
         }
-        
+
         if (!/^[a-z0-9_-]+$/i.test(slug)) {
             e.preventDefault();
-            alert('{{ t('protocols.invalid_slug_format') }}');
+            showToast('{{ t('protocols.invalid_slug_format') }}', 'error');
             return;
         }
     });

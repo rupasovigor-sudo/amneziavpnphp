@@ -181,7 +181,8 @@ document.addEventListener('DOMContentLoaded', function() {
             e.stopPropagation();
             
             const file = this.dataset.file;
-            if (confirm('{{ "Удалить этот файл логов?" | trans }}')) {
+            showConfirmModal('{{ "Удалить этот файл логов?" | trans }}', 'Подтверждение', 'Удалить').then(function(ok) {
+                if (!ok) return;
                 fetch('/admin/logs/delete', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/x-www-form-urlencoded'},
@@ -192,10 +193,10 @@ document.addEventListener('DOMContentLoaded', function() {
                     if (data.success) {
                         window.location.href = data.redirect;
                     } else {
-                        alert('{{ "Ошибка:" | trans }} ' + data.message);
+                        showToast('{{ "Ошибка:" | trans }} ' + data.message, 'error');
                     }
                 });
-            }
+            });
         });
     });
 
@@ -203,14 +204,15 @@ document.addEventListener('DOMContentLoaded', function() {
     const clearAllBtn = document.getElementById('btnClearAll');
     if (clearAllBtn) {
         clearAllBtn.addEventListener('click', function() {
-            if (confirm('{{ "Удалить ВСЕ файлы логов? Это действие необратимо." | trans }}')) {
+            showConfirmModal('{{ "Удалить ВСЕ файлы логов? Это действие необратимо." | trans }}', 'Подтверждение', 'Удалить').then(function(ok) {
+                if (!ok) return;
                 fetch('/admin/logs/clear-all', {method: 'POST'})
                     .then(r => r.json())
                     .then(data => {
-                        alert(data.message);
-                        window.location.href = data.redirect;
+                        showToast(data.message, 'success');
+                        setTimeout(function(){ window.location.href = data.redirect; }, 800);
                     });
-            }
+            });
         });
     }
 
@@ -229,7 +231,7 @@ document.addEventListener('DOMContentLoaded', function() {
             if (data.success) {
                 showSearchResults(data);
             } else {
-                alert('{{ "Ошибка:" | trans }} ' + data.message);
+                showToast('{{ "Ошибка:" | trans }} ' + data.message, 'error');
             }
         });
     });
