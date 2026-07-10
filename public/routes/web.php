@@ -470,8 +470,17 @@ Router::post('/servers/{id}/deploy', function ($params) {
         // If the server has an endpoint domain and a DNS provider token is
         // configured, point the domain's A-record at this server. Best-effort:
         // never fail the deploy because of DNS.
+        // Pool-safe: a standby pool member must NOT repoint the shared domain on
+        // deploy (that would hijack traffic to a non-active node). Only the pool's
+        // active member — or a standalone server — updates the A-record.
         $domain = trim((string) ($serverData['domain'] ?? ''));
-        if (!empty($result['success']) && $domain !== '' && DnsManager::isConfigured()) {
+        $memberPoolId = (int) ($serverData['pool_id'] ?? 0);
+        $mayRepoint = true;
+        if ($memberPoolId > 0) {
+            $poolRow = ServerPool::get($memberPoolId);
+            $mayRepoint = $poolRow && (int) ($poolRow['active_server_id'] ?? 0) === $serverId;
+        }
+        if (!empty($result['success']) && $domain !== '' && $mayRepoint && DnsManager::isConfigured()) {
             try {
                 $dns = DnsManager::upsertARecord($domain, (string) ($serverData['host'] ?? ''));
                 $result['dns'] = $dns;

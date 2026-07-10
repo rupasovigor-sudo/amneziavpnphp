@@ -16,6 +16,8 @@ class TimewebDnsService
 {
     private const BASE_URL = 'https://api.timeweb.cloud';
     private const SERVICE = 'timeweb';
+    // A-record TTL (seconds). Low so a failover repoint reaches clients fast.
+    private const RECORD_TTL = 60;
 
     /** Read the Timeweb API token from api_keys (service_name = 'timeweb'). */
     public static function getToken(): ?string
@@ -128,7 +130,8 @@ class TimewebDnsService
             return ['success' => false, 'message' => "Failed to list DNS records: {$list['error']}", 'status' => $list['status'], 'response' => $list['body']];
         }
         $aRecordIds = self::aRecordIds($list['body']);
-        $payload = ['type' => 'A', 'value' => $ip];
+        // Low TTL so failover (A-record repoint) propagates to clients quickly.
+        $payload = ['type' => 'A', 'value' => $ip, 'ttl' => self::RECORD_TTL];
 
         if (empty($aRecordIds)) {
             $res = self::request('POST', $base, $payload, $token);
