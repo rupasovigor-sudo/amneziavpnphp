@@ -76,50 +76,7 @@
                 {{ t('dashboard.recent_servers') }}
             </h2>
         </div>
-        <div class="overflow-x-auto">
-        <table class="min-w-full divide-y divide-gray-200">
-            <thead class="bg-gray-50">
-                <tr>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('servers.name') }}</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('servers.host') }}</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('servers.status') }}</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('servers.actions') }}</th>
-                </tr>
-            </thead>
-            <tbody class="bg-white divide-y divide-gray-200">
-                {% for server in servers|slice(0, 5) %}
-                <tr>
-                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-                        {{ server.name }}
-                    </td>
-                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                        {{ server.host }}
-                    </td>
-                    <td class="px-6 py-4 whitespace-nowrap">
-                        {% if server.status == 'active' %}
-                        <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-green-100 text-green-800">
-                            {{ t('status.active') }}
-                        </span>
-                        {% elseif server.status == 'deploying' %}
-                        <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-yellow-100 text-yellow-800">
-                            {{ t('status.deploying') }}
-                        </span>
-                        {% else %}
-                        <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-red-100 text-red-800">
-                            {{ server.status|capitalize }}
-                        </span>
-                        {% endif %}
-                    </td>
-                    <td class="px-6 py-4 whitespace-nowrap text-sm">
-                        <a href="/servers/{{ server.id }}" class="text-purple-600 hover:text-purple-900">
-                            <i class="fas fa-eye"></i> {{ t('servers.view') }}
-                        </a>
-                    </td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-        </div>
+        {% include 'servers/_server_table.twig' %}
     </div>
     {% else %}
     <div class="bg-white rounded-lg shadow p-12 text-center">

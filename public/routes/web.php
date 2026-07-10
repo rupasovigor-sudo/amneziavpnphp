@@ -108,7 +108,7 @@ Router::get('/dashboard', function () {
     $user = Auth::user();
 
     // Get user's servers
-    $servers = VpnServer::redactServerList(VpnServer::listByUser($user['id']));
+    $servers = VpnServer::attachPoolInfo(VpnServer::redactServerList(VpnServer::listByUser($user['id'])));
 
     // Get user's clients
     $clients = VpnClient::listByUser($user['id']);
@@ -139,7 +139,7 @@ Router::get('/servers', function () {
     $servers = Auth::isAdmin()
         ? VpnServer::listAll()
         : VpnServer::listByUser($user['id']);
-    $servers = VpnServer::redactServerList($servers);
+    $servers = VpnServer::attachPoolInfo(VpnServer::redactServerList($servers));
 
     View::render('servers/index.twig', ['servers' => $servers]);
 });
@@ -921,8 +921,18 @@ Router::get('/servers/{id}/monitoring', function ($params) {
             return;
         }
 
-        // Get clients for this server
-        $clients = VpnClient::listByServer($serverId);
+        // Clients connect to the ACTIVE member of a pool, not the identity-donor
+        // home server — so show the pool's clients only on the active member;
+        // a standby member has none live.
+        $poolId = (int) ($serverData['pool_id'] ?? 0);
+        if ($poolId > 0) {
+            $stmt = DB::conn()->prepare('SELECT active_server_id FROM server_pools WHERE id = ?');
+            $stmt->execute([$poolId]);
+            $activeId = (int) $stmt->fetchColumn();
+            $clients = ($serverId === $activeId) ? VpnClient::listByPool($poolId) : [];
+        } else {
+            $clients = VpnClient::listByServer($serverId);
+        }
 
         View::render('servers/monitoring.twig', [
             'server' => VpnServer::redactServerSecrets($serverData),

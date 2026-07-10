@@ -583,6 +583,30 @@ BASH;
     }
 
     /**
+     * Annotate each server row with its pool membership for list views:
+     * pool_name (or null) and pool_role ('active' | 'standby' | null).
+     */
+    public static function attachPoolInfo(array $servers): array
+    {
+        $pools = [];
+        foreach (DB::conn()->query('SELECT id, name, active_server_id FROM server_pools') as $p) {
+            $pools[(int) $p['id']] = $p;
+        }
+        foreach ($servers as &$sv) {
+            $pid = (int) ($sv['pool_id'] ?? 0);
+            if ($pid > 0 && isset($pools[$pid])) {
+                $sv['pool_name'] = (string) $pools[$pid]['name'];
+                $sv['pool_role'] = ((int) ($sv['id'] ?? 0) === (int) $pools[$pid]['active_server_id']) ? 'active' : 'standby';
+            } else {
+                $sv['pool_name'] = null;
+                $sv['pool_role'] = null;
+            }
+        }
+        unset($sv);
+        return $servers;
+    }
+
+    /**
      * Delete server
      */
     public function delete(): bool

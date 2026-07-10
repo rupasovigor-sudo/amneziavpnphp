@@ -1,0 +1,177 @@
+<style>
+.server-metrics {
+    display: flex;
+    gap: 12px;
+    font-size: 0.75rem;
+    margin-top: 4px;
+}
+.metric-badge {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 6px;
+    background: #f3f4f6;
+    border-radius: 4px;
+    white-space: nowrap;
+}
+.metric-badge i {
+    font-size: 10px;
+}
+.metric-sparkline {
+    height: 20px;
+    width: 40px;
+    display: inline-block;
+}
+</style>
+
+<div class="overflow-x-auto">
+  <table class="w-full" style="min-width: 760px;">
+    <thead class="bg-gray-50">
+      <tr>
+        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('servers.name') }}</th>
+        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('servers.host') }}</th>
+        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Пул</th>
+        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('servers.status') }}</th>
+        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('common.metrics') }}</th>
+        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('servers.actions') }}</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for server in servers %}
+      <tr class="border-t" data-server-id="{{ server.id }}">
+        <td class="px-6 py-4 font-medium">
+          {{ server.name }}
+        </td>
+        <td class="px-6 py-4">{{ server.host }}</td>
+        <td class="px-6 py-4">
+          {% if server.pool_name %}
+            <span class="text-sm text-gray-700">{{ server.pool_name }}</span>
+            {% if server.pool_role == 'active' %}
+              <span class="inline-flex items-center gap-1 px-2 py-1 bg-green-100 text-green-800 rounded text-xs"><i class="fas fa-circle text-[7px]"></i>ACTIVE</span>
+            {% elseif server.pool_role == 'standby' %}
+              <span class="inline-flex items-center gap-1 px-2 py-1 bg-gray-100 text-gray-600 rounded text-xs"><i class="fas fa-clock"></i>STANDBY</span>
+            {% endif %}
+          {% else %}
+            <span class="text-gray-400">—</span>
+          {% endif %}
+        </td>
+        <td class="px-6 py-4">
+          {% if server.status == 'active' %}
+            <span class="inline-flex items-center gap-1 px-2 py-1 bg-green-100 text-green-800 rounded text-sm"><i class="fas fa-circle text-[7px]"></i>{{ t('status.active') }}</span>
+          {% elseif server.status == 'error' %}
+            <span class="inline-flex items-center gap-1 px-2 py-1 bg-red-100 text-red-800 rounded text-sm"><i class="fas fa-exclamation-circle"></i>{{ server.status }}</span>
+          {% else %}
+            <span class="inline-flex items-center gap-1 px-2 py-1 bg-yellow-100 text-yellow-800 rounded text-sm"><i class="fas fa-clock"></i>{{ server.status }}</span>
+          {% endif %}
+        </td>
+        <td class="px-6 py-4">
+          {% if server.status == 'active' %}
+          <div class="server-metrics" id="metrics-{{ server.id }}">
+            <div class="metric-badge">
+              <i class="fas fa-microchip" style="color:#dc3545"></i>
+              <span class="metric-val" data-metric="cpu">--</span>
+            </div>
+            <div class="metric-badge">
+              <i class="fas fa-memory" style="color:#ffc107"></i>
+              <span class="metric-val" data-metric="ram">--</span>
+            </div>
+            <div class="metric-badge">
+              <i class="fas fa-hdd" style="color:#17a2b8"></i>
+              <span class="metric-val" data-metric="disk">--</span>
+            </div>
+            <div class="metric-badge">
+              <i class="fas fa-network-wired" style="color:#28a745"></i>
+              <span class="metric-val" data-metric="network">--</span>
+            </div>
+          </div>
+          {% else %}
+          <span class="text-gray-400 text-xs">Не развёрнут</span>
+          {% endif %}
+        </td>
+        <td class="px-6 py-4 space-x-3">
+          <a href="/servers/{{ server.id }}" class="text-purple-600 hover:text-purple-900">
+            <i class="fas fa-eye mr-1"></i>{{ t('servers.view') }}
+          </a>
+          <a href="/servers/{{ server.id }}/monitoring" class="text-blue-600 hover:text-blue-900">
+            <i class="fas fa-chart-line mr-1"></i>Мониторинг
+          </a>
+          <form method="POST" action="/servers/{{ server.id }}/delete" class="inline" id="delete-form-{{ server.id }}">
+            <button type="button" class="text-red-600 hover:text-red-900" onclick="(async()=>{ event.stopPropagation(); if(await showConfirmModal('Удалить сервер {{ server.name }}?', 'Удаление сервера')) { document.getElementById('delete-form-{{ server.id }}').submit(); } })()">
+              <i class="fas fa-trash mr-1"></i>{{ t('servers.delete') }}
+            </button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<script>
+(function() {
+  if (window.__serverMetricsInit) { return; }
+  window.__serverMetricsInit = true;
+
+  async function updateServerMetrics(serverId) {
+    try {
+      const response = await fetch(`/api/servers/${serverId}/metrics?hours=1`, {
+        credentials: 'same-origin'
+      });
+
+      const data = await response.json();
+
+      if (data.success && data.metrics.length > 0) {
+        const latest = data.metrics[data.metrics.length - 1];
+        const metricsDiv = document.getElementById(`metrics-${serverId}`);
+
+        if (metricsDiv) {
+          const cpuVal = parseFloat(latest.cpu_percent).toFixed(1);
+          metricsDiv.querySelector('[data-metric="cpu"]').textContent = `${cpuVal}%`;
+
+          const ramPercent = (latest.ram_used_mb / latest.ram_total_mb * 100).toFixed(0);
+          metricsDiv.querySelector('[data-metric="ram"]').textContent = `${ramPercent}%`;
+
+          const diskPercent = (latest.disk_used_gb / latest.disk_total_gb * 100).toFixed(0);
+          metricsDiv.querySelector('[data-metric="disk"]').textContent = `${diskPercent}%`;
+
+          const netRx = parseFloat(latest.network_rx_mbps).toFixed(1);
+          const netTx = parseFloat(latest.network_tx_mbps).toFixed(1);
+          metricsDiv.querySelector('[data-metric="network"]').textContent = `↓${netRx}↑${netTx}`;
+        }
+      }
+    } catch (error) {
+      console.error(`Failed to fetch metrics for server ${serverId}:`, error);
+    }
+  }
+
+  function collectActiveServerIds() {
+    const ids = [];
+    document.querySelectorAll('[data-server-id]').forEach(row => {
+      const id = row.getAttribute('data-server-id');
+      if (id && document.getElementById(`metrics-${id}`)) {
+        ids.push(id);
+      }
+    });
+    return ids;
+  }
+
+  function updateAllMetrics() {
+    collectActiveServerIds().forEach(serverId => {
+      updateServerMetrics(serverId);
+    });
+  }
+
+  function start() {
+    if (collectActiveServerIds().length > 0) {
+      updateAllMetrics();
+      setInterval(updateAllMetrics, 30000);
+    }
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', start);
+  } else {
+    start();
+  }
+})();
+</script>

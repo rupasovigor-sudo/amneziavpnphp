@@ -23,17 +23,20 @@
     {% if user and user.role == 'admin' %}
     <div class="mb-6 border-b border-gray-200">
         <nav class="-mb-px flex space-x-8">
-            <a href="/settings" class="tab-link border-transparent text-gray-500 hover:text-gray-700 py-4 px-1 border-b-2 font-medium text-sm">
+            <a href="/settings#profile" class="tab-link border-transparent text-gray-500 hover:text-gray-700 py-4 px-1 border-b-2 font-medium text-sm">
                 <i class="fas fa-user mr-2"></i>{{ t('settings.profile') }}
             </a>
-            <a href="/settings" class="tab-link border-transparent text-gray-500 hover:text-gray-700 py-4 px-1 border-b-2 font-medium text-sm">
+            <a href="/settings#api" class="tab-link border-transparent text-gray-500 hover:text-gray-700 py-4 px-1 border-b-2 font-medium text-sm">
                 <i class="fas fa-key mr-2"></i>{{ t('settings.api_keys') }}
             </a>
-            <a href="/settings" class="tab-link border-transparent text-gray-500 hover:text-gray-700 py-4 px-1 border-b-2 font-medium text-sm">
+            <a href="/settings#users" class="tab-link border-transparent text-gray-500 hover:text-gray-700 py-4 px-1 border-b-2 font-medium text-sm">
                 <i class="fas fa-users mr-2"></i>{{ t('settings.users') }}
             </a>
-            <a href="/settings/protocols" class="tab-link border-transparent text-gray-500 hover:text-gray-700 py-4 px-1 border-b-2 font-medium text-sm">
-                <i class="fas fa-cubes mr-2"></i>Protocols
+            <a href="/settings#alerts" class="tab-link border-transparent text-gray-500 hover:text-gray-700 py-4 px-1 border-b-2 font-medium text-sm">
+                <i class="fas fa-bell mr-2"></i>Оповещения
+            </a>
+            <a href="/settings#protocols" class="tab-link border-transparent text-gray-500 hover:text-gray-700 py-4 px-1 border-b-2 font-medium text-sm">
+                <i class="fas fa-cubes mr-2"></i>{{ t('settings.protocol_management') }}
             </a>
             <a href="/admin/logs" class="tab-link border-purple-500 text-purple-600 py-4 px-1 border-b-2 font-medium text-sm">
                 <i class="fas fa-file-alt mr-2"></i>{{ 'Логи' | trans }}
