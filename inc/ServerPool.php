@@ -289,16 +289,21 @@ class ServerPool
     }
 
     /**
-     * Auto-failover pass (run each monitoring cycle): for every pool whose active
-     * member has been failing critical health checks for >= $threshold cycles,
-     * repoint the domain to a healthy standby. Deliberately uses the panel's own
-     * health checks (ssh/container/interface), NOT a server-to-server UDP probe
-     * (that gives false negatives). No auto-failback.
+     * Auto-heal + failover pass (run each monitoring cycle): for every pool whose
+     * active member has been failing critical health checks for >= $threshold
+     * cycles, FIRST try to self-heal (restart the awg2 container) for up to
+     * $maxRepairs attempts; only when repair is exhausted (or SSH itself is down,
+     * so we can't heal) repoint the domain to a healthy standby.
      *
-     * @return array<int, array{pool:int, action:string, from?:int, to?:int}>
+     * Deliberately uses the panel's own health checks (ssh/container/interface),
+     * NOT a server-to-server UDP probe (that gives false negatives). No
+     * auto-failback.
+     *
+     * @return array<int, array{pool:int, action:string, from?:int, to?:int, server?:int, attempt?:int, max?:int, ok?:bool, reason?:string}>
      */
-    public static function checkAndFailover(int $threshold = 3): array
+    public static function checkAndFailover(int $threshold = 3, int $maxRepairs = 2): array
     {
+        $maxRepairs = max(0, $maxRepairs);
         $results = [];
         foreach (self::list() as $pool) {
             $poolId = (int) $pool['id'];
@@ -307,19 +312,143 @@ class ServerPool
                 continue;
             }
             if (!self::memberCriticalDown($activeId, $threshold)) {
-                continue; // active is healthy — nothing to do
+                // Active is healthy. If we'd been repairing it and it recovered,
+                // announce the self-heal, then clear the counter.
+                $prior = self::repairAttempts($poolId, $activeId);
+                if ($prior > 0) {
+                    error_log("ServerPool: pool {$poolId} active #{$activeId} recovered after {$prior} self-heal attempt(s)");
+                    self::notifySelfHeal($poolId, $activeId, $prior);
+                }
+                self::clearRepairState($poolId, $activeId);
+                continue;
             }
+
+            // Active member is DOWN. Decide: self-heal first, or fail over.
+            $sshDown = self::checkOpen($activeId, 'ssh', $threshold);
+            $attempts = self::repairAttempts($poolId, $activeId);
+
+            // If SSH is reachable and we still have repair budget, try to fix it
+            // in place before disturbing clients with a failover. We only ISSUE
+            // the restart here and count the attempt — whether it worked is
+            // judged by the NEXT monitoring cycle's health checks (authoritative),
+            // not by an inline probe (SSH to a struggling host can time out and
+            // give a false "still down").
+            if (!$sshDown && $attempts < $maxRepairs) {
+                $issued = self::attemptRepair($activeId);
+                self::recordRepairAttempt($poolId, $activeId);
+                error_log(sprintf(
+                    "ServerPool: pool %d active #%d DOWN — self-heal attempt %d/%d (%s); awaiting next health cycle",
+                    $poolId, $activeId, $attempts + 1, $maxRepairs, $issued ? 'restart issued' : 'restart command failed'
+                ));
+                $results[] = [
+                    'pool' => $poolId, 'action' => 'repair_attempt',
+                    'server' => $activeId, 'attempt' => $attempts + 1, 'max' => $maxRepairs, 'ok' => $issued,
+                ];
+                continue; // give the next monitoring cycle a chance to confirm health
+            }
+
+            // Repair budget exhausted (or SSH is down and we can't heal) — fail over.
             $candidate = self::pickHealthyStandby($poolId, $activeId, $threshold);
             if ($candidate === null) {
                 error_log("ServerPool: pool {$poolId} active #{$activeId} is DOWN but no healthy standby available");
                 $results[] = ['pool' => $poolId, 'action' => 'no_candidate', 'from' => $activeId];
                 continue;
             }
-            error_log("ServerPool: pool {$poolId} auto-failover #{$activeId} -> #{$candidate}");
-            self::setActive($poolId, $candidate, 'auto_failover');
-            $results[] = ['pool' => $poolId, 'action' => 'failover', 'from' => $activeId, 'to' => $candidate];
+            $reason = $sshDown ? 'auto_failover (ssh down, self-heal impossible)' : 'auto_failover (self-heal exhausted)';
+            error_log("ServerPool: pool {$poolId} {$reason} #{$activeId} -> #{$candidate}");
+            self::setActive($poolId, $candidate, $reason);
+            self::clearRepairState($poolId, $activeId);
+            $results[] = ['pool' => $poolId, 'action' => 'failover', 'from' => $activeId, 'to' => $candidate, 'reason' => $reason];
         }
         return $results;
+    }
+
+    /**
+     * Issue a best-effort restart of a member's awg2 service: start the container
+     * if it's stopped, otherwise restart it. Returns true if the restart command
+     * was sent without an SSH-layer error (NOT a health verdict — the next
+     * monitoring cycle confirms whether the member actually recovered).
+     */
+    private static function attemptRepair(int $serverId): bool
+    {
+        try {
+            $server = new VpnServer($serverId);
+            $data = $server->getData();
+            if (!$data) {
+                return false;
+            }
+            $container = trim((string) ($data['container_name'] ?? 'amnezia-awg2')) ?: 'amnezia-awg2';
+            $server->executeCommand(
+                "docker start {$container} 2>/dev/null || docker restart {$container} 2>/dev/null || true",
+                true
+            );
+            return true;
+        } catch (Throwable $e) {
+            error_log("ServerPool::attemptRepair(#{$serverId}) failed: " . $e->getMessage());
+            return false;
+        }
+    }
+
+    /** How many self-heal attempts have been made for this active member. */
+    private static function repairAttempts(int $poolId, int $serverId): int
+    {
+        $stmt = DB::conn()->prepare('SELECT repair_attempts FROM pool_repair_state WHERE pool_id = ? AND server_id = ?');
+        $stmt->execute([$poolId, $serverId]);
+        $v = $stmt->fetchColumn();
+        return $v === false ? 0 : (int) $v;
+    }
+
+    /** Record one self-heal attempt (upsert, bump the counter). */
+    private static function recordRepairAttempt(int $poolId, int $serverId): void
+    {
+        $stmt = DB::conn()->prepare(
+            'INSERT INTO pool_repair_state (pool_id, server_id, repair_attempts, last_repair_at)
+             VALUES (?, ?, 1, NOW())
+             ON DUPLICATE KEY UPDATE repair_attempts = repair_attempts + 1, last_repair_at = NOW()'
+        );
+        $stmt->execute([$poolId, $serverId]);
+    }
+
+    /** Reset the self-heal counter (member recovered or we failed over). */
+    private static function clearRepairState(int $poolId, int $serverId): void
+    {
+        $stmt = DB::conn()->prepare('DELETE FROM pool_repair_state WHERE pool_id = ? AND server_id = ?');
+        $stmt->execute([$poolId, $serverId]);
+    }
+
+    /** True if a specific check is open with fail_count >= threshold. */
+    private static function checkOpen(int $serverId, string $check, int $threshold): bool
+    {
+        $stmt = DB::conn()->prepare(
+            "SELECT fail_count FROM alert_states WHERE alert_key = ? AND status = 'open' LIMIT 1"
+        );
+        $stmt->execute(["server:{$serverId}:{$check}"]);
+        $fc = $stmt->fetchColumn();
+        return $fc !== false && (int) $fc >= $threshold;
+    }
+
+    /** Notify that a member recovered by self-heal (no failover needed). */
+    private static function notifySelfHeal(int $poolId, int $serverId, int $attempt): void
+    {
+        try {
+            $stmt = DB::conn()->prepare('SELECT name FROM vpn_servers WHERE id = ?');
+            $stmt->execute([$serverId]);
+            $name = (string) $stmt->fetchColumn();
+            $msg = sprintf(
+                'Пул #%d: сервис на активном сервере %s (#%d) упал и был автоматически восстановлен (рестарт контейнера, попытка %d). Переключение не потребовалось.',
+                $poolId, $name !== '' ? $name : '?', $serverId, $attempt
+            );
+            (new AlertManager())->recordEvent(
+                $serverId,
+                $name !== '' ? $name : ('server#' . $serverId),
+                'pool_self_healed',
+                $msg,
+                'warning',
+                'pool:' . $poolId . ':selfheal:' . $serverId . ':' . floor(time() / 120)
+            );
+        } catch (Throwable $e) {
+            error_log('ServerPool::notifySelfHeal failed: ' . $e->getMessage());
+        }
     }
 
     /** A member is "down" if any critical check is open with fail_count >= threshold. */

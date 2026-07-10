@@ -306,15 +306,21 @@ while (true) {
         ServerMonitoring::cleanOldMetrics();
 
         // Failover pools: if an active member has been failing critical health
-        // checks, repoint the domain to a healthy standby (and notify). Uses the
-        // health just recorded above; no server-to-server UDP probe.
+        // checks, FIRST try to self-heal (restart the awg2 container) for a few
+        // attempts, and only if that doesn't recover it repoint the domain to a
+        // healthy standby (and notify). Uses the health just recorded above; no
+        // server-to-server UDP probe.
         if (in_array(strtolower((string) Config::get('AMNEZIA_AUTO_FAILOVER_ENABLED', '1')), ['1', 'true', 'yes', 'on'], true)) {
             try {
                 $failThreshold = max(2, (int) Config::get('AMNEZIA_FAILOVER_FAILURE_THRESHOLD', '3'));
-                foreach (ServerPool::checkAndFailover($failThreshold) as $fo) {
-                    if (($fo['action'] ?? '') === 'failover') {
-                        echo "[" . date('Y-m-d H:i:s') . "] POOL FAILOVER: pool {$fo['pool']} #{$fo['from']} -> #{$fo['to']}\n";
-                    } elseif (($fo['action'] ?? '') === 'no_candidate') {
+                $maxRepairs = max(0, (int) Config::get('AMNEZIA_FAILOVER_MAX_REPAIRS', '2'));
+                foreach (ServerPool::checkAndFailover($failThreshold, $maxRepairs) as $fo) {
+                    $act = $fo['action'] ?? '';
+                    if ($act === 'failover') {
+                        echo "[" . date('Y-m-d H:i:s') . "] POOL FAILOVER: pool {$fo['pool']} #{$fo['from']} -> #{$fo['to']} ({$fo['reason']})\n";
+                    } elseif ($act === 'repair_attempt') {
+                        echo "[" . date('Y-m-d H:i:s') . "] POOL SELF-HEAL: pool {$fo['pool']} server #{$fo['server']} restart issued (attempt {$fo['attempt']}/{$fo['max']})\n";
+                    } elseif ($act === 'no_candidate') {
                         echo "[" . date('Y-m-d H:i:s') . "] POOL: active #{$fo['from']} down, no healthy standby\n";
                     }
                 }
