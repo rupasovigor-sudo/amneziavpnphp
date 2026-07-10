@@ -163,8 +163,6 @@ Router::post('/servers/create', function () {
     $user = Auth::user();
     $creationMode = $_POST['creation_mode'] ?? 'manual';
     $formData = $_POST;
-    $formData['backup_upload_type'] = $_POST['backup_upload_type'] ?? 'auto';
-    $formData['backup_server_index'] = $_POST['backup_server_index'] ?? '';
     $protocols = InstallProtocolManager::listStandalone();
     $defaultProtocol = InstallProtocolManager::getDefaultSlug();
     $formData['install_protocol'] = $_POST['install_protocol'] ?? $defaultProtocol;
@@ -174,137 +172,6 @@ Router::post('/servers/create', function () {
     }, $protocols);
     if (!in_array($formData['install_protocol'], $standaloneSlugs, true)) {
         $formData['install_protocol'] = $defaultProtocol;
-    }
-
-    if ($creationMode === 'backup') {
-        $token = $_POST['backup_token'] ?? '';
-        $serverIndexRaw = $_POST['backup_server_index'] ?? '';
-        $serverIndex = $serverIndexRaw === '' ? -1 : (int) $serverIndexRaw;
-        $uploadType = $_POST['backup_upload_type'] ?? 'auto';
-        $serversMeta = [];
-
-        if (isset($_FILES['backup_upload']) && $_FILES['backup_upload']['error'] === UPLOAD_ERR_OK) {
-            $originalName = $_FILES['backup_upload']['name'] ?? 'uploaded-backup.json';
-            $tmpPath = $_FILES['backup_upload']['tmp_name'];
-            $storagePath = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'amnezia_backup_' . bin2hex(random_bytes(16));
-
-            try {
-                validateUploadedFileSize($_FILES['backup_upload'], 'Backup file');
-            } catch (Exception $e) {
-                View::render('servers/create.twig', [
-                    'error' => $e->getMessage(),
-                    'selected_mode' => 'backup',
-                    'form_data' => $formData,
-                    'protocols' => $protocols,
-                    'default_protocol' => $defaultProtocol
-                ]);
-                return;
-            }
-
-            if (!move_uploaded_file($tmpPath, $storagePath)) {
-                View::render('servers/create.twig', [
-                    'error' => 'Failed to store uploaded backup file',
-                    'selected_mode' => 'backup',
-                    'form_data' => $formData,
-                    'protocols' => $protocols,
-                    'default_protocol' => $defaultProtocol
-                ]);
-                return;
-            }
-
-            try {
-                $parsed = BackupParser::parse($storagePath);
-                if ($uploadType !== 'auto' && $parsed['type'] !== $uploadType) {
-                    throw new Exception('Uploaded backup type does not match selection');
-                }
-            } catch (Exception $e) {
-                @unlink($storagePath);
-                View::render('servers/create.twig', [
-                    'error' => $e->getMessage(),
-                    'selected_mode' => 'backup',
-                    'form_data' => $formData,
-                    'protocols' => $protocols,
-                    'default_protocol' => $defaultProtocol
-                ]);
-                return;
-            }
-
-            if ($token && BackupLibrary::isUploadToken($token)) {
-                BackupLibrary::forgetUpload($token);
-            }
-
-            $uploadRecord = BackupLibrary::registerUploaded($originalName, $storagePath, $parsed);
-            $token = $uploadRecord['token'];
-            $formData['backup_token'] = $token;
-            $serversMeta = $uploadRecord['servers'] ?? [];
-        } else {
-            $serversMeta = $token ? BackupLibrary::getUploadServers($token) : [];
-        }
-
-        try {
-            if ($token === '') {
-                throw new Exception('Upload a backup file before importing');
-            }
-
-            if ($serverIndex < 0) {
-                if (!empty($serversMeta)) {
-                    if (count($serversMeta) === 1) {
-                        $serverIndex = (int) $serversMeta[0]['index'];
-                        $formData['backup_server_index'] = (string) $serverIndex;
-                    } else {
-                        $formData['uploaded_servers'] = $serversMeta;
-                        View::render('servers/create.twig', [
-                            'error' => 'Select a server entry from the uploaded backup',
-                            'selected_mode' => 'backup',
-                            'form_data' => $formData,
-                            'protocols' => $protocols,
-                            'default_protocol' => $defaultProtocol
-                        ]);
-                        return;
-                    }
-                } else {
-                    throw new Exception('Unable to read servers from uploaded backup');
-                }
-            } else {
-                if (!empty($serversMeta)) {
-                    $formData['uploaded_servers'] = $serversMeta;
-                }
-            }
-
-            $serverData = BackupLibrary::loadServer($token, $serverIndex);
-            $serverId = VpnServer::importFromBackup($user['id'], $serverData);
-
-            $serverModel = new VpnServer($serverId);
-            $serverRecord = $serverModel->getData();
-
-            foreach ($serverData['clients'] as $clientData) {
-                try {
-                    VpnClient::importFromBackup($serverRecord, $user['id'], $clientData);
-                } catch (Exception $clientError) {
-                    error_log('Client import failed: ' . $clientError->getMessage());
-                }
-            }
-
-            if (BackupLibrary::isUploadToken($token)) {
-                BackupLibrary::forgetUpload($token);
-            }
-
-            $_SESSION['success_message'] = 'Server imported from backup';
-            redirect('/servers/' . $serverId);
-        } catch (Exception $e) {
-            if (!empty($serversMeta)) {
-                $formData['uploaded_servers'] = $serversMeta;
-            }
-            View::render('servers/create.twig', [
-                'error' => $e->getMessage(),
-                'selected_mode' => 'backup',
-                'form_data' => $formData,
-                'protocols' => $protocols,
-                'default_protocol' => $defaultProtocol
-            ]);
-        }
-
-        return;
     }
 
     $name = trim($_POST['name'] ?? '');
@@ -983,56 +850,12 @@ Router::get('/servers/{id}', function ($params) {
             $clients = VpnClient::listByServer($serverId);
         }
 
-        // Flash message from manual config import
-        $importMessage = $_SESSION['import_message'] ?? null;
-        if ($importMessage) {
-            unset($_SESSION['import_message']);
-        }
-
-        // Check for pending import if no flash message was set
-        if ($importMessage === null && !empty($_SESSION['pending_import']) && $_SESSION['pending_import']['server_id'] == $serverId) {
-            $pendingImport = $_SESSION['pending_import'];
-
-            // Only process import if server is active
-            if ($serverData['status'] === 'active') {
-                try {
-                    $backupContent = file_get_contents($pendingImport['backup_file']);
-
-                    $importer = new PanelImporter($serverId, $user['id'], $pendingImport['panel_type']);
-                    $importer->parseBackupFile($backupContent);
-                    $result = $importer->import();
-
-                    if ($result['success']) {
-                        $importMessage = [
-                            'type' => 'success',
-                            'text' => "Successfully imported {$result['imported_count']} clients"
-                        ];
-                    }
-
-                    // Clean up
-                    @unlink($pendingImport['backup_file']);
-                    unset($_SESSION['pending_import']);
-
-                } catch (Exception $e) {
-                    $importMessage = [
-                        'type' => 'error',
-                        'text' => 'Import failed: ' . $e->getMessage()
-                    ];
-                    unset($_SESSION['pending_import']);
-                }
-
-                // Refresh clients list after import
-                $clients = VpnClient::listByServer($serverId);
-            }
-        }
-
         // Get online clients for this server (Xray)
         $onlineLogins = ServerMonitoring::getOnlineClientsForServer($serverData);
 
         View::render('servers/view.twig', [
             'server' => VpnServer::redactServerSecrets($serverData),
             'clients' => $clients,
-            'import_message' => $importMessage,
             'server_protocols' => $serverProtocols,
             'selected_protocol_id' => $selectedProtocolId,
             'available_protocols' => $availableProtocols,
@@ -1075,114 +898,6 @@ Router::get('/servers/{id}/monitoring', function ($params) {
         http_response_code(404);
         echo 'Server not found';
     }
-});
-
-// Import server configuration from uploaded backup
-Router::post('/servers/{id}/config/import', function ($params) {
-    requireAuth();
-    $user = Auth::user();
-    $serverId = (int) $params['id'];
-
-    try {
-        $server = new VpnServer($serverId);
-        $serverData = $server->getData();
-
-        if (!$serverData) {
-            throw new Exception('Server not found');
-        }
-
-        if ($serverData['user_id'] != $user['id'] && !Auth::isAdmin()) {
-            throw new Exception('Недостаточно прав для импорта конфигурации');
-        }
-
-        if (!isset($_FILES['config_file']) || $_FILES['config_file']['error'] !== UPLOAD_ERR_OK) {
-            throw new Exception('Файл конфигурации не загружен');
-        }
-
-        validateUploadedFileSize($_FILES['config_file'], 'Config file');
-
-        $tmpPath = $_FILES['config_file']['tmp_name'];
-        if (!is_uploaded_file($tmpPath)) {
-            throw new Exception('Не удалось прочитать загруженный файл');
-        }
-
-        $storagePath = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'config_import_' . bin2hex(random_bytes(16));
-        if (!move_uploaded_file($tmpPath, $storagePath)) {
-            throw new Exception('Не удалось сохранить загруженный файл');
-        }
-
-        try {
-            $parsed = BackupParser::parse($storagePath);
-        } finally {
-            @unlink($storagePath);
-        }
-
-        $type = $parsed['type'] ?? '';
-        if (!in_array($type, ['panel_backup', 'amnezia_app'], true)) {
-            throw new Exception('Этот тип бэкапа пока не поддерживается для импорта конфигурации');
-        }
-
-        $servers = $parsed['servers'] ?? [];
-        if (!is_array($servers) || empty($servers)) {
-            throw new Exception('В бэкапе не найдено конфигураций серверов');
-        }
-
-        $selectedServer = null;
-        if ($type === 'panel_backup') {
-            $selectedServer = $servers[0];
-        } else {
-            $currentHost = strtolower(trim($serverData['host'] ?? ''));
-            foreach ($servers as $candidate) {
-                $candidateHost = strtolower(trim($candidate['host'] ?? ''));
-                if ($candidateHost !== '' && $candidateHost === $currentHost) {
-                    $selectedServer = $candidate;
-                    break;
-                }
-            }
-
-            if ($selectedServer === null && count($servers) === 1) {
-                $selectedServer = $servers[0];
-            }
-
-            if ($selectedServer === null) {
-                throw new Exception('Не удалось сопоставить сервер в бэкапе с текущим хостом ' . $serverData['host']);
-            }
-        }
-
-        $replaceClients = $type === 'panel_backup';
-        $result = $server->applyBackupData($selectedServer, $user['id'], $replaceClients);
-
-        $importedClients = $result['imported_clients'] ?? 0;
-        $clientErrors = $result['client_errors'] ?? [];
-
-        $messageParts = [];
-        if (!empty($result['updated_fields'])) {
-            $messageParts[] = 'Обновлены поля: ' . implode(', ', $result['updated_fields']);
-        }
-        if ($importedClients > 0) {
-            $messageParts[] = 'Импортировано клиентов: ' . $importedClients;
-        }
-        if (empty($messageParts)) {
-            $messageParts[] = 'Конфигурация обработана';
-        }
-
-        $_SESSION['import_message'] = [
-            'type' => empty($clientErrors) ? 'success' : 'warning',
-            'text' => implode('. ', $messageParts)
-        ];
-
-        if (!empty($clientErrors)) {
-            $_SESSION['import_message']['text'] .= '. Ошибки: ' . implode('; ', array_slice($clientErrors, 0, 3));
-        }
-
-    } catch (Exception $e) {
-        $_SESSION['import_message'] = [
-            'type' => 'error',
-            'text' => $e->getMessage()
-        ];
-    }
-
-    redirect('/servers/' . $serverId);
 });
 
 // Delete server

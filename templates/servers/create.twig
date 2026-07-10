@@ -7,19 +7,7 @@
     <div class="mb-4 bg-red-50 border border-red-400 text-red-700 px-4 py-3 rounded">{{ error }}</div>
   {% endif %}
   <form method="POST" enctype="multipart/form-data" class="bg-white shadow rounded-lg p-6 space-y-6">
-    <div>
-      <label class="block text-sm font-medium text-gray-700">{{ t('servers.creation_mode') }}</label>
-      <div class="mt-2 flex items-center gap-6">
-        <label class="inline-flex items-center">
-          <input type="radio" name="creation_mode" value="manual" class="text-purple-600" {% if selected_mode|default('manual') == 'manual' %}checked{% endif %}>
-          <span class="ml-2 text-sm text-gray-700">{{ t('servers.creation_mode_manual') }}</span>
-        </label>
-        <label class="inline-flex items-center">
-          <input type="radio" name="creation_mode" value="backup" class="text-purple-600" {% if selected_mode == 'backup' %}checked{% endif %}>
-          <span class="ml-2 text-sm text-gray-700">{{ t('servers.creation_mode_backup') }}</span>
-        </label>
-      </div>
-    </div>
+    <input type="hidden" name="creation_mode" value="manual">
 
     <div id="manualSection" class="space-y-4">
       <div>
@@ -89,40 +77,6 @@
       </div>
     </div>
 
-    <div id="backupSection" class="space-y-6" style="display: none;">
-      <input type="hidden" name="backup_token" value="{{ form_data.backup_token ?? '' }}">
-
-      <div>
-        <label class="block text-sm font-medium text-gray-700">{{ t('servers.backup_upload_type') }}</label>
-        <select name="backup_upload_type" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md" data-field-backup>
-          <option value="auto" {% if form_data.backup_upload_type|default('auto') == 'auto' %}selected{% endif %}>{{ t('servers.backup_type_auto') }}</option>
-          <option value="amnezia_app" {% if form_data.backup_upload_type|default('auto') == 'amnezia_app' %}selected{% endif %}>{{ t('servers.backup_type_amnezia') }}</option>
-          <option value="panel_backup" {% if form_data.backup_upload_type|default('auto') == 'panel_backup' %}selected{% endif %}>{{ t('servers.backup_type_panel') }}</option>
-        </select>
-      </div>
-
-      <div>
-        <label class="block text-sm font-medium text-gray-700">{{ t('servers.upload_backup_file') }}</label>
-        <input type="file" name="backup_upload" accept=".backup,.json" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md" data-field-backup>
-        <p class="mt-1 text-xs text-gray-500">{{ t('servers.backup_upload_hint') }}</p>
-      </div>
-
-      {% if form_data.uploaded_servers is defined and form_data.uploaded_servers %}
-        <div class="border-t pt-6 space-y-2">
-          <label class="block text-sm font-medium text-gray-700">{{ t('servers.backup_server_entry') }}</label>
-          <select name="backup_server_index" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md" data-field-backup>
-            {% for server in form_data.uploaded_servers %}
-              {% set option_host = server.host is defined and server.host is not empty ? server.host : t('common.na') %}
-              {% set option_clients = server.client_count is defined ? server.client_count : t('common.na') %}
-              <option value="{{ server.index }}" {% if form_data.backup_server_index|default('') == (server.index ~ '') %}selected{% endif %}>
-                {{ server.label }} — {{ t('servers.backup_summary_host') }}: {{ option_host }}, {{ t('servers.backup_summary_clients') }}: {{ option_clients }}
-              </option>
-            {% endfor %}
-          </select>
-        </div>
-      {% endif %}
-    </div>
-
     <button type="submit" class="w-full gradient-bg text-white py-2 px-4 rounded-md hover:opacity-90">
       <i class="fas fa-save mr-2"></i>Create Server
     </button>
@@ -130,46 +84,6 @@
 </div>
 
 <script>
-const modeRadios = Array.prototype.slice.call(document.querySelectorAll('input[name="creation_mode"]'));
-const manualSection = document.getElementById('manualSection');
-const backupSection = document.getElementById('backupSection');
-const manualFields = Array.prototype.slice.call(document.querySelectorAll('[data-field-manual]'));
-const backupFields = Array.prototype.slice.call(document.querySelectorAll('[data-field-backup]'));
-const initialMode = {{ selected_mode|default('manual')|json_encode|raw }};
-
-function setFieldsState(mode) {
-  manualFields.forEach(el => {
-    if (!el) return;
-    el.disabled = mode !== 'manual';
-  });
-  backupFields.forEach(el => {
-    if (!el) return;
-    el.disabled = mode !== 'backup';
-  });
-}
-
-function switchMode() {
-  const selectedRadio = document.querySelector('input[name="creation_mode"]:checked');
-  const mode = selectedRadio ? selectedRadio.value : 'manual';
-  if (manualSection) {
-    manualSection.style.display = mode === 'manual' ? 'block' : 'none';
-  }
-  if (backupSection) {
-    backupSection.style.display = mode === 'backup' ? 'block' : 'none';
-  }
-  setFieldsState(mode);
-}
-
-modeRadios.forEach(function (radio) {
-  radio.addEventListener('change', switchMode);
-});
-
-const initialModeRadio = document.querySelector(`input[name="creation_mode"][value="${initialMode}"]`);
-if (initialModeRadio) {
-    initialModeRadio.checked = true;
-}
-switchMode();
-
 {% set protocol_map = {} %}
 {% for protocol in protocols %}
   {% set protocol_map = protocol_map | merge({ (protocol.slug): (protocol.description ?? '') }) %}

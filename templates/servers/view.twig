@@ -50,14 +50,7 @@
       <i class="fas fa-chart-line mr-2"></i>Мониторинг
     </a>
   </div>
-  
-  {% if import_message %}
-  <div class="mb-6 {% if import_message.type == 'success' %}bg-green-50 border-green-400 text-green-700{% else %}bg-red-50 border-red-400 text-red-700{% endif %} border px-4 py-3 rounded">
-    <i class="fas {% if import_message.type == 'success' %}fa-check-circle{% else %}fa-exclamation-circle{% endif %} mr-2"></i>
-    {{ import_message.text }}
-  </div>
-  {% endif %}
-  
+
   <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
     <div class="bg-white rounded shadow p-6">
       <h3 class="font-bold mb-4">{{ t('servers.server_info') }}</h3>
@@ -428,30 +421,6 @@
     </div>
   </div>
 
-  <div class="bg-white rounded shadow p-6 mb-8">
-    <h3 class="font-bold mb-4 flex items-center gap-2">
-      <i class="fas fa-file-import text-purple-500"></i>
-      {{ t('servers.config_import_title') }}
-    </h3>
-    <p class="text-sm text-gray-600 mb-4">{{ t('servers.config_import_hint') }}</p>
-    <form method="POST" action="/servers/{{ server.id }}/config/import" enctype="multipart/form-data" class="space-y-4">
-      <div>
-        <label class="block text-sm font-medium text-gray-700 mb-1">{{ t('servers.config_import_type_label') }}</label>
-        <select name="import_type" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md">
-          <option value="panel_backup">{{ t('servers.config_import_type_panel') }}</option>
-          <option value="amnezia_app">{{ t('servers.config_import_type_amnezia') }}</option>
-        </select>
-      </div>
-      <div>
-        <label class="block text-sm font-medium text-gray-700 mb-1">{{ t('servers.config_import_file_label') }}</label>
-        <input type="file" name="config_file" accept=".json,.backup" required class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md">
-        <p class="text-xs text-gray-500 mt-1">{{ t('servers.config_import_file_hint') }}</p>
-      </div>
-      <button type="submit" class="gradient-bg text-white px-4 py-2 rounded">
-        <i class="fas fa-upload mr-2"></i>{{ t('servers.config_import_submit') }}
-      </button>
-    </form>
-  </div>
   <div class="bg-white rounded shadow">
     <div class="px-6 py-4 border-b flex justify-between items-center">
       <h3 class="font-bold">{{ t('clients.title') }} ({{ clients|length }})</h3>
