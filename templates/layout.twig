@@ -170,6 +170,13 @@
 
     <!-- Main Content -->
     <main class="{% if user %}py-10{% endif %}">
+        {% if user and current_uri is defined and current_uri is not null and current_uri != '/' and not (current_uri starts with '/dashboard') %}
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mb-4">
+            <button type="button" onclick="goBack()" class="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700">
+                <i class="fas fa-arrow-left"></i> {{ t('common.back') }}
+            </button>
+        </div>
+        {% endif %}
         {% block content %}{% endblock %}
     </main>
     <!-- Custom Confirmation Modal -->
@@ -208,6 +215,16 @@
         function toggleLanguageDropdown() {
             const dropdown = document.getElementById('languageDropdown');
             dropdown.classList.toggle('active');
+        }
+
+        // Back button: go to the previous page, or the dashboard if there is
+        // no in-app history (e.g. the page was opened directly).
+        function goBack() {
+            if (window.history.length > 1 && document.referrer && new URL(document.referrer, location.origin).origin === location.origin) {
+                window.history.back();
+            } else {
+                window.location.href = '/dashboard';
+            }
         }
 
         // Close dropdown when clicking outside
