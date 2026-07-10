@@ -10,6 +10,11 @@
  * outbound UDP is known to work) sends probe datagrams to the target's public
  * IP:port while the target runs tcpdump on its internet interface. If the
  * packets show up in the capture, inbound UDP is open.
+ *
+ * IMPORTANT: a PASS is authoritative but a FAIL is not. The probe uses a
+ * server↔server path, and some providers filter inter-server UDP while the
+ * ordinary client↔server path works fine (observed in testing). So treat a
+ * failed probe as "unconfirmed", not "unreachable" — verify with a real client.
  */
 class ServerNetCheck
 {
@@ -93,9 +98,13 @@ class ServerNetCheck
             'prober' => $proberName,
             'target_ip' => $targetIp,
             'port' => $port,
+            // A PASS is authoritative (the server clearly receives UDP). A FAIL
+            // is NOT: the probe travels a server↔server path, which some networks
+            // filter even when the ordinary client↔server path works fine — so a
+            // failed probe only means "couldn't confirm", not "clients can't reach it".
             'message' => $reachable
-                ? "Входящий UDP/{$port} работает — {$received} из {$sent} проб дошло (с «{$proberName}»). Сервер годится как VPN-узел."
-                : "Входящий UDP/{$port} НЕ проходит — 0 из {$sent} проб дошло (с «{$proberName}»). Провайдер режет входящий UDP; сервер не подойдёт как VPN-узел.",
+                ? "Входящий UDP/{$port} подтверждён — {$received} из {$sent} проб дошло (с «{$proberName}»). Сервер точно принимает UDP."
+                : "Не удалось подтвердить входящий UDP/{$port}: 0 из {$sent} проб дошло с «{$proberName}». Это НЕ значит, что сервер плох — путь между серверами мог быть отфильтрован, а обычный клиент может подключаться. Проверьте реальным клиентом.",
         ];
     }
 
