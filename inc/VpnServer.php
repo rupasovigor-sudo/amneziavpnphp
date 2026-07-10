@@ -780,8 +780,18 @@ BASH;
             // Ignore errors during cleanup
         }
 
-        // Delete from database
+        // Pool cleanup: if this server was a pool's active member, clear the
+        // pointer so the pool doesn't reference a deleted server. Membership is
+        // dropped automatically with the row.
         $pdo = DB::conn();
+        try {
+            $pdo->prepare('UPDATE server_pools SET active_server_id = NULL WHERE active_server_id = ?')
+                ->execute([$this->serverId]);
+        } catch (Throwable $e) {
+            // server_pools may not exist on older schemas; ignore.
+        }
+
+        // Delete from database
         $stmt = $pdo->prepare('DELETE FROM vpn_servers WHERE id = ?');
         return $stmt->execute([$this->serverId]);
     }

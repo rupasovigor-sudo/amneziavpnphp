@@ -187,6 +187,12 @@
 
       <div class="mt-4 flex items-center gap-2">
         <button type="button" id="uninstallAllBtn" class="px-3 py-1 bg-gray-600 text-white rounded text-sm">Удалить все протоколы</button>
+        <form method="POST" action="/servers/{{ server.id }}/delete" class="inline" id="deleteServerForm">
+          <button type="button" class="px-3 py-1 bg-red-600 text-white rounded text-sm"
+            onclick="if(confirm('Удалить сервер {{ server.name }} из панели? Контейнер будет остановлен. Это действие необратимо.')){document.getElementById('deleteServerForm').submit();}">
+            <i class="fas fa-trash mr-1"></i>Удалить сервер
+          </button>
+        </form>
         <span id="uninstallMsg" class="ml-3 text-sm text-gray-600"></span>
       </div>
 
