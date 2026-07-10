@@ -188,6 +188,7 @@ class ServerPool
             return ['success' => false, 'message' => "Server {$serverId} is not a member of this pool"];
         }
 
+        $oldActive = (int) ($pool['active_server_id'] ?? 0);
         $host = (string) $target['host'];
         $domain = trim((string) ($pool['domain'] ?? ''));
         $response = ['success' => true, 'message' => "Active server set to {$target['name']} (#{$serverId})"];
@@ -211,11 +212,56 @@ class ServerPool
             ->execute([$serverId, $poolId]);
         error_log("ServerPool: pool {$poolId} active -> server {$serverId} ({$host}), reason={$reason}");
 
+        // Notify on an actual change of the active member (manual or failover).
+        if ($oldActive !== $serverId) {
+            self::notifyActiveChange($pool, $oldActive, $target, $reason, $response['dns'] ?? null);
+        }
+
         return $response;
     }
 
+    /** Send an alert (Telegram/email) when a pool's active member changes. */
+    private static function notifyActiveChange(array $pool, int $oldActive, array $target, string $reason, ?array $dns): void
+    {
+        try {
+            $poolId = (int) $pool['id'];
+            $newId = (int) $target['id'];
+            $oldName = '';
+            if ($oldActive > 0) {
+                $stmt = DB::conn()->prepare('SELECT name FROM vpn_servers WHERE id = ?');
+                $stmt->execute([$oldActive]);
+                $oldName = (string) $stmt->fetchColumn();
+            }
+            $domain = trim((string) ($pool['domain'] ?? ''));
+            $dnsNote = $dns ? (empty($dns['success']) ? ' [DNS: ' . ($dns['message'] ?? 'ошибка') . ']' : '') : '';
+            $msg = sprintf(
+                "Пул «%s»: активный сервер → %s (#%d)%s. %sПричина: %s.%s",
+                $pool['name'],
+                $target['name'],
+                $newId,
+                $oldActive > 0 ? sprintf(' (был %s #%d)', $oldName !== '' ? $oldName : '?', $oldActive) : '',
+                $domain !== '' ? "Домен {$domain} → {$target['host']}. " : '',
+                $reason,
+                $dnsNote
+            );
+            (new AlertManager())->recordEvent(
+                $newId,
+                (string) $target['name'],
+                'pool_active_changed',
+                $msg,
+                strpos($reason, 'failover') !== false ? 'critical' : 'warning',
+                'pool:' . $poolId . ':active:' . $newId
+            );
+        } catch (Throwable $e) {
+            error_log('ServerPool::notifyActiveChange failed: ' . $e->getMessage());
+        }
+    }
+
+    // Health checks that indicate a member can no longer serve clients.
+    private const CRITICAL_CHECKS = ['ssh', 'container_running', 'wireguard_interface'];
+
     /**
-     * Choose the best healthy failover target (lowest priority, active status,
+     * Choose the best healthy failover target (lowest priority, healthy,
      * excluding the current active/failed server) and switch to it.
      *
      * @return array{success: bool, message: string}
@@ -227,16 +273,78 @@ class ServerPool
             return ['success' => false, 'message' => "Pool {$poolId} not found"];
         }
         $exclude = $excludeServerId ?? (int) ($pool['active_server_id'] ?? 0);
+        $candidate = self::pickHealthyStandby($poolId, $exclude, 1);
+        if ($candidate === null) {
+            return ['success' => false, 'message' => 'No healthy failover candidate available in pool'];
+        }
+        return self::setActive($poolId, $candidate, 'failover');
+    }
+
+    /**
+     * Auto-failover pass (run each monitoring cycle): for every pool whose active
+     * member has been failing critical health checks for >= $threshold cycles,
+     * repoint the domain to a healthy standby. Deliberately uses the panel's own
+     * health checks (ssh/container/interface), NOT a server-to-server UDP probe
+     * (that gives false negatives). No auto-failback.
+     *
+     * @return array<int, array{pool:int, action:string, from?:int, to?:int}>
+     */
+    public static function checkAndFailover(int $threshold = 3): array
+    {
+        $results = [];
+        foreach (self::list() as $pool) {
+            $poolId = (int) $pool['id'];
+            $activeId = (int) ($pool['active_server_id'] ?? 0);
+            if ($activeId <= 0) {
+                continue;
+            }
+            if (!self::memberCriticalDown($activeId, $threshold)) {
+                continue; // active is healthy — nothing to do
+            }
+            $candidate = self::pickHealthyStandby($poolId, $activeId, $threshold);
+            if ($candidate === null) {
+                error_log("ServerPool: pool {$poolId} active #{$activeId} is DOWN but no healthy standby available");
+                $results[] = ['pool' => $poolId, 'action' => 'no_candidate', 'from' => $activeId];
+                continue;
+            }
+            error_log("ServerPool: pool {$poolId} auto-failover #{$activeId} -> #{$candidate}");
+            self::setActive($poolId, $candidate, 'auto_failover');
+            $results[] = ['pool' => $poolId, 'action' => 'failover', 'from' => $activeId, 'to' => $candidate];
+        }
+        return $results;
+    }
+
+    /** A member is "down" if any critical check is open with fail_count >= threshold. */
+    private static function memberCriticalDown(int $serverId, int $threshold): bool
+    {
+        $like = implode(' OR ', array_fill(0, count(self::CRITICAL_CHECKS), "alert_key = ?"));
+        $params = array_map(static fn($c) => "server:{$serverId}:{$c}", self::CRITICAL_CHECKS);
+        $params[] = $threshold;
+        $stmt = DB::conn()->prepare(
+            "SELECT COUNT(*) FROM alert_states
+             WHERE status = 'open' AND ({$like}) AND fail_count >= ?"
+        );
+        $stmt->execute($params);
+        return (int) $stmt->fetchColumn() > 0;
+    }
+
+    /** Lowest-priority member (excluding $excludeId) that is active and not down. */
+    private static function pickHealthyStandby(int $poolId, int $excludeId, int $threshold): ?int
+    {
         foreach (self::members($poolId) as $m) {
-            if ((int) $m['id'] === $exclude) {
+            $id = (int) $m['id'];
+            if ($id === $excludeId) {
                 continue;
             }
             if (($m['status'] ?? '') !== 'active') {
                 continue;
             }
-            return self::setActive($poolId, (int) $m['id'], 'failover');
+            if (self::memberCriticalDown($id, $threshold)) {
+                continue;
+            }
+            return $id; // members() is ordered by pool_priority ASC
         }
-        return ['success' => false, 'message' => 'No healthy failover candidate available in pool'];
+        return null;
     }
 
     /** Derive the awg2 interface address (host .1) from the pool subnet. */

@@ -304,7 +304,25 @@ while (true) {
 
         // Clean old metrics
         ServerMonitoring::cleanOldMetrics();
-        
+
+        // Failover pools: if an active member has been failing critical health
+        // checks, repoint the domain to a healthy standby (and notify). Uses the
+        // health just recorded above; no server-to-server UDP probe.
+        if (in_array(strtolower((string) Config::get('AMNEZIA_AUTO_FAILOVER_ENABLED', '1')), ['1', 'true', 'yes', 'on'], true)) {
+            try {
+                $failThreshold = max(2, (int) Config::get('AMNEZIA_FAILOVER_FAILURE_THRESHOLD', '3'));
+                foreach (ServerPool::checkAndFailover($failThreshold) as $fo) {
+                    if (($fo['action'] ?? '') === 'failover') {
+                        echo "[" . date('Y-m-d H:i:s') . "] POOL FAILOVER: pool {$fo['pool']} #{$fo['from']} -> #{$fo['to']}\n";
+                    } elseif (($fo['action'] ?? '') === 'no_candidate') {
+                        echo "[" . date('Y-m-d H:i:s') . "] POOL: active #{$fo['from']} down, no healthy standby\n";
+                    }
+                }
+            } catch (Throwable $e) {
+                error_log('Pool failover check failed: ' . $e->getMessage());
+            }
+        }
+
         // Calculate sleep time
         $executionTime = microtime(true) - $startTime;
         $sleepTime = max(0, $collectionInterval - $executionTime);
