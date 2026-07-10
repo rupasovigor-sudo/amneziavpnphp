@@ -15,6 +15,12 @@ class Config {
       $key = trim($parts[0]);
       $value = trim($parts[1]);
       $value = trim($value, "\"' ");
+      // Real environment wins over .env: don't clobber variables that are
+      // already exported (docker -e, systemd Environment=, CI, etc.).
+      if (getenv($key) !== false) {
+        self::$env[$key] = getenv($key);
+        continue;
+      }
       self::$env[$key] = $value;
       @putenv($key . '=' . $value);
     }

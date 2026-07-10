@@ -108,16 +108,20 @@ class VpnServer
             $installOptions = trim($installOptions) === '' ? null : $installOptions;
         }
 
+        $domain = isset($data['domain']) ? trim((string) $data['domain']) : '';
+        $domain = $domain !== '' ? ltrim($domain, '@') : null;
+
         $stmt = $pdo->prepare('
-            INSERT INTO vpn_servers 
-            (user_id, name, host, port, username, password, ssh_key, container_name, install_protocol, install_options, vpn_subnet, status) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO vpn_servers
+            (user_id, name, host, domain, port, username, password, ssh_key, container_name, install_protocol, install_options, vpn_subnet, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ');
 
         $stmt->execute([
             $data['user_id'],
             $data['name'],
             $data['host'],
+            $domain,
             $data['port'],
             $data['username'],
             self::encryptSecret($data['password'] ?? null),
@@ -414,45 +418,8 @@ class VpnServer
      */
     public function testConnection(): bool
     {
-        // Determine auth method
-        $sshOptions = '-o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o ConnectTimeout=10';
-        $credentials = '';
-        $keyFile = '';
-
-        if (!empty($this->data['ssh_key'])) {
-            $keyFile = tempnam(sys_get_temp_dir(), 'sshkey');
-            file_put_contents($keyFile, self::normalizeSshKey($this->data['ssh_key']));
-            chmod($keyFile, 0600);
-            $sshOptions .= " -i {$keyFile} -o IdentitiesOnly=yes -o PubkeyAuthentication=yes -o PreferredAuthentications=publickey";
-            // sshpass is not needed for key-based auth
-            $baseCmd = "ssh -p %d %s %s@%s";
-
-            $testCommand = sprintf(
-                "ssh -p %d %s %s@%s 'echo test' 2>/dev/null",
-                $this->data['port'],
-                $sshOptions,
-                $this->data['username'],
-                $this->data['host']
-            );
-        } else {
-            $sshOptions .= " -o PreferredAuthentications=password -o PubkeyAuthentication=no";
-            $testCommand = sprintf(
-                "sshpass -p %s ssh -p %d %s %s@%s 'echo test' 2>/dev/null",
-                escapeshellarg($this->data['password']),
-                $this->data['port'],
-                $sshOptions,
-                $this->data['username'],
-                $this->data['host']
-            );
-        }
-
-        $result = shell_exec($testCommand);
-
-        if ($keyFile && file_exists($keyFile)) {
-            unlink($keyFile);
-        }
-
-        return trim($result) === 'test';
+        $result = Ssh::exec($this->data, 'echo test', ['timeout' => 20, 'stderr' => 'discard']);
+        return trim($result->output) === 'test';
     }
 
     /**
@@ -467,90 +434,46 @@ class VpnServer
         $baseCommand = $command;
         $pathPrefix = 'export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH; ';
         $isDockerCommand = preg_match('/(^|\\n)docker(\\s|$)/', ltrim($baseCommand));
-        
+
         // Auto-detect sudo requirement for docker commands when $sudo is null
         if ($sudo === null && $isDockerCommand) {
             $sudo = $this->detectDockerSudoRequirement();
         }
-        
-        $escapedCommand = '';
-        $needsSudo = false;
 
-        // Determine auth method
-        $sshOptions = '-o LogLevel=ERROR -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no';
-        $keyFile = '';
+        // sudo wrapping only applies to password sessions; key-based sessions
+        // historically run commands as-is (root or docker-group user).
+        $needsSudo = ($sudo ?? false)
+            && empty($this->data['ssh_key'])
+            && strtolower((string) ($this->data['username'] ?? '')) !== 'root';
+        $prepared = $needsSudo ? Ssh::wrapSudo($this->data, $command) : $command;
 
-        if (!empty($this->data['ssh_key'])) {
-            $keyFile = tempnam(sys_get_temp_dir(), 'sshkey');
-            file_put_contents($keyFile, self::normalizeSshKey($this->data['ssh_key']));
-            chmod($keyFile, 0600);
-            $sshOptions .= " -i {$keyFile} -o IdentitiesOnly=yes -o PubkeyAuthentication=yes -o PreferredAuthentications=publickey";
-
-            $preparedCommand = $pathPrefix . $command;
-            $escapedCommand = escapeshellarg($preparedCommand);
-
-            $sshCommand = sprintf(
-                "ssh -p %d %s %s@%s %s 2>&1",
-                $this->data['port'],
-                $sshOptions,
-                $this->data['username'],
-                $this->data['host'],
-                $escapedCommand
-            );
-        } else {
-            $needsSudo = ($sudo ?? false) && strtolower((string) ($this->data['username'] ?? '')) !== 'root';
-            if ($needsSudo) {
-                // Suppress sudo prompt text to keep command output machine-parseable.
-                $command = "echo '{$this->data['password']}' | sudo -S -p '' " . $command;
-            }
-
-            $preparedCommand = $pathPrefix . $command;
-            $escapedCommand = escapeshellarg($preparedCommand);
-
-            $sshOptions .= " -o PreferredAuthentications=password -o PubkeyAuthentication=no";
-            $sshCommand = sprintf(
-                "sshpass -p %s ssh -p %d %s %s@%s %s 2>&1",
-                escapeshellarg($this->data['password']),
-                $this->data['port'],
-                $sshOptions,
-                $this->data['username'],
-                $this->data['host'],
-                $escapedCommand
-            );
-        }
-
-        $output = shell_exec($sshCommand) ?? '';
+        $output = Ssh::exec($this->data, $pathPrefix . $prepared, ['timeout' => 900])->output;
 
         // If sudo auth fails but user can run docker without sudo, retry docker commands directly.
-        if (
-            empty($this->data['ssh_key'])
-            && !empty($needsSudo)
-            && $isDockerCommand
-            && preg_match('/incorrect password attempts|sorry, try again|a password is required/i', $output)
-        ) {
+        if ($needsSudo && $isDockerCommand && Ssh::isSudoAuthFailure($output)) {
             // Update cache: this server doesn't need sudo for docker
             if ($this->serverId !== null) {
                 self::$dockerSudoCache[$this->serverId] = false;
             }
-            
-            $escapedBaseCommand = escapeshellarg($pathPrefix . $baseCommand);
-            $sshCommandNoSudo = sprintf(
-                "sshpass -p %s ssh -p %d %s %s@%s %s 2>&1",
-                escapeshellarg($this->data['password']),
-                $this->data['port'],
-                $sshOptions,
-                $this->data['username'],
-                $this->data['host'],
-                $escapedBaseCommand
-            );
-            $output = shell_exec($sshCommandNoSudo) ?? '';
-        }
-
-        if ($keyFile && file_exists($keyFile)) {
-            unlink($keyFile);
+            $output = Ssh::exec($this->data, $pathPrefix . $baseCommand, ['timeout' => 900])->output;
         }
 
         return $output;
+    }
+
+    public function uploadContent(string $remotePath, string $content, int $mode = 0600): void
+    {
+        $last = null;
+        for ($attempt = 1; $attempt <= 3; $attempt++) {
+            $last = Ssh::upload($this->data, $remotePath, $content, $mode);
+            if ($last->ok()) {
+                return;
+            }
+            if ($attempt < 3) {
+                sleep(2);
+            }
+        }
+        throw new RuntimeException('Upload failed: ' . trim($last ? $last->output : ''));
     }
 
     /**
@@ -568,51 +491,8 @@ class VpnServer
         }
 
         // Test if docker works without sudo using a simple version check
-        $testCmd = 'docker --version 2>&1';
         $pathPrefix = 'export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH; ';
-        
-        $sshOptions = '-o LogLevel=ERROR -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no';
-        $keyFile = '';
-
-        if (!empty($this->data['ssh_key'])) {
-            $keyFile = tempnam(sys_get_temp_dir(), 'sshkey');
-            file_put_contents($keyFile, self::normalizeSshKey($this->data['ssh_key']));
-            chmod($keyFile, 0600);
-            $sshOptions .= " -i {$keyFile} -o IdentitiesOnly=yes -o PubkeyAuthentication=yes -o PreferredAuthentications=publickey";
-
-            $preparedCommand = $pathPrefix . $testCmd;
-            $escapedCommand = escapeshellarg($preparedCommand);
-
-            $sshCommand = sprintf(
-                "ssh -p %d %s %s@%s %s 2>&1",
-                $this->data['port'],
-                $sshOptions,
-                $this->data['username'],
-                $this->data['host'],
-                $escapedCommand
-            );
-        } else {
-            // For password auth, first try without sudo
-            $preparedCommand = $pathPrefix . $testCmd;
-            $escapedCommand = escapeshellarg($preparedCommand);
-
-            $sshOptions .= " -o PreferredAuthentications=password -o PubkeyAuthentication=no";
-            $sshCommand = sprintf(
-                "sshpass -p %s ssh -p %d %s %s@%s %s 2>&1",
-                escapeshellarg($this->data['password']),
-                $this->data['port'],
-                $sshOptions,
-                $this->data['username'],
-                $this->data['host'],
-                $escapedCommand
-            );
-        }
-
-        $output = shell_exec($sshCommand) ?? '';
-
-        if ($keyFile && file_exists($keyFile)) {
-            unlink($keyFile);
-        }
+        $output = Ssh::exec($this->data, $pathPrefix . 'docker --version 2>&1', ['timeout' => 30])->output;
 
         // Check if docker command succeeded (output contains "version")
         $dockerWorks = stripos($output, 'version') !== false;

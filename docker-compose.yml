@@ -34,8 +34,10 @@ services:
         condition: service_healthy
       dind:
         condition: service_started
-    env_file:
-      - .env
+    # No env_file here on purpose: PHP reads .env at runtime (inc/Config.php),
+    # and real environment now has priority over .env — baking the whole .env
+    # into the container env would freeze values until the next recreate.
+    # Only container-specific overrides belong below.
     environment:
       APP_ENV: ${APP_ENV:-local}
       DEFAULT_LOCALE: ${DEFAULT_LOCALE:-en}

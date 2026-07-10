@@ -14,67 +14,7 @@ class ServerMonitoring
 {
     private VpnServer $server;
     private array $serverData;
-    private array $xrayStatsCache = [];
-    private bool $xrayStatsFetched = false;
-    private array $aivpnStatsCache = ['by_name' => [], 'by_id' => [], 'by_ip' => []];
-    private bool $aivpnStatsFetched = false;
     private array $wireguardDumpCache = [];
-
-    /**
-     * Fetch all X-ray user stats in one batch
-     * Returns true on success, false on failure (SSH / JSON error)
-     */
-    private function fetchXrayStats(): bool
-    {
-        if ($this->xrayStatsFetched) {
-            return true;
-        }
-
-        // Always try to fetch from amnezia-xray container
-        // Even if server's container_name is different, there may be xray clients
-        $xrayContainer = $this->getXrayContainerName() ?? 'amnezia-xray';
-        
-        $cmd = "docker exec $xrayContainer xray api statsquery --pattern 'user>>>' --reset=true --server=127.0.0.1:10085 2>/dev/null";
-        $json = $this->execSSH($cmd);
-
-        if (!$json || trim($json) === '') {
-            // Assuming a log method exists or needs to be added, for now, using error_log
-            error_log("Failed to fetch X-ray stats (empty response)");
-            return false;
-        }
-
-        $data = json_decode($json, true);
-        if (!isset($data['stat'])) {
-            // If empty stats, but successful connection, it's fine (just no traffic delta)
-            $this->xrayStatsCache = [];
-            $this->xrayStatsFetched = true;
-            return true;
-        }
-
-        $stats = [];
-        foreach ($data['stat'] as $item) {
-            // "user>>>email>>>traffic>>>downlink"
-            $parts = explode('>>>', $item['name']);
-            if (count($parts) >= 4) {
-                $email = $parts[1];
-                $type = $parts[3]; // 'downlink' or 'uplink'
-
-                if (!isset($stats[$email])) {
-                    $stats[$email] = ['up' => 0, 'down' => 0];
-                }
-
-                if ($type === 'uplink') {
-                    $stats[$email]['up'] += (int) $item['value'];
-                } elseif ($type === 'downlink') {
-                    $stats[$email]['down'] += (int) $item['value'];
-                }
-            }
-        }
-
-        $this->xrayStatsCache = $stats;
-        $this->xrayStatsFetched = true;
-        return true;
-    }
 
     public function __construct(int $serverId)
     {
@@ -426,30 +366,6 @@ SH;
      */
     public function collectClientMetrics(): array
     {
-        // Enforce single IP per user for Xray before collecting stats
-        if ($this->isXrayServer()) {
-            try {
-                $this->enforceXraySingleIpPerUser();
-            } catch (Throwable $e) {
-                error_log("Xray enforcement error: " . $e->getMessage());
-            }
-        }
-
-        // Pre-fetch X-ray stats only for Xray servers.
-        if ($this->isXrayServer()) {
-            if (!$this->fetchXrayStats()) {
-                error_log("Failed to fetch X-ray stats, preventing DB overwrite");
-                return [];
-            }
-        }
-
-        // For AIVPN we best-effort fetch client stats once per cycle.
-        if ($this->isAivpnServer()) {
-            if (!$this->fetchAivpnStats()) {
-                error_log("Failed to fetch AIVPN stats, using DB fallback values");
-            }
-        }
-
         $clients = VpnClient::listByServer($this->serverData['id']);
         $results = [];
 
@@ -478,17 +394,11 @@ SH;
     private function getClientStats(array $client): ?array
     {
         $db = DB::conn();
-        // this->fetchXrayStats() call moved to collectClientMetrics to handle failure gracefully
 
-        // Get current stats from server
         $containerName = (string) ($this->serverData['container_name'] ?? '');
-        $bytesReceived = 0;
         $bytesSent = 0;
-        $speedUp = 0;
-        $speedDown = 0;
+        $bytesReceived = 0;
 
-        // Determine if this client is XRay based on protocol_id
-        $isXrayClient = false;
         $protocolSlug = '';
         if (!empty($client['protocol_id'])) {
             $stmtProto = $db->prepare('SELECT slug FROM protocols WHERE id = ?');
@@ -496,158 +406,41 @@ SH;
             $protoData = $stmtProto->fetch();
             if ($protoData) {
                 $protocolSlug = (string) ($protoData['slug'] ?? '');
-                if (stripos($protocolSlug, 'xray') !== false) {
-                    $isXrayClient = true;
-                }
             }
         }
-        
-        // Fallback: check config for vless URI
-        if (!$isXrayClient && !empty($client['config']) && strpos($client['config'], 'vless://') !== false) {
-            $isXrayClient = true;
-        }
 
-        $isAivpnClient = (
-            stripos($protocolSlug, 'aivpn') !== false ||
-            (!empty($client['config']) && strpos((string) $client['config'], 'aivpn://') === 0)
+        $publicKey = $client['public_key'];
+        $isWireguardClient = (
+            stripos($protocolSlug, 'awg') !== false ||
+            stripos($protocolSlug, 'wireguard') !== false
         );
 
-        if ($isXrayClient) {
-            // Retrieve DELTA from cache
-            if ($this->xrayStatsFetched) {
-                // Try name first (matches email in xray config), then UUID from config
-                $key = $client['name'];
-                if (!isset($this->xrayStatsCache[$key])) {
-                    // Try UUID from config
-                    if (!empty($client['config']) && preg_match('/vless:\/\/([0-9a-fA-F-]{36})@/i', $client['config'], $m)) {
-                        $key = $m[1];
-                    }
-                }
-                
-                if (!isset($this->xrayStatsCache[$key])) {
-                    // Try client['id'] as last resort
-                    $key = $client['id'];
-                }
+        if ($isWireguardClient) {
+            $containerName = $this->resolveContainerForProtocol($protocolSlug);
+        }
 
-                if (isset($this->xrayStatsCache[$key])) {
-                    $xStats = $this->xrayStatsCache[$key];
-
-                    // CRITICAL FIX: Add DELTA to existing DB values
-                    // We need to get the current total bytes from the DB first
-                    $stmt = $db->prepare("SELECT bytes_sent, bytes_received FROM vpn_clients WHERE id = ?");
-                    $stmt->execute([$client['id']]);
-                    $currentDbStats = $stmt->fetch(PDO::FETCH_ASSOC);
-
-                    $bytesSent = ($currentDbStats['bytes_sent'] ?? 0) + (int) $xStats['up'];
-                    $bytesReceived = ($currentDbStats['bytes_received'] ?? 0) + (int) $xStats['down'];
-
-                    // Calculate speed based on DELTA (since Reset=true, value IS the delta since last check)
-                    // Assuming cron runs every minute (60s):
-                    $speedUp = round($xStats['up'] / 60);
-                    $speedDown = round($xStats['down'] / 60);
-                } else {
-                    // No stats in cache, use current DB values
-                    $stmt = $db->prepare("SELECT bytes_sent, bytes_received FROM vpn_clients WHERE id = ?");
-                    $stmt->execute([$client['id']]);
-                    $currentDbStats = $stmt->fetch(PDO::FETCH_ASSOC);
-                    $bytesSent = $currentDbStats['bytes_sent'] ?? 0;
-                    $bytesReceived = $currentDbStats['bytes_received'] ?? 0;
-                }
-            }
+        if (empty($publicKey) || !$isWireguardClient) {
+            // Protocols without a dedicated collector keep their stored DB values.
+            $stmt = $db->prepare("SELECT bytes_sent, bytes_received FROM vpn_clients WHERE id = ?");
+            $stmt->execute([$client['id']]);
+            $currentDbStats = $stmt->fetch(PDO::FETCH_ASSOC);
+            $bytesSent = (int) ($currentDbStats['bytes_sent'] ?? 0);
+            $bytesReceived = (int) ($currentDbStats['bytes_received'] ?? 0);
         } else {
-            // WireGuard Logic - get bytes and handshake timestamp
-            $publicKey = $client['public_key'];
-            $isWireguardClient = (
-                stripos($protocolSlug, 'awg') !== false ||
-                stripos($protocolSlug, 'wireguard') !== false
-            );
-
-            if ($isWireguardClient) {
-                $containerName = $this->resolveContainerForProtocol($protocolSlug);
-            }
-
-            if ($isAivpnClient) {
-                $aivpn = $this->getAivpnClientStats($client);
-                if (is_array($aivpn)) {
-                    $stmt = $db->prepare("SELECT bytes_sent, bytes_received, aivpn_raw_bytes_in, aivpn_raw_bytes_out, aivpn_offset_bytes_in, aivpn_offset_bytes_out FROM vpn_clients WHERE id = ?");
-                    $stmt->execute([$client['id']]);
-                    $currentDbStats = $stmt->fetch(PDO::FETCH_ASSOC);
-
-                    $prevSent = (int) ($currentDbStats['bytes_sent'] ?? 0);
-                    $prevReceived = (int) ($currentDbStats['bytes_received'] ?? 0);
-                    $rawInPrev = (int) ($currentDbStats['aivpn_raw_bytes_in'] ?? 0);
-                    $rawOutPrev = (int) ($currentDbStats['aivpn_raw_bytes_out'] ?? 0);
-                    $offsetIn = (int) ($currentDbStats['aivpn_offset_bytes_in'] ?? 0);
-                    $offsetOut = (int) ($currentDbStats['aivpn_offset_bytes_out'] ?? 0);
-
-                    $rawInNow = (int) ($aivpn['bytes_in'] ?? 0);
-                    $rawOutNow = (int) ($aivpn['bytes_out'] ?? 0);
-
-                    // Detect counter rollover/reset in AIVPN source and preserve cumulative totals.
-                    // bytes_in -> received (download), bytes_out -> sent (upload)
-                    if ($rawInNow < $rawInPrev) {
-                        $offsetIn = max($offsetIn + $rawInPrev, $prevReceived);
-                    }
-                    if ($rawOutNow < $rawOutPrev) {
-                        $offsetOut = max($offsetOut + $rawOutPrev, $prevSent);
-                    }
-
-                    $candidateReceived = $offsetIn + $rawInNow;
-                    $candidateSent = $offsetOut + $rawOutNow;
-
-                    // AIVPN bytes_in = data downloaded BY client (server→client)
-                    // AIVPN bytes_out = data uploaded BY client (client→server)
-                    // Verified via `aivpn-server --list-clients` where bytes_in = DOWNLOAD column
-                    $bytesSent = max($prevSent, $candidateSent);
-                    $bytesReceived = max($prevReceived, $candidateReceived);
-
-                    $stmtAivpn = $db->prepare("UPDATE vpn_clients SET aivpn_raw_bytes_in = ?, aivpn_raw_bytes_out = ?, aivpn_offset_bytes_in = ?, aivpn_offset_bytes_out = ? WHERE id = ?");
-                    $stmtAivpn->execute([$rawInNow, $rawOutNow, $offsetIn, $offsetOut, $client['id']]);
-
-                    $lastHandshake = $aivpn['last_handshake'] ?? null;
-                    if (is_string($lastHandshake) && $lastHandshake !== '') {
-                        $ts = strtotime($lastHandshake);
-                        if ($ts) {
-                            $stmtHs = $db->prepare("UPDATE vpn_clients SET last_handshake = ? WHERE id = ?");
-                            $stmtHs->execute([date('Y-m-d H:i:s', $ts), $client['id']]);
-                        }
-                    }
-                } else {
-                    $stmt = $db->prepare("SELECT bytes_sent, bytes_received FROM vpn_clients WHERE id = ?");
-                    $stmt->execute([$client['id']]);
-                    $currentDbStats = $stmt->fetch(PDO::FETCH_ASSOC);
-                    $bytesSent = (int) ($currentDbStats['bytes_sent'] ?? 0);
-                    $bytesReceived = (int) ($currentDbStats['bytes_received'] ?? 0);
-                }
-            } elseif (empty($publicKey) || !$isWireguardClient) {
-                // Non-WireGuard protocols without dedicated collectors keep DB values.
-                $stmt = $db->prepare("SELECT bytes_sent, bytes_received FROM vpn_clients WHERE id = ?");
-                $stmt->execute([$client['id']]);
-                $currentDbStats = $stmt->fetch(PDO::FETCH_ASSOC);
-                $bytesSent = (int) ($currentDbStats['bytes_sent'] ?? 0);
-                $bytesReceived = (int) ($currentDbStats['bytes_received'] ?? 0);
-            } else {
-                $peerStats = $this->getWireguardPeerStats($containerName, $publicKey);
-
-                if ($peerStats) {
-                    $handshakeTs = (int) $peerStats['handshake_ts'];
-                    $bytesSent = (int) $peerStats['bytes_sent'];
-                    $bytesReceived = (int) $peerStats['bytes_received'];
-
-                    // Update last_handshake if there was a recent handshake
-                    if ($handshakeTs > 0) {
-                        $handshakeDate = date('Y-m-d H:i:s', $handshakeTs);
-                        $stmtHs = $db->prepare("UPDATE vpn_clients SET last_handshake = ? WHERE id = ?");
-                        $stmtHs->execute([$handshakeDate, $client['id']]);
-                    }
+            $peerStats = $this->getWireguardPeerStats($containerName, $publicKey);
+            if ($peerStats) {
+                $bytesSent = (int) $peerStats['bytes_sent'];
+                $bytesReceived = (int) $peerStats['bytes_received'];
+                $handshakeTs = (int) $peerStats['handshake_ts'];
+                if ($handshakeTs > 0) {
+                    $handshakeDate = date('Y-m-d H:i:s', $handshakeTs);
+                    $stmtHs = $db->prepare("UPDATE vpn_clients SET last_handshake = ? WHERE id = ?");
+                    $stmtHs->execute([$handshakeDate, $client['id']]);
                 }
             }
         }
 
-        // If we couldn't get stats (and they are 0), check if we have previous stats to avoid zeroing out if API fails?
-        // But for speed calc we need current values.
-
-        // Get previous metrics (30 seconds ago)
+        // Calculate speed (Kbps) from the previous metrics sample.
         $stmt = $db->prepare("
             SELECT bytes_sent, bytes_received, collected_at
             FROM client_metrics
@@ -663,13 +456,9 @@ SH;
 
         if ($previous) {
             $timeDiff = time() - strtotime($previous['collected_at']);
-            // Check for reasonable time diff to avoid division by zero or huge spikes
             if ($timeDiff > 0 && $timeDiff < 300) {
-                // Calculate speed in Kbps
                 $bytesDiffSent = (int) $bytesSent - (int) $previous['bytes_sent'];
                 $bytesDiffReceived = (int) $bytesReceived - (int) $previous['bytes_received'];
-
-                // Allow for some jitter/counter resets (ignore negative speed which means restart)
                 if ($bytesDiffSent >= 0) {
                     $speedUp = round(($bytesDiffSent * 8) / $timeDiff / 1000, 2);
                 }
@@ -789,9 +578,28 @@ SH;
     /**
      * Get server metrics for last 24 hours
      */
+    /** Ranges longer than this are served from hourly rollups, not raw rows. */
+    private const ROLLUP_THRESHOLD_HOURS = 48;
+
     public static function getServerMetrics(int $serverId, int $hours = 24): array
     {
         $db = DB::conn();
+
+        if ($hours > self::ROLLUP_THRESHOLD_HOURS) {
+            $stmt = $db->prepare("
+                SELECT server_id, bucket_start AS collected_at, samples,
+                       cpu_percent, cpu_percent_max, ram_used_mb, ram_total_mb,
+                       disk_used_gb, disk_total_gb,
+                       network_rx_mbps, network_tx_mbps,
+                       network_rx_mbps_max, network_tx_mbps_max
+                FROM server_metrics_hourly
+                WHERE server_id = ?
+                AND bucket_start >= DATE_SUB(NOW(), INTERVAL ? HOUR)
+                ORDER BY bucket_start ASC
+            ");
+            $stmt->execute([$serverId, $hours]);
+            return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        }
 
         $stmt = $db->prepare("
             SELECT *
@@ -809,15 +617,41 @@ SH;
     /**
      * Get client metrics for last 24 hours
      */
-    public static function getClientMetrics(int $clientId, int $hours = 24): array
+    public static function getClientMetrics(int $clientId, int $hours = 24, int $maxPoints = 720): array
     {
         $db = DB::conn();
+        $maxPoints = max(1, min(5000, $maxPoints));
+
+        if ($hours > self::ROLLUP_THRESHOLD_HOURS) {
+            $stmt = $db->prepare("
+                SELECT *
+                FROM (
+                    SELECT client_id, bucket_start AS collected_at, samples,
+                           bytes_sent, bytes_received,
+                           speed_up_kbps, speed_down_kbps,
+                           speed_up_kbps_max, speed_down_kbps_max
+                    FROM client_metrics_hourly
+                    WHERE client_id = ?
+                    AND bucket_start >= DATE_SUB(NOW(), INTERVAL ? HOUR)
+                    ORDER BY bucket_start DESC
+                    LIMIT {$maxPoints}
+                ) recent
+                ORDER BY collected_at ASC
+            ");
+            $stmt->execute([$clientId, $hours]);
+            return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        }
 
         $stmt = $db->prepare("
             SELECT *
-            FROM client_metrics
-            WHERE client_id = ?
-            AND collected_at >= DATE_SUB(NOW(), INTERVAL ? HOUR)
+            FROM (
+                SELECT *
+                FROM client_metrics
+                WHERE client_id = ?
+                AND collected_at >= DATE_SUB(NOW(), INTERVAL ? HOUR)
+                ORDER BY collected_at DESC
+                LIMIT {$maxPoints}
+            ) recent
             ORDER BY collected_at ASC
         ");
 
@@ -829,36 +663,164 @@ SH;
     /**
      * Get metrics for all clients on a server in one query.
      */
-    public static function getClientMetricsForServer(int $serverId, int $hours = 24): array
+    public static function getClientMetricsForServer(int $serverId, int $hours = 24, int $maxPointsPerClient = 120): array
     {
         $db = DB::conn();
+        $maxPointsPerClient = max(1, min(2000, $maxPointsPerClient));
 
-        $stmt = $db->prepare("
-            SELECT cm.*
-            FROM client_metrics cm
-            INNER JOIN vpn_clients vc ON vc.id = cm.client_id
-            WHERE vc.server_id = ?
-            AND cm.collected_at >= DATE_SUB(NOW(), INTERVAL ? HOUR)
-            ORDER BY cm.client_id ASC, cm.collected_at ASC
-        ");
+        $clientStmt = $db->prepare('SELECT id FROM vpn_clients WHERE server_id = ? ORDER BY id');
+        $clientStmt->execute([$serverId]);
+        $clientIds = array_map('intval', $clientStmt->fetchAll(PDO::FETCH_COLUMN));
+        if (empty($clientIds)) {
+            return [];
+        }
 
-        $stmt->execute([$serverId, $hours]);
+        if ($hours > self::ROLLUP_THRESHOLD_HOURS) {
+            $stmt = $db->prepare("
+                SELECT *
+                FROM (
+                    SELECT
+                        NULL AS id,
+                        client_id,
+                        bytes_sent,
+                        bytes_received,
+                        speed_up_kbps,
+                        speed_down_kbps,
+                        bucket_start AS collected_at
+                    FROM client_metrics_hourly
+                    WHERE client_id = ?
+                      AND bucket_start >= DATE_SUB(NOW(), INTERVAL ? HOUR)
+                    ORDER BY bucket_start DESC
+                    LIMIT {$maxPointsPerClient}
+                ) recent
+                ORDER BY collected_at ASC
+            ");
+        } else {
+            $stmt = $db->prepare("
+                SELECT *
+                FROM (
+                    SELECT
+                        id,
+                        client_id,
+                        bytes_sent,
+                        bytes_received,
+                        speed_up_kbps,
+                        speed_down_kbps,
+                        collected_at
+                    FROM client_metrics
+                    WHERE client_id = ?
+                      AND collected_at >= DATE_SUB(NOW(), INTERVAL ? HOUR)
+                    ORDER BY collected_at DESC
+                    LIMIT {$maxPointsPerClient}
+                ) recent
+                ORDER BY collected_at ASC
+            ");
+        }
 
-        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $metrics = [];
+        foreach ($clientIds as $clientId) {
+            $stmt->execute([$clientId, $hours]);
+            $metrics = array_merge($metrics, $stmt->fetchAll(PDO::FETCH_ASSOC));
+        }
+
+        usort($metrics, static function (array $left, array $right): int {
+            $clientCompare = ((int) $left['client_id']) <=> ((int) $right['client_id']);
+            if ($clientCompare !== 0) {
+                return $clientCompare;
+            }
+            return strcmp((string) $left['collected_at'], (string) $right['collected_at']);
+        });
+
+        return $metrics;
     }
 
     /**
-     * Clean old metrics (older than 24 hours)
+     * Upsert hourly rollups from raw metrics. Covers the last 26 hours each
+     * run, so late samples and collector downtime are re-absorbed; the upsert
+     * is idempotent. Called periodically by the metrics collector.
+     */
+    public static function aggregateHourlyMetrics(): void
+    {
+        $db = DB::conn();
+
+        $db->exec("
+            INSERT INTO server_metrics_hourly
+                (server_id, bucket_start, samples,
+                 cpu_percent, cpu_percent_max, ram_used_mb, ram_total_mb,
+                 disk_used_gb, disk_total_gb,
+                 network_rx_mbps, network_tx_mbps, network_rx_mbps_max, network_tx_mbps_max)
+            SELECT
+                server_id,
+                DATE_FORMAT(collected_at, '%Y-%m-%d %H:00:00'),
+                COUNT(*),
+                AVG(cpu_percent), MAX(cpu_percent),
+                AVG(ram_used_mb), MAX(ram_total_mb),
+                AVG(disk_used_gb), MAX(disk_total_gb),
+                AVG(network_rx_mbps), AVG(network_tx_mbps),
+                MAX(network_rx_mbps), MAX(network_tx_mbps)
+            FROM server_metrics
+            WHERE collected_at >= DATE_SUB(NOW(), INTERVAL 26 HOUR)
+            GROUP BY server_id, DATE_FORMAT(collected_at, '%Y-%m-%d %H:00:00')
+            ON DUPLICATE KEY UPDATE
+                samples = VALUES(samples),
+                cpu_percent = VALUES(cpu_percent),
+                cpu_percent_max = VALUES(cpu_percent_max),
+                ram_used_mb = VALUES(ram_used_mb),
+                ram_total_mb = VALUES(ram_total_mb),
+                disk_used_gb = VALUES(disk_used_gb),
+                disk_total_gb = VALUES(disk_total_gb),
+                network_rx_mbps = VALUES(network_rx_mbps),
+                network_tx_mbps = VALUES(network_tx_mbps),
+                network_rx_mbps_max = VALUES(network_rx_mbps_max),
+                network_tx_mbps_max = VALUES(network_tx_mbps_max)
+        ");
+
+        // bytes_* are cumulative counters, so a bucket keeps their MAX.
+        $db->exec("
+            INSERT INTO client_metrics_hourly
+                (client_id, bucket_start, samples,
+                 bytes_sent, bytes_received,
+                 speed_up_kbps, speed_down_kbps, speed_up_kbps_max, speed_down_kbps_max)
+            SELECT
+                client_id,
+                DATE_FORMAT(collected_at, '%Y-%m-%d %H:00:00'),
+                COUNT(*),
+                MAX(bytes_sent), MAX(bytes_received),
+                AVG(speed_up_kbps), AVG(speed_down_kbps),
+                MAX(speed_up_kbps), MAX(speed_down_kbps)
+            FROM client_metrics
+            WHERE collected_at >= DATE_SUB(NOW(), INTERVAL 26 HOUR)
+            GROUP BY client_id, DATE_FORMAT(collected_at, '%Y-%m-%d %H:00:00')
+            ON DUPLICATE KEY UPDATE
+                samples = VALUES(samples),
+                bytes_sent = VALUES(bytes_sent),
+                bytes_received = VALUES(bytes_received),
+                speed_up_kbps = VALUES(speed_up_kbps),
+                speed_down_kbps = VALUES(speed_down_kbps),
+                speed_up_kbps_max = VALUES(speed_up_kbps_max),
+                speed_down_kbps_max = VALUES(speed_down_kbps_max)
+        ");
+    }
+
+    /**
+     * Clean old metrics (raw rows and hourly rollups, separate retentions).
      */
     public static function cleanOldMetrics(): void
     {
         $db = DB::conn();
+        $retentionDays = max(1, min(365, (int) Config::get('AMNEZIA_METRICS_RETENTION_DAYS', '30')));
+        $hourlyRetentionDays = max($retentionDays, min(3650, (int) Config::get('AMNEZIA_METRICS_HOURLY_RETENTION_DAYS', '180')));
 
-        // Clean server metrics
-        $db->exec("DELETE FROM server_metrics WHERE collected_at < DATE_SUB(NOW(), INTERVAL 24 HOUR)");
+        do {
+            $deleted = $db->exec("DELETE FROM server_metrics WHERE collected_at < DATE_SUB(NOW(), INTERVAL {$retentionDays} DAY) LIMIT 5000");
+        } while ($deleted === 5000);
 
-        // Clean client metrics
-        $db->exec("DELETE FROM client_metrics WHERE collected_at < DATE_SUB(NOW(), INTERVAL 24 HOUR)");
+        do {
+            $deleted = $db->exec("DELETE FROM client_metrics WHERE collected_at < DATE_SUB(NOW(), INTERVAL {$retentionDays} DAY) LIMIT 5000");
+        } while ($deleted === 5000);
+
+        $db->exec("DELETE FROM server_metrics_hourly WHERE bucket_start < DATE_SUB(NOW(), INTERVAL {$hourlyRetentionDays} DAY)");
+        $db->exec("DELETE FROM client_metrics_hourly WHERE bucket_start < DATE_SUB(NOW(), INTERVAL {$hourlyRetentionDays} DAY)");
     }
 
     /**
@@ -867,240 +829,10 @@ SH;
      */
     private function execSSH(string $cmd): ?string
     {
-        $host = $this->serverData['host'];
-        $port = (int)$this->serverData['port'];
-        $username = $this->serverData['username'];
-        $sshKey = $this->serverData['ssh_key'] ?? '';
-        $password = $this->serverData['password'] ?? '';
-
         $timeoutSeconds = max(5, (int) Config::get('AMNEZIA_SSH_COMMAND_TIMEOUT_SECONDS', '20'));
-        $sshOptions = [
-            '-o', 'StrictHostKeyChecking=no',
-            '-o', 'UserKnownHostsFile=/dev/null',
-            '-o', 'ConnectTimeout=10',
-            '-o', 'ServerAliveInterval=5',
-            '-o', 'ServerAliveCountMax=2',
-            '-o', 'LogLevel=ERROR',
-        ];
-        $keyFile = '';
-        $env = null;
-
-        if (!empty($sshKey)) {
-            // SSH key authentication
-            $keyFile = tempnam(sys_get_temp_dir(), 'sshkey');
-            // Normalize key (fix \r\n, ensure trailing newline)
-            $sshKey = str_replace("\r\n", "\n", $sshKey);
-            $sshKey = str_replace("\r", "\n", $sshKey);
-            if ($sshKey !== '' && substr($sshKey, -1) !== "\n") {
-                $sshKey .= "\n";
-            }
-            file_put_contents($keyFile, $sshKey);
-            chmod($keyFile, 0600);
-            $command = array_merge(
-                ['timeout', '--kill-after=5s', $timeoutSeconds . 's', 'ssh', '-p', (string) $port],
-                $sshOptions,
-                ['-i', $keyFile, '-o', 'IdentitiesOnly=yes', '-o', 'PubkeyAuthentication=yes', '-o', 'PreferredAuthentications=publickey', "{$username}@{$host}", $cmd]
-            );
-        } else {
-            // Password authentication
-            $env = array_merge(is_array(getenv()) ? getenv() : [], ['SSHPASS' => $password]);
-            $command = array_merge(
-                ['timeout', '--kill-after=5s', $timeoutSeconds . 's', 'sshpass', '-e', 'ssh', '-p', (string) $port],
-                $sshOptions,
-                ['-o', 'PreferredAuthentications=password', '-o', 'PubkeyAuthentication=no', "{$username}@{$host}", $cmd]
-            );
-        }
-
-        $output = $this->runProcess($command, $env);
-
-        // Clean up temp key file
-        if ($keyFile && file_exists($keyFile)) {
-            unlink($keyFile);
-        }
-
-        return $output ?: null;
+        $output = Ssh::exec($this->serverData, $cmd, ['timeout' => $timeoutSeconds, 'stderr' => 'discard'])->output;
+        return $output !== '' ? $output : null;
     }
-
-    private function runProcess(array $command, ?array $env = null): ?string
-    {
-        $descriptors = [
-            1 => ['pipe', 'w'],
-            2 => ['file', '/dev/null', 'w'],
-        ];
-
-        $process = proc_open($command, $descriptors, $pipes, null, $env);
-        if (!is_resource($process)) {
-            return null;
-        }
-
-        $output = stream_get_contents($pipes[1]);
-        fclose($pipes[1]);
-        proc_close($process);
-
-        return is_string($output) && $output !== '' ? $output : null;
-    }
-
-    /**
-     * Get Xray container name for this server
-     * @return string|null Container name or null if not an Xray server
-     */
-    private function getXrayContainerName(): ?string
-    {
-        $containerName = $this->serverData['container_name'] ?? '';
-        // Check if this is an Xray server
-        if (stripos($containerName, 'xray') !== false) {
-            return $containerName;
-        }
-        // Also check protocol
-        $protocol = $this->serverData['install_protocol'] ?? '';
-        if (stripos($protocol, 'xray') !== false || stripos($protocol, 'vless') !== false) {
-            return $containerName ?: 'amnezia-xray';
-        }
-        return null;
-    }
-
-    /**
-     * Check if this server is an Xray server
-     */
-    private function isXrayServer(): bool
-    {
-        return $this->getXrayContainerName() !== null;
-    }
-
-    /**
-     * Check if this server is an AIVPN server.
-     */
-    private function isAivpnServer(): bool
-    {
-        $containerName = (string) ($this->serverData['container_name'] ?? '');
-        $protocol = (string) ($this->serverData['install_protocol'] ?? '');
-        return stripos($containerName, 'aivpn') !== false || stripos($protocol, 'aivpn') !== false;
-    }
-
-    /**
-     * Fetch AIVPN clients and their stats once per collection cycle.
-     */
-    private function fetchAivpnStats(): bool
-    {
-        if ($this->aivpnStatsFetched) {
-            return true;
-        }
-
-        $this->aivpnStatsFetched = true;
-        $this->aivpnStatsCache = ['by_name' => [], 'by_id' => [], 'by_ip' => []];
-
-        $containerName = trim((string) ($this->serverData['container_name'] ?? ''));
-        if ($containerName === '' || stripos($containerName, 'aivpn') === false) {
-            $containerName = 'aivpn-server';
-        }
-
-        $jsonRaw = $this->execSSH(
-            'docker exec -i ' . escapeshellarg($containerName) . ' cat /etc/aivpn/clients.json 2>/dev/null'
-        );
-
-        if (!$jsonRaw || trim($jsonRaw) === '') {
-            return false;
-        }
-
-        $data = json_decode($jsonRaw, true);
-        if (!is_array($data) || !isset($data['clients']) || !is_array($data['clients'])) {
-            return false;
-        }
-
-        foreach ($data['clients'] as $entry) {
-            if (!is_array($entry)) {
-                continue;
-            }
-
-            $stats = is_array($entry['stats'] ?? null) ? $entry['stats'] : [];
-            $record = [
-                'id' => (string) ($entry['id'] ?? ''),
-                'name' => (string) ($entry['name'] ?? ''),
-                'vpn_ip' => (string) ($entry['vpn_ip'] ?? ''),
-                'bytes_in' => (int) ($stats['bytes_in'] ?? 0),
-                'bytes_out' => (int) ($stats['bytes_out'] ?? 0),
-                'last_handshake' => isset($stats['last_handshake']) ? (string) $stats['last_handshake'] : null,
-            ];
-
-            if ($record['name'] !== '') {
-                $this->aivpnStatsCache['by_name'][strtolower($record['name'])] = $record;
-            }
-            if ($record['id'] !== '') {
-                $this->aivpnStatsCache['by_id'][$record['id']] = $record;
-            }
-            if ($record['vpn_ip'] !== '') {
-                $this->aivpnStatsCache['by_ip'][$record['vpn_ip']] = $record;
-            }
-        }
-
-        return true;
-    }
-
-    private function getAivpnClientStats(array $client): ?array
-    {
-        if (!$this->aivpnStatsFetched && !$this->fetchAivpnStats()) {
-            return null;
-        }
-
-        $name = trim((string) ($client['name'] ?? ''));
-        if ($name !== '') {
-            $nameKey = strtolower($name);
-            if (isset($this->aivpnStatsCache['by_name'][$nameKey])) {
-                return $this->aivpnStatsCache['by_name'][$nameKey];
-            }
-        }
-
-        $clientIp = trim((string) ($client['client_ip'] ?? ''));
-        if ($clientIp !== '' && isset($this->aivpnStatsCache['by_ip'][$clientIp])) {
-            return $this->aivpnStatsCache['by_ip'][$clientIp];
-        }
-
-        $cfgIp = $this->extractAivpnIpFromConfig((string) ($client['config'] ?? ''));
-        if ($cfgIp !== '' && isset($this->aivpnStatsCache['by_ip'][$cfgIp])) {
-            return $this->aivpnStatsCache['by_ip'][$cfgIp];
-        }
-
-        return null;
-    }
-
-    private function extractAivpnIpFromConfig(string $config): string
-    {
-        if (stripos($config, 'aivpn://') !== 0) {
-            return '';
-        }
-
-        $payload = substr($config, strlen('aivpn://'));
-        if ($payload === '') {
-            return '';
-        }
-
-        $decoded = base64_decode(strtr($payload, '-_', '+/'), true);
-        if ($decoded === false) {
-            $padLen = strlen($payload) % 4;
-            $normalized = $payload;
-            if ($padLen > 0) {
-                $normalized .= str_repeat('=', 4 - $padLen);
-            }
-            $decoded = base64_decode(strtr($normalized, '-_', '+/'), true);
-        }
-
-        if ($decoded === false) {
-            return '';
-        }
-
-        $data = json_decode($decoded, true);
-        if (!is_array($data)) {
-            return '';
-        }
-
-        $ip = trim((string) ($data['i'] ?? ''));
-        if ($ip !== '' && preg_match('/^\d{1,3}(?:\.\d{1,3}){3}$/', $ip)) {
-            return $ip;
-        }
-
-        return '';
-    }
-
     private function resolveContainerForProtocol(string $protocolSlug): string
     {
         $default = trim((string) ($this->serverData['container_name'] ?? ''));
@@ -1128,9 +860,6 @@ SH;
 
         if ($protocolSlug === 'awg2') {
             return 'amnezia-awg2';
-        }
-        if (stripos($protocolSlug, 'aivpn') !== false) {
-            return 'aivpn-server';
         }
 
         return $default;
@@ -1184,86 +913,6 @@ SH;
         }
 
         return $peers;
-    }
-
-    /**
-     * Enforce single IP per user for Xray connections
-     * If a user is connected from multiple IPs, block all but the first one
-     */
-    public function enforceXraySingleIpPerUser(): void
-    {
-        $xrayContainer = $this->getXrayContainerName();
-        if (!$xrayContainer) {
-            return; // Not an Xray server
-        }
-
-        // Get all online users
-        $cmd = "docker exec $xrayContainer xray api statsgetallonlineusers --server=127.0.0.1:10085";
-        $result = $this->execSSH($cmd);
-        if (!$result) {
-            return;
-        }
-
-        $data = json_decode($result, true);
-        if (!isset($data['users']) || !is_array($data['users'])) {
-            return;
-        }
-
-        $ipsToBlock = [];
-
-        foreach ($data['users'] as $user) {
-            // Format: "user>>>email>>>online"
-            if (!is_string($user)) {
-                continue;
-            }
-            $parts = explode('>>>', $user);
-            if (count($parts) < 2) {
-                continue;
-            }
-            $email = $parts[1];
-            if (!$email) {
-                continue;
-            }
-
-            // Get IP list for this user
-            $ipCmd = "docker exec $xrayContainer xray api statsonlineiplist --server=127.0.0.1:10085 --email=" . escapeshellarg($email);
-            $ipResult = $this->execSSH($ipCmd);
-            if (!$ipResult) {
-                continue;
-            }
-
-            $ipData = json_decode($ipResult, true);
-            if (!isset($ipData['ips']) || !is_array($ipData['ips'])) {
-                continue;
-            }
-
-            // If more than 1 IP, block all but the first (oldest by timestamp)
-            if (count($ipData['ips']) > 1) {
-                // Sort by timestamp (value) ascending
-                asort($ipData['ips']);
-                $first = true;
-                foreach ($ipData['ips'] as $ip => $timestamp) {
-                    if ($first) {
-                        $first = false;
-                        continue; // Keep first IP
-                    }
-                    $ipsToBlock[] = $ip;
-                }
-            }
-        }
-
-        // Update blocking rules
-        if (!empty($ipsToBlock)) {
-            // Block collected IPs (with -reset to replace existing rule)
-            $ipList = implode(' ', array_unique($ipsToBlock));
-            $blockCmd = "docker exec $xrayContainer xray api sib --server=127.0.0.1:10085 -outbound=blocked -inbound=vless-in -reset $ipList";
-            $this->execSSH($blockCmd);
-            error_log("[Xray Enforcement] Blocked IPs: $ipList");
-        } else {
-            // No IPs to block - remove the blocking rule if it exists
-            $rmCmd = "docker exec $xrayContainer xray api rmrules --server=127.0.0.1:10085 sourceIpBlock 2>/dev/null || true";
-            $this->execSSH($rmCmd);
-        }
     }
 
     /**
@@ -1431,97 +1080,6 @@ SH);
     }
 
     /**
-     * Count total online clients across all Xray servers
-     * Returns array with 'total' count and 'users' list
-     */
-    public static function countOnlineClients(): array
-    {
-        $result = ['total' => 0, 'users' => []];
-        
-        // Get all active servers
-        $servers = VpnServer::listAll();
-        $db = DB::conn();
-        
-        foreach ($servers as $serverData) {
-            // Check if this server has any XRay clients
-            $stmt = $db->prepare("
-                SELECT COUNT(*) as cnt FROM vpn_clients vc
-                JOIN protocols p ON vc.protocol_id = p.id
-                WHERE vc.server_id = ? AND p.slug LIKE '%xray%'
-            ");
-            $stmt->execute([$serverData['id']]);
-            $hasXrayClients = (int)$stmt->fetchColumn() > 0;
-            
-            // Also check container_name as fallback
-            $containerName = $serverData['container_name'] ?? '';
-            $isXrayServer = strpos($containerName, 'xray') !== false;
-            
-            if (!$hasXrayClients && !$isXrayServer) {
-                continue;
-            }
-            
-            // Build SSH command
-            $host = $serverData['host'];
-            $port = (int)($serverData['port'] ?? 22);
-            $username = $serverData['username'] ?? 'root';
-            $password = $serverData['password'] ?? '';
-            
-            $xrayContainer = $isXrayServer ? $containerName : 'amnezia-xray';
-            $cmd = "docker exec $xrayContainer xray api statsgetallonlineusers --server=127.0.0.1:10085";
-            
-            $sshOptions = '-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5';
-            $sshCmd = sprintf(
-                "sshpass -p %s ssh -p %d %s %s@%s %s 2>/dev/null",
-                escapeshellarg($password),
-                $port,
-                $sshOptions,
-                $username,
-                $host,
-                escapeshellarg($cmd)
-            );
-            
-            $output = shell_exec($sshCmd);
-            if (!$output) {
-                continue;
-            }
-            
-            $data = json_decode($output, true);
-            if (!isset($data['users']) || !is_array($data['users'])) {
-                continue;
-            }
-            
-            foreach ($data['users'] as $user) {
-                // Parse format: "user>>>email>>>online" or object with email/count
-                if (is_string($user)) {
-                    // Format: "user>>>olegtest3>>>online"
-                    $parts = explode('>>>', $user);
-                    if (count($parts) >= 2) {
-                        $email = $parts[1];
-                        $result['total'] += 1;
-                        $result['users'][] = [
-                            'server_id' => $serverData['id'],
-                            'email' => $email,
-                            'count' => 1
-                        ];
-                    }
-                } else {
-                    // Object format
-                    $email = $user['email'] ?? 'unknown';
-                    $count = (int)($user['count'] ?? 1);
-                    $result['total'] += $count;
-                    $result['users'][] = [
-                        'server_id' => $serverData['id'],
-                        'email' => $email,
-                        'count' => $count
-                    ];
-                }
-            }
-        }
-        
-        return $result;
-    }
-
-    /**
      * Get online clients for a specific server
      * Returns array of online client logins/emails
      */
@@ -1529,70 +1087,14 @@ SH);
     {
         $result = [];
         $db = DB::conn();
-        
-        // 1. Get XRay online clients from Xray API
-        $stmt = $db->prepare("
-            SELECT COUNT(*) as cnt FROM vpn_clients vc
-            JOIN protocols p ON vc.protocol_id = p.id
-            WHERE vc.server_id = ? AND p.slug LIKE '%xray%'
-        ");
-        $stmt->execute([$serverData['id']]);
-        $hasXrayClients = (int)$stmt->fetchColumn() > 0;
-        
-        $containerName = $serverData['container_name'] ?? '';
-        $isXrayServer = strpos($containerName, 'xray') !== false;
-        
-        if ($hasXrayClients || $isXrayServer) {
-            $host = $serverData['host'];
-            $port = (int)($serverData['port'] ?? 22);
-            $username = $serverData['username'] ?? 'root';
-            $password = $serverData['password'] ?? '';
-            
-            $xrayContainer = $isXrayServer ? $containerName : 'amnezia-xray';
-            $cmd = "docker exec $xrayContainer xray api statsgetallonlineusers --server=127.0.0.1:10085";
-            
-            $sshOptions = '-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5';
-            $sshCmd = sprintf(
-                "sshpass -p %s ssh -p %d %s %s@%s %s 2>/dev/null",
-                escapeshellarg($password),
-                $port,
-                $sshOptions,
-                $username,
-                $host,
-                escapeshellarg($cmd)
-            );
-            
-            $output = shell_exec($sshCmd);
-            if ($output) {
-                $data = json_decode($output, true);
-                if (isset($data['users']) && is_array($data['users'])) {
-                    foreach ($data['users'] as $user) {
-                        if (is_string($user)) {
-                            $parts = explode('>>>', $user);
-                            if (count($parts) >= 2) {
-                                $result[] = $parts[1];
-                            }
-                        } else {
-                            $email = $user['email'] ?? null;
-                            if ($email) {
-                                $result[] = $email;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        
-        // 2. Add WireGuard/AWG clients with recent handshake (< 5 minutes)
-        // Exclude XRay clients - they use Xray API for online status
+
+        // WireGuard/AWG clients with a recent handshake (< 5 minutes) are considered online.
         $stmt = $db->prepare("
             SELECT vc.name FROM vpn_clients vc
-            LEFT JOIN protocols p ON vc.protocol_id = p.id
-            WHERE vc.server_id = ? 
+            WHERE vc.server_id = ?
               AND vc.status = 'active'
-              AND vc.last_handshake IS NOT NULL 
+              AND vc.last_handshake IS NOT NULL
               AND vc.last_handshake >= DATE_SUB(NOW(), INTERVAL 300 SECOND)
-              AND (p.slug IS NULL OR p.slug NOT LIKE '%xray%')
         ");
         $stmt->execute([$serverData['id']]);
         while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {

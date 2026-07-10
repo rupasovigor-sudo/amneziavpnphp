@@ -63,7 +63,9 @@
       <tbody>
         {% for server in servers %}
         <tr class="border-t" data-server-id="{{ server.id }}">
-          <td class="px-6 py-4 font-medium">{{ server.name }}</td>
+          <td class="px-6 py-4 font-medium">
+            {{ server.name }}
+          </td>
           <td class="px-6 py-4">{{ server.host }}</td>
           <td class="px-6 py-4">
             <span class="px-2 py-1 bg-{{ server.status == 'active' ? 'green' : 'yellow' }}-100 text-{{ server.status == 'active' ? 'green' : 'yellow' }}-800 rounded text-sm">

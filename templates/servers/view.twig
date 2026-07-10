@@ -67,8 +67,68 @@
         <div><dt class="text-sm text-gray-600">VPN Port</dt><dd>{{ server.vpn_port }}</dd></div>
         <div><dt class="text-sm text-gray-600">Subnet</dt><dd>{{ server.vpn_subnet }}</dd></div>
         {% endif %}
-        
+
       </dl>
+
+      {# ── Endpoint Domain / DNS ── #}
+      <div class="mt-4 p-3 border rounded-lg bg-gray-50">
+        <div class="flex items-center justify-between mb-2">
+          <span class="text-sm font-semibold text-gray-700"><i class="fas fa-globe mr-1 text-purple-600"></i>Endpoint domain</span>
+          <span id="dnsStatusBadge" class="px-2 py-0.5 rounded text-xs bg-gray-200 text-gray-600">…</span>
+        </div>
+        <div class="flex items-center gap-2">
+          <input id="dnsDomainInput" value="{{ server.domain ?? '' }}" placeholder="awg.gptanalitika.com"
+                 class="flex-1 px-2 py-1 border rounded text-sm font-mono">
+          <button id="dnsSaveBtn" class="px-3 py-1 bg-purple-600 text-white rounded text-sm">Сохранить</button>
+          <button id="dnsRepointBtn" class="px-3 py-1 bg-blue-600 text-white rounded text-sm" title="Создать/обновить A-запись через DNS API">A → сюда</button>
+        </div>
+        <p id="dnsStatusMsg" class="mt-2 text-xs text-gray-500">Клиенты подключаются к domain:443; A-запись управляется через DNS API (Timeweb).</p>
+      </div>
+      <script>
+      (function () {
+        const badge = document.getElementById('dnsStatusBadge');
+        const msg = document.getElementById('dnsStatusMsg');
+        const input = document.getElementById('dnsDomainInput');
+        const setBadge = (text, cls) => { badge.textContent = text; badge.className = 'px-2 py-0.5 rounded text-xs ' + cls; };
+
+        function refresh() {
+          fetch('/servers/{{ server.id }}/dns/status')
+            .then(r => r.json())
+            .then(d => {
+              if (!d.success) { setBadge('ошибка', 'bg-red-100 text-red-700'); return; }
+              if (!d.domain) { setBadge('не задан', 'bg-gray-200 text-gray-600'); return; }
+              if (d.points_here) {
+                setBadge('A → этот сервер', 'bg-green-100 text-green-700');
+              } else {
+                setBadge(d.resolved_ips.length ? 'A → ' + d.resolved_ips.join(', ') : 'не резолвится', 'bg-yellow-100 text-yellow-700');
+              }
+              if (!d.provider_configured) {
+                msg.textContent = 'Токен DNS-провайдера (' + d.provider + ') не задан — Настройки → API.';
+              }
+            })
+            .catch(() => setBadge('ошибка', 'bg-red-100 text-red-700'));
+        }
+
+        function update(payload) {
+          setBadge('…', 'bg-gray-200 text-gray-600');
+          fetch('/servers/{{ server.id }}/dns/update', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          })
+            .then(r => r.json())
+            .then(d => {
+              msg.textContent = d.dns ? d.dns.message : (d.success ? 'Домен сохранён.' : (d.error || 'Ошибка'));
+              refresh();
+            })
+            .catch(e => { msg.textContent = 'Ошибка: ' + e; refresh(); });
+        }
+
+        document.getElementById('dnsSaveBtn').addEventListener('click', () => update({ domain: input.value.trim() }));
+        document.getElementById('dnsRepointBtn').addEventListener('click', () => update({ domain: input.value.trim(), upsert: true }));
+        refresh();
+      })();
+      </script>
 
       <div class="mt-4 flex items-center gap-2">
         <button type="button" id="uninstallAllBtn" class="px-3 py-1 bg-gray-600 text-white rounded text-sm">Удалить все протоколы</button>
@@ -770,7 +830,7 @@ async function warpAction(action) {
 // WARP auto-refresh
 document.addEventListener('DOMContentLoaded', function() {
   loadWarpStatus();
-  setInterval(loadWarpStatus, 30000);
+  setInterval(loadWarpStatus, 120000);
 });
 
 // Load backups on page load
@@ -1125,7 +1185,7 @@ async function updateClientSpeeds() {
 
   let metricsByClient = {};
   try {
-    const response = await fetch(`/api/servers/${serverId}/client-metrics?hours=24`, {
+    const response = await fetch(`/api/servers/${serverId}/client-metrics?hours=24&max_points_per_client=24`, {
       credentials: 'same-origin'
     });
 
@@ -1222,7 +1282,7 @@ async function updateClientSpeeds() {
 // Update client speeds on load and every 30 seconds
 if (document.querySelector('[id^="client-speed-"]')) {
   updateClientSpeeds();
-  setInterval(updateClientSpeeds, 30000);
+  setInterval(updateClientSpeeds, 60000);
 }
 
 async function diagnoseClient(clientId) {
@@ -1283,7 +1343,7 @@ async function updateOnlineStatus() {
 }
 
 // Poll every 5 seconds
-setInterval(updateOnlineStatus, 5000);
+setInterval(updateOnlineStatus, 15000);
 {% endif %}
 </script>
 {% endblock %}

@@ -159,9 +159,10 @@ CREATE TABLE IF NOT EXISTS server_backups (
   FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- Insert default admin user
-INSERT IGNORE INTO users (email, password_hash, name, role, status) 
-VALUES ('admin@amnez.ia', '$2y$10$SKEI6ogiWr2gsSG/nELLp.JcfpGhxsDLAAI7gdtTOI3ELz4zJzzPG', 'Administrator', 'admin', 'active');
+-- Default admin user is NOT seeded here on purpose.
+-- Shipping a fixed bcrypt hash would create an account with a publicly known
+-- password on every fresh install. The admin is created at runtime from
+-- ADMIN_EMAIL / ADMIN_PASSWORD in .env via Auth::seedAdmin() (see public/index.php).
 
 -- Insert supported languages
 INSERT INTO languages (code, name, native_name) VALUES

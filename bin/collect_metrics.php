@@ -82,6 +82,154 @@ function recordPercentThreshold(
     );
 }
 
+/**
+ * Collect health checks, server metrics and client metrics for one server.
+ * Used both by the sequential fallback and by --server-id child processes.
+ */
+function collectForServer(array $server, AlertManager $alertManager, array $cfg): void
+{
+    echo "[" . date('Y-m-d H:i:s') . "] Collecting metrics for server #{$server['id']} ({$server['name']})\n";
+
+    $monitoring = new ServerMonitoring($server['id']);
+
+    foreach ($monitoring->collectHealthChecks() as $checkName => $check) {
+        $alertManager->recordCheck(
+            (int) $server['id'],
+            (string) $server['name'],
+            (string) $checkName,
+            (bool) $check['ok'],
+            (string) $check['message'],
+            (string) $check['severity']
+        );
+    }
+
+    // Enforce single IP per peer for AWG servers
+    $containerName = $server['container_name'] ?? '';
+    if (strpos($containerName, 'awg') !== false || strpos($containerName, 'wireguard') !== false) {
+        if ($cfg['awg_enforcement_interval'] > 0 && shouldRunPeriodicTask('awg_enforcement', (int) $server['id'], $cfg['awg_enforcement_interval'])) {
+            $monitoring->enforceAwgSingleIpPerPeer();
+        } elseif ($cfg['awg_enforcement_interval'] <= 0 && shouldRunPeriodicTask('awg_enforcement_cleanup', (int) $server['id'], 300)) {
+            $monitoring->clearAwgSingleIpBlocks();
+        }
+    }
+
+    // Collect server metrics
+    $serverMetrics = $monitoring->collectMetrics();
+    echo "  Server: CPU={$serverMetrics['cpu_percent']}% RAM={$serverMetrics['ram_used_mb']}/{$serverMetrics['ram_total_mb']}MB ";
+    echo "Disk={$serverMetrics['disk_used_gb']}/{$serverMetrics['disk_total_gb']}GB ";
+    echo "Net RX={$serverMetrics['network_rx_mbps']}Mbps TX={$serverMetrics['network_tx_mbps']}Mbps\n";
+
+    $cpuPercent = isset($serverMetrics['cpu_percent']) ? (float) $serverMetrics['cpu_percent'] : null;
+    $ramPercent = (!empty($serverMetrics['ram_total_mb']) && $serverMetrics['ram_total_mb'] > 0)
+        ? ((float) $serverMetrics['ram_used_mb'] / (float) $serverMetrics['ram_total_mb'] * 100)
+        : null;
+    $diskPercent = (!empty($serverMetrics['disk_total_gb']) && $serverMetrics['disk_total_gb'] > 0)
+        ? ((float) $serverMetrics['disk_used_gb'] / (float) $serverMetrics['disk_total_gb'] * 100)
+        : null;
+
+    recordPercentThreshold($alertManager, $server, 'cpu_usage_high', $cpuPercent, $cfg['cpu_warn'], $cfg['cpu_crit'], 'CPU', $cfg['resource_failure_threshold']);
+    recordPercentThreshold($alertManager, $server, 'ram_usage_high', $ramPercent, $cfg['ram_warn'], $cfg['ram_crit'], 'RAM', $cfg['resource_failure_threshold']);
+    recordPercentThreshold($alertManager, $server, 'disk_usage_high', $diskPercent, $cfg['disk_warn'], $cfg['disk_crit'], 'Disk', $cfg['resource_failure_threshold']);
+
+    // Collect client metrics
+    $clientMetrics = $monitoring->collectClientMetrics();
+
+    if (!empty($clientMetrics)) {
+        foreach ($clientMetrics as $cm) {
+            echo "  Client #{$cm['client_id']} ({$cm['client_name']}): UP={$cm['speed_up_kbps']}Kbps DOWN={$cm['speed_down_kbps']}Kbps\n";
+        }
+    } else {
+        echo "  No active clients\n";
+    }
+}
+
+/**
+ * Run one collection pass for each server in parallel child processes
+ * (`php collect_metrics.php --server-id=N`), at most $limit at a time.
+ * Child output is echoed as each child finishes.
+ */
+function runCollectorPool(array $servers, int $limit): void
+{
+    $queue = array_values($servers);
+    $running = [];
+
+    while ($queue || $running) {
+        while ($queue && count($running) < $limit) {
+            $server = array_shift($queue);
+            $proc = proc_open(
+                [PHP_BINARY, __FILE__, '--server-id=' . (int) $server['id']],
+                [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['redirect', 1]],
+                $pipes
+            );
+            if (!is_resource($proc)) {
+                echo "  ERROR: failed to spawn collector child for server #{$server['id']}\n";
+                continue;
+            }
+            stream_set_blocking($pipes[1], false);
+            $running[] = ['proc' => $proc, 'pipe' => $pipes[1], 'server' => $server, 'buf' => ''];
+        }
+
+        $read = array_column($running, 'pipe');
+        if ($read) {
+            $write = null;
+            $except = null;
+            @stream_select($read, $write, $except, 1);
+        }
+
+        foreach ($running as $i => $r) {
+            $running[$i]['buf'] .= (string) stream_get_contents($r['pipe']);
+            $status = proc_get_status($r['proc']);
+            if (!$status['running']) {
+                $running[$i]['buf'] .= (string) stream_get_contents($r['pipe']);
+                fclose($r['pipe']);
+                proc_close($r['proc']);
+                echo $running[$i]['buf'];
+                if ($status['exitcode'] !== 0) {
+                    echo "  ERROR: collector child for server #{$r['server']['id']} exited with code {$status['exitcode']}\n";
+                }
+                unset($running[$i]);
+            }
+        }
+        $running = array_values($running);
+    }
+}
+
+$collectorCfg = [
+    'awg_enforcement_interval' => (int) Config::get('AMNEZIA_AWG_ENFORCEMENT_INTERVAL_SECONDS', '0'),
+    'cpu_warn' => configFloat('ALERT_CPU_WARNING_PERCENT', 90.0),
+    'cpu_crit' => configFloat('ALERT_CPU_CRITICAL_PERCENT', 98.0),
+    'ram_warn' => configFloat('ALERT_RAM_WARNING_PERCENT', 90.0),
+    'ram_crit' => configFloat('ALERT_RAM_CRITICAL_PERCENT', 97.0),
+    'disk_warn' => configFloat('ALERT_DISK_WARNING_PERCENT', 85.0),
+    'disk_crit' => configFloat('ALERT_DISK_CRITICAL_PERCENT', 95.0),
+    'resource_failure_threshold' => max(2, (int) Config::get('ALERT_RESOURCE_FAILURE_THRESHOLD', '5')),
+];
+
+// Child mode: collect one server and exit (no lock/pid, spawned by the daemon).
+foreach (array_slice($argv ?? [], 1) as $arg) {
+    if (preg_match('/^--server-id=(\d+)$/', $arg, $m)) {
+        $childServerId = (int) $m[1];
+        foreach (VpnServer::listAll() as $server) {
+            if ((int) $server['id'] === $childServerId && $server['status'] === 'active') {
+                try {
+                    collectForServer($server, new AlertManager(), $collectorCfg);
+                } catch (Throwable $e) {
+                    echo "  ERROR: " . $e->getMessage() . "\n";
+                    try {
+                        (new AlertManager())->recordProblem($childServerId, (string) $server['name'], 'collector_exception', $e->getMessage(), 'critical');
+                    } catch (Throwable $alertError) {
+                        error_log('Failed to record collector alert: ' . $alertError->getMessage());
+                    }
+                    exit(1);
+                }
+                exit(0);
+            }
+        }
+        echo "Server #{$childServerId} not found or not active\n";
+        exit(0);
+    }
+}
+
 // Prevent multiple instances using flock (#42)
 $lockFile = '/var/run/collect_metrics.lock';
 $lockFp = fopen($lockFile, 'w');
@@ -108,17 +256,9 @@ register_shutdown_function(function() use ($pidFile, $lockFp, $lockFile) {
 echo "[" . date('Y-m-d H:i:s') . "] Metrics collector started (PID: " . getmypid() . ")\n";
 
 $collectionInterval = max(30, (int) Config::get('AMNEZIA_METRICS_INTERVAL_SECONDS', '60'));
-$awgEnforcementInterval = (int) Config::get('AMNEZIA_AWG_ENFORCEMENT_INTERVAL_SECONDS', '0');
-$cpuWarningPercent = configFloat('ALERT_CPU_WARNING_PERCENT', 90.0);
-$cpuCriticalPercent = configFloat('ALERT_CPU_CRITICAL_PERCENT', 98.0);
-$ramWarningPercent = configFloat('ALERT_RAM_WARNING_PERCENT', 90.0);
-$ramCriticalPercent = configFloat('ALERT_RAM_CRITICAL_PERCENT', 97.0);
-$diskWarningPercent = configFloat('ALERT_DISK_WARNING_PERCENT', 85.0);
-$diskCriticalPercent = configFloat('ALERT_DISK_CRITICAL_PERCENT', 95.0);
-$resourceFailureThreshold = max(2, (int) Config::get('ALERT_RESOURCE_FAILURE_THRESHOLD', '5'));
 echo "[" . date('Y-m-d H:i:s') . "] Metrics collection interval: {$collectionInterval}s\n";
-echo "[" . date('Y-m-d H:i:s') . "] AWG enforcement interval: {$awgEnforcementInterval}s\n";
-echo "[" . date('Y-m-d H:i:s') . "] Resource alert failure threshold: {$resourceFailureThreshold}\n";
+echo "[" . date('Y-m-d H:i:s') . "] AWG enforcement interval: {$collectorCfg['awg_enforcement_interval']}s\n";
+echo "[" . date('Y-m-d H:i:s') . "] Resource alert failure threshold: {$collectorCfg['resource_failure_threshold']}\n";
 
 $alertManager = new AlertManager();
 
@@ -128,89 +268,40 @@ while (true) {
         $startTime = microtime(true);
         
         // Get all active servers
-        $servers = VpnServer::listAll();
-        
-        foreach ($servers as $server) {
-            if ($server['status'] !== 'active') {
-                continue;
-            }
-            
-            try {
-                echo "[" . date('Y-m-d H:i:s') . "] Collecting metrics for server #{$server['id']} ({$server['name']})\n";
-                
-                $monitoring = new ServerMonitoring($server['id']);
+        $servers = array_values(array_filter(VpnServer::listAll(), function ($s) {
+            return $s['status'] === 'active';
+        }));
 
-                foreach ($monitoring->collectHealthChecks() as $checkName => $check) {
-                    $alertManager->recordCheck(
-                        (int) $server['id'],
-                        (string) $server['name'],
-                        (string) $checkName,
-                        (bool) $check['ok'],
-                        (string) $check['message'],
-                        (string) $check['severity']
-                    );
-                }
-                
-                // Enforce single IP per user for Xray servers
-                $containerName = $server['container_name'] ?? '';
-                if (strpos($containerName, 'xray') !== false) {
-                    $monitoring->enforceXraySingleIpPerUser();
-                }
-                
-                // Enforce single IP per peer for AWG servers
-                if (strpos($containerName, 'awg') !== false || strpos($containerName, 'wireguard') !== false) {
-                    if ($awgEnforcementInterval > 0 && shouldRunPeriodicTask('awg_enforcement', (int) $server['id'], $awgEnforcementInterval)) {
-                        $monitoring->enforceAwgSingleIpPerPeer();
-                    } elseif ($awgEnforcementInterval <= 0 && shouldRunPeriodicTask('awg_enforcement_cleanup', (int) $server['id'], 300)) {
-                        $monitoring->clearAwgSingleIpBlocks();
-                    }
-                }
-                
-                // Collect server metrics
-                $serverMetrics = $monitoring->collectMetrics();
-                echo "  Server: CPU={$serverMetrics['cpu_percent']}% RAM={$serverMetrics['ram_used_mb']}/{$serverMetrics['ram_total_mb']}MB ";
-                echo "Disk={$serverMetrics['disk_used_gb']}/{$serverMetrics['disk_total_gb']}GB ";
-                echo "Net RX={$serverMetrics['network_rx_mbps']}Mbps TX={$serverMetrics['network_tx_mbps']}Mbps\n";
-
-                $cpuPercent = isset($serverMetrics['cpu_percent']) ? (float) $serverMetrics['cpu_percent'] : null;
-                $ramPercent = (!empty($serverMetrics['ram_total_mb']) && $serverMetrics['ram_total_mb'] > 0)
-                    ? ((float) $serverMetrics['ram_used_mb'] / (float) $serverMetrics['ram_total_mb'] * 100)
-                    : null;
-                $diskPercent = (!empty($serverMetrics['disk_total_gb']) && $serverMetrics['disk_total_gb'] > 0)
-                    ? ((float) $serverMetrics['disk_used_gb'] / (float) $serverMetrics['disk_total_gb'] * 100)
-                    : null;
-
-                recordPercentThreshold($alertManager, $server, 'cpu_usage_high', $cpuPercent, $cpuWarningPercent, $cpuCriticalPercent, 'CPU', $resourceFailureThreshold);
-                recordPercentThreshold($alertManager, $server, 'ram_usage_high', $ramPercent, $ramWarningPercent, $ramCriticalPercent, 'RAM', $resourceFailureThreshold);
-                recordPercentThreshold($alertManager, $server, 'disk_usage_high', $diskPercent, $diskWarningPercent, $diskCriticalPercent, 'Disk', $resourceFailureThreshold);
-                
-                // Collect client metrics
-                $clientMetrics = $monitoring->collectClientMetrics();
-                
-                if (!empty($clientMetrics)) {
-                    foreach ($clientMetrics as $cm) {
-                        echo "  Client #{$cm['client_id']} ({$cm['client_name']}): UP={$cm['speed_up_kbps']}Kbps DOWN={$cm['speed_down_kbps']}Kbps\n";
-                    }
-                } else {
-                    echo "  No active clients\n";
-                }
-                
-            } catch (Exception $e) {
-                echo "  ERROR: " . $e->getMessage() . "\n";
+        $parallelism = max(1, (int) Config::get('AMNEZIA_METRICS_PARALLELISM', '4'));
+        if ($parallelism > 1 && count($servers) > 1) {
+            runCollectorPool($servers, $parallelism);
+        } else {
+            foreach ($servers as $server) {
                 try {
-                    $alertManager->recordProblem(
-                        (int) $server['id'],
-                        (string) $server['name'],
-                        'collector_exception',
-                        $e->getMessage(),
-                        'critical'
-                    );
-                } catch (Throwable $alertError) {
-                    error_log('Failed to record collector alert: ' . $alertError->getMessage());
+                    collectForServer($server, $alertManager, $collectorCfg);
+                } catch (Exception $e) {
+                    echo "  ERROR: " . $e->getMessage() . "\n";
+                    try {
+                        $alertManager->recordProblem(
+                            (int) $server['id'],
+                            (string) $server['name'],
+                            'collector_exception',
+                            $e->getMessage(),
+                            'critical'
+                        );
+                    } catch (Throwable $alertError) {
+                        error_log('Failed to record collector alert: ' . $alertError->getMessage());
+                    }
                 }
             }
         }
         
+        // Roll raw metrics up into hourly buckets (cheap idempotent upsert
+        // over the last 26h; long-range charts read the rollups).
+        if (shouldRunPeriodicTask('metrics_hourly_rollup', 0, 900)) {
+            ServerMonitoring::aggregateHourlyMetrics();
+        }
+
         // Clean old metrics
         ServerMonitoring::cleanOldMetrics();
         

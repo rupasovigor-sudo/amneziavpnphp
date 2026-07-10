@@ -29,16 +29,29 @@
       <div>
         <label class="block text-sm font-medium text-gray-700">Installation Protocol</label>
         {% set selectedProtocol = form_data.install_protocol ?? default_protocol %}
-        <select name="install_protocol" data-field-manual class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md">
-          {% for protocol in protocols %}
-            <option value="{{ protocol.slug }}" {% if protocol.slug == selectedProtocol %}selected{% endif %}>{{ protocol.name }}</option>
-          {% endfor %}
-        </select>
-        <p id="protocolDescription" class="mt-1 text-xs text-gray-500"></p>
+        {% if protocols|length == 1 %}
+          <input type="hidden" name="install_protocol" data-field-manual value="{{ protocols[0].slug }}">
+          <div class="mt-1 px-3 py-2 bg-gray-50 border border-gray-200 rounded-md text-sm text-gray-700">
+            <i class="fas fa-shield-halved text-purple-600 mr-1"></i>{{ protocols[0].name }}
+          </div>
+          {% if protocols[0].description %}<p class="mt-1 text-xs text-gray-500">{{ protocols[0].description }}</p>{% endif %}
+        {% else %}
+          <select name="install_protocol" data-field-manual class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md">
+            {% for protocol in protocols %}
+              <option value="{{ protocol.slug }}" {% if protocol.slug == selectedProtocol %}selected{% endif %}>{{ protocol.name }}</option>
+            {% endfor %}
+          </select>
+          <p id="protocolDescription" class="mt-1 text-xs text-gray-500"></p>
+        {% endif %}
       </div>
       <div>
-        <label class="block text-sm font-medium text-gray-700">Host IP/Domain</label>
+        <label class="block text-sm font-medium text-gray-700">Host IP</label>
         <input name="host" data-field-manual required class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md" placeholder="123.456.789.0" value="{{ form_data.host ?? '' }}">
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-gray-700">Client endpoint domain <span class="text-gray-400">(optional)</span></label>
+        <input name="domain" data-field-manual class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md" placeholder="awg.gptanalitika.com" value="{{ form_data.domain ?? '' }}">
+        <p class="mt-1 text-xs text-gray-500">AmneziaWG 2.0 clients connect to <code>domain:443</code>. Point this domain's DNS A-record at the server IP (or configure a Timeweb token in Settings to manage it automatically). Leave empty to use the raw IP.</p>
       </div>
       <div>
         <label class="block text-sm font-medium text-gray-700">SSH Port</label>

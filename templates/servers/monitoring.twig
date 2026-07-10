@@ -486,7 +486,7 @@ async function updateClientSpeeds() {
             return;
         }
 
-        const response = await fetch(`/api/servers/${serverId}/client-metrics?hours=1`, {
+        const response = await fetch(`/api/servers/${serverId}/client-metrics?hours=1&max_points_per_client=20`, {
             credentials: 'same-origin'
         });
 
@@ -550,6 +550,6 @@ setInterval(() => {
     updateHealthChecks();
     updateServerMetrics();
     updateClientSpeeds();
-}, 30000);
+}, 60000);
 </script>
 {% endblock %}

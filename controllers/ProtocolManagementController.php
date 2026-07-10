@@ -726,7 +726,11 @@ SH;
 
     private function runHostCommand(string $cmd): void
     {
-        $out = shell_exec($cmd);
+        // Fire-and-forget (cleanup commands), but a failure is still worth a log line.
+        $res = $this->runHostCommandChecked($cmd);
+        if ($res['rc'] !== 0) {
+            error_log('runHostCommand failed (rc=' . $res['rc'] . '): ' . $cmd . ' — ' . substr($res['out'], 0, 300));
+        }
     }
 
     private function runHostCommandChecked(string $cmd): array
@@ -735,13 +739,6 @@ SH;
         $rc = 0;
         exec($cmd . ' 2>&1', $lines, $rc);
         return ['out' => implode("\n", $lines), 'rc' => $rc];
-    }
-
-    private function execInContainer(string $container, string $cmd): string
-    {
-        $full = 'docker exec ' . escapeshellarg($container) . ' bash -lc ' . escapeshellarg($cmd);
-        $out = shell_exec($full . ' 2>&1');
-        return $out ?? '';
     }
 
     private function execInContainerChecked(string $container, string $cmd): array

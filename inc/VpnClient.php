@@ -110,7 +110,7 @@ class VpnClient
     private static function shouldSyncServerKeys(array $serverData, string $protocolSlug): bool
     {
         $required = ['server_public_key', 'preshared_key', 'vpn_port'];
-        if (in_array($protocolSlug, ['amnezia-wg-advanced', 'awg2'], true)) {
+        if (in_array($protocolSlug, ['awg2'], true)) {
             $required[] = 'awg_params';
         }
 
@@ -192,7 +192,7 @@ class VpnClient
                 $protoMetadata = $decodedDef['metadata'] ?? [];
             }
         }
-        $isWireguard = in_array($slug, ['amnezia-wg-advanced', 'wireguard-standard', 'amnezia-wg', 'awg2'], true);
+        $isWireguard = in_array($slug, ['awg2'], true);
 
         // Auto-sync server keys from container EVERY TIME for WireGuard protocols
         // This ensures we always use current container configuration even if it was recreated
@@ -384,7 +384,7 @@ class VpnClient
                     'client_ip' => $clientIP,
                     'server_public_key' => $serverData['server_public_key'],
                     'preshared_key' => $serverData['preshared_key'],
-                    'server_host' => $serverData['host'],
+                    'server_host' => self::endpointHost($serverData),
                     'server_port' => $serverData['vpn_port'],
                     'dns_servers' => $serverData['dns_servers'] ?? '1.1.1.1, 1.0.0.1',
                 ];
@@ -442,7 +442,7 @@ class VpnClient
                     $clientIP,
                     $serverData['server_public_key'],
                     $serverData['preshared_key'],
-                    $serverData['host'],
+                    self::endpointHost($serverData),
                     $serverData['vpn_port'],
                     is_array($awgParams) ? $awgParams : [],
                     $slug
@@ -465,7 +465,7 @@ class VpnClient
             $vars = [];
             $vars['private_key'] = '';
             $vars['client_ip'] = $clientIP;
-            $vars['server_host'] = $serverData['host'] ?? '';
+            $vars['server_host'] = self::endpointHost($serverData);
             $vars['server_port'] = $serverData['vpn_port'] ?? '';
             $extras = [];
             if ($protocolId) {
@@ -501,167 +501,9 @@ class VpnClient
                     }
                 }
 
-                // CRITICAL FIX: Do NOT inherit client_id from server installation data (server_protocols).
-                // This prevents new clients from duplicating the admin's UUID.
-                if (isset($vars['client_id']) && (stripos($slug, 'xray') !== false || stripos($slug, 'vless') !== false)) {
-                    unset($vars['client_id']);
-                }
-
-                if (isset($vars['publickey']) && empty($vars['reality_public_key'])) {
-                    $vars['reality_public_key'] = $vars['publickey'];
-                }
-                if (isset($vars['shortid']) && empty($vars['reality_short_id'])) {
-                    $vars['reality_short_id'] = $vars['shortid'];
-                }
-                if (isset($vars['servername']) && empty($vars['reality_server_name'])) {
-                    $vars['reality_server_name'] = $vars['servername'];
-                }
                 if (isset($vars['containername']) && empty($vars['container_name'])) {
                     $vars['container_name'] = $vars['containername'];
                 }
-            }
-            if ($slug === 'xray-vless') {
-                if (empty($vars['server_port'])) {
-                    if (is_array($extras) && isset($extras['result']) && is_array($extras['result'])) {
-                        $res = $extras['result'];
-                        if (isset($res['xray_port']) && is_scalar($res['xray_port'])) {
-                            $vars['server_port'] = (string) $res['xray_port'];
-                        }
-                        if (empty($vars['server_port'])) {
-                            foreach ($res as $rk => $rv) {
-                                if (is_string($rk) && stripos($rk, 'xray_port') !== false && is_scalar($rv)) {
-                                    $vars['server_port'] = (string) $rv;
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-                $needReality = empty($vars['reality_public_key']) || empty($vars['reality_server_name']) || empty($vars['reality_short_id']);
-                if (empty($vars['client_id']) || $needReality) {
-                    $containerName = 'amnezia-xray';
-                    if (is_array($extras) && isset($extras['result']) && is_array($extras['result'])) {
-                        $res = $extras['result'];
-                        if (isset($res['container_name']) && is_scalar($res['container_name'])) {
-                            $containerName = trim((string) $res['container_name']) ?: $containerName;
-                        }
-                    }
-                    try {
-                        $cfg = $server->executeCommand("docker exec -i " . escapeshellarg($containerName) . " cat /opt/amnezia/xray/server.json 2>/dev/null", true);
-                        if (trim((string) $cfg) === '') {
-                            $cfg = $server->executeCommand("docker exec -i " . escapeshellarg($containerName) . " cat /etc/xray/config.json 2>/dev/null", true);
-                        }
-                        $decoded = json_decode(trim((string) $cfg), true);
-                        if (is_array($decoded)) {
-                            $inbounds = $decoded['inbounds'] ?? [];
-                            if (is_array($inbounds) && !empty($inbounds)) {
-                                // Block removed: Do not reuse existing client ID for new clients
-                                // $settings = $inbounds[0]['settings'] ?? [];
-                                // $clients = $settings['clients'] ?? [];
-                                // if (is_array($clients) && !empty($clients)) {
-                                //    $cid = $clients[0]['id'] ?? null;
-                                //    if (is_string($cid) && $cid !== '' && empty($vars['client_id'])) {
-                                //        $vars['client_id'] = $cid;
-                                //    }
-                                // }
-                                $stream = $inbounds[0]['streamSettings'] ?? [];
-                                if (is_array($stream) && ($stream['security'] ?? '') === 'reality') {
-                                    $rs = $stream['realitySettings'] ?? [];
-                                    $serverNames = $rs['serverNames'] ?? ($rs['serverName'] ?? []);
-                                    $shortIds = $rs['shortIds'] ?? ($rs['shortId'] ?? []);
-                                    $serverName = is_array($serverNames) ? ($serverNames[0] ?? null) : (is_string($serverNames) ? $serverNames : null);
-                                    $shortId = is_array($shortIds) ? ($shortIds[0] ?? null) : (is_string($shortIds) ? $shortIds : null);
-                                    $privateKey = $rs['privateKey'] ?? null;
-                                    if (is_string($serverName) && $serverName !== '') {
-                                        $vars['reality_server_name'] = $serverName;
-                                    }
-                                    if (is_string($shortId) && $shortId !== '') {
-                                        $vars['reality_short_id'] = $shortId;
-                                    }
-                                    if (is_string($privateKey) && $privateKey !== '' && function_exists('sodium_crypto_scalarmult_base')) {
-                                        $b64 = strtr($privateKey, '-_', '+/');
-                                        $padLen = strlen($b64) % 4;
-                                        if ($padLen) {
-                                            $b64 .= str_repeat('=', 4 - $padLen);
-                                        }
-                                        $bin = base64_decode($b64, true);
-                                        if ($bin === false) {
-                                            $pk = $privateKey;
-                                            $padLen2 = strlen($pk) % 4;
-                                            if ($padLen2) {
-                                                $pk .= str_repeat('=', 4 - $padLen2);
-                                            }
-                                            $bin = base64_decode($pk, true);
-                                        }
-                                        if (is_string($bin) && strlen($bin) === 32) {
-                                            $pub = sodium_crypto_scalarmult_base($bin);
-                                            $vars['reality_public_key'] = rtrim(strtr(base64_encode($pub), '+/', '-_'), '=');
-                                        }
-                                    }
-                                    if (is_string($privateKey) && $privateKey !== '' && empty($vars['reality_public_key'])) {
-                                        $cmd = "docker exec -i " . escapeshellarg($containerName) . " /usr/bin/xray x25519 -i " . escapeshellarg($privateKey) . " 2>/dev/null";
-                                        $out = $server->executeCommand($cmd, true);
-                                        $outTrim = trim((string) $out);
-                                        if ($outTrim !== '') {
-                                            $pub = '';
-                                            if (preg_match('/[Pp]ublic\s*[Kk]ey[:\s]+(.+)/', $outTrim, $mm)) {
-                                                $pub = trim((string) $mm[1]);
-                                            } else {
-                                                $pub = $outTrim;
-                                            }
-                                            if ($pub !== '') {
-                                                $vars['reality_public_key'] = $pub;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    } catch (Exception $e) {
-                    }
-                }
-            }
-            if ($slug === 'openvpn') {
-                $containerName = $serverData['container_name'] ?? 'openvpn';
-                $config = '';
-
-                // Try to generate config via Docker
-                try {
-                    // 1. Generate client certificate (ignore output)
-                    $server->executeCommand("docker run --rm -v openvpn-data:/etc/openvpn kylemanna/openvpn easyrsa build-client-full " . escapeshellarg($loginFinal) . " nopass", true);
-
-                    // 2. Get full client config
-                    $fullConfig = $server->executeCommand("docker run --rm -v openvpn-data:/etc/openvpn kylemanna/openvpn ovpn_getclient " . escapeshellarg($loginFinal), true);
-
-                    if (trim($fullConfig) !== '' && strpos($fullConfig, 'BEGIN CERTIFICATE') !== false) {
-                        $config = $fullConfig;
-                        $protoRow = null; // Skip template generation
-                    }
-                } catch (Exception $e) {
-                    // Fallback to template
-                }
-
-                if (empty($config)) {
-                    if (empty($vars['server_port']) || !preg_match('/^\d+$/', (string) $vars['server_port'])) {
-                        $vars['server_port'] = '1194';
-                    }
-                    if (empty($vars['protocol'])) {
-                        $vars['protocol'] = 'udp';
-                    }
-                    if (empty($vars['proto'])) {
-                        $vars['proto'] = $vars['protocol'];
-                    }
-                    if (empty($vars['port'])) {
-                        $vars['port'] = $vars['server_port'];
-                    }
-                    if (empty($vars['host'])) {
-                        $vars['host'] = $vars['server_host'];
-                    }
-                }
-            }
-            if ($slug === 'aivpn') {
-                // Canonical connection key should come from AIVPN --add-client output.
-                // We keep fallback generation later only if add_client flow didn't provide a key.
             }
             $pass = null;
             $pwdCmd = isset($protoRow['password_command']) ? trim((string) $protoRow['password_command']) : '';
@@ -684,22 +526,10 @@ class VpnClient
             }
             $vars['login'] = $loginFinal;
             $vars['password'] = $pass;
-            if (($slug ?? '') === 'smb' && empty($vars['password'])) {
-                $vars['password'] = $pass;
-            }
-
-            // Ensure client_id (UUID) for X-Ray
-            if (empty($vars['client_id']) && (stripos($slug, 'xray') !== false || stripos($slug, 'vless') !== false)) {
-                $data = random_bytes(16);
-                $data[6] = chr(ord($data[6]) & 0x0f | 0x40);
-                $data[8] = chr(ord($data[8]) & 0x3f | 0x80);
-                $vars['client_id'] = vsprintf('%s%s-%s-%s-%s-%s%s%s', str_split(bin2hex($data), 4));
-            }
 
             // Try to add client to server via universal manager (supports scripts and builtins)
             if ($protoRow) {
                 // We pass generic options. InstallProtocolManager will handle specific logic for 'add_client' phase.
-                // For xray-vless it uses builtin fallback in runScript.
                 try {
                     require_once __DIR__ . '/InstallProtocolManager.php';
                     $addClientResult = self::timed('create.protocol_add_client', [
@@ -719,93 +549,11 @@ class VpnClient
                             $vars[$key] = $value;
                             $vars[strtolower($key)] = $value;
                         }
-
-                        if ($slug === 'aivpn') {
-                            if (empty($vars['connection_key']) && !empty($vars['connection_uri']) && stripos((string) $vars['connection_uri'], 'aivpn://') === 0) {
-                                $vars['connection_key'] = substr((string) $vars['connection_uri'], strlen('aivpn://'));
-                            }
-                            if (!empty($vars['client_ip']) && preg_match('/^\d{1,3}(?:\.\d{1,3}){3}$/', (string) $vars['client_ip'])) {
-                                $clientIP = (string) $vars['client_ip'];
-                                $vars['client_ip'] = $clientIP;
-                            }
-                        }
                     }
                 } catch (Exception $e) {
                     error_log("Failed to add client to server: " . $e->getMessage());
                     throw $e;
                 }
-            }
-
-            if ($slug === 'aivpn' && empty($vars['connection_key'])) {
-                // Fallback: try to run host binary directly when container is unavailable
-                try {
-                    $hostBinaryPaths = [
-                        '/opt/amnezia/aivpn/aivpn-server-linux-x86_64',
-                        '/opt/amnezia/aivpn/aivpn-server',
-                        '/usr/local/bin/aivpn-server',
-                        '/usr/bin/aivpn-server',
-                    ];
-                    $binaryPath = null;
-                    foreach ($hostBinaryPaths as $path) {
-                        try {
-                            $check = trim((string) $server->executeCommand('test -f ' . escapeshellarg($path) . ' && echo "found" || echo "not_found"', true));
-                            if ($check === 'found') {
-                                $binaryPath = $path;
-                                break;
-                            }
-                        } catch (Exception $e) {
-                            continue;
-                        }
-                    }
-
-                    if ($binaryPath !== null) {
-                        $serverHost = !empty($vars['server_host']) ? (string) $vars['server_host'] : ($serverData['host'] ?? '');
-                        $serverPort = !empty($vars['server_port']) ? (int) $vars['server_port'] : (int) ($serverData['vpn_port'] ?? 443);
-                        if ($serverHost === '') {
-                            $serverHost = $serverData['host'] ?? '';
-                        }
-                        if ($serverPort <= 0) {
-                            $serverPort = 443;
-                        }
-
-                        $cmdParts = [
-                            escapeshellarg($binaryPath),
-                            '--add-client',
-                            escapeshellarg($loginFinal),
-                            '--key-file',
-                            escapeshellarg('/etc/aivpn/server.key'),
-                            '--clients-db',
-                            escapeshellarg('/etc/aivpn/clients.json'),
-                        ];
-                        if ($serverHost !== '') {
-                            $cmdParts[] = '--server-ip';
-                            $cmdParts[] = escapeshellarg($serverHost . ':' . $serverPort);
-                        }
-                        $cmd = implode(' ', $cmdParts);
-                        $output = (string) $server->executeCommand($cmd, true);
-                        $trimmed = trim($output);
-                        if ($trimmed !== '' && stripos($trimmed, 'Failed to add client') === false) {
-                            if (preg_match('/(aivpn:\/\/[A-Za-z0-9_\-+=\/]+)/', $trimmed, $m)) {
-                                $uri = trim((string) $m[1]);
-                                $vars['connection_uri'] = $uri;
-                                if (stripos($uri, 'aivpn://') === 0) {
-                                    $vars['connection_key'] = substr($uri, strlen('aivpn://'));
-                                }
-                            }
-                            if (preg_match('/\bVPN\s*IP:\s*([0-9.]+)/i', $trimmed, $m)) {
-                                $vars['client_ip'] = trim((string) $m[1]);
-                                $clientIP = $vars['client_ip'];
-                            }
-                            error_log('AIVPN host binary fallback succeeded, connection_key length: ' . strlen($vars['connection_key'] ?? ''));
-                        }
-                    }
-                } catch (Exception $e) {
-                    error_log('AIVPN host binary fallback failed: ' . $e->getMessage());
-                }
-            }
-
-            if ($slug === 'aivpn' && !empty($vars['connection_key'])) {
-                $vars['connection_key'] = self::normalizeAivpnConnectionKey((string) $vars['connection_key']);
             }
 
             if ($protoRow) {
@@ -868,46 +616,6 @@ class VpnClient
         return $clientId;
     }
 
-    private static function normalizeAivpnConnectionKey(string $key): string
-    {
-        $key = trim($key);
-        if ($key === '') {
-            return $key;
-        }
-
-        $decoded = base64_decode(strtr($key, '-_', '+/'), true);
-        if ($decoded === false) {
-            $padLen = strlen($key) % 4;
-            $normalized = $key;
-            if ($padLen > 0) {
-                $normalized .= str_repeat('=', 4 - $padLen);
-            }
-            $decoded = base64_decode(strtr($normalized, '-_', '+/'), true);
-        }
-
-        if ($decoded === false) {
-            return $key;
-        }
-
-        $data = json_decode($decoded, true);
-        if (!is_array($data) || empty($data['s']) || !is_string($data['s'])) {
-            return $key;
-        }
-
-        $endpoint = trim($data['s']);
-        $endpoint = preg_replace('#^https?://#i', '', $endpoint);
-        $endpoint = preg_replace('#/.*$#', '', $endpoint ?? '');
-
-        if ($endpoint !== '' && preg_match('/^(.+?)(?::\d+){2,}$/', $endpoint, $m) && preg_match('/:(\d+)$/', $endpoint, $pm)) {
-            $endpoint = trim((string) $m[1]) . ':' . (string) $pm[1];
-            $data['s'] = $endpoint;
-            $json = (string) json_encode($data, JSON_UNESCAPED_SLASHES);
-            return rtrim(strtr(base64_encode($json), '+/', '-_'), '=');
-        }
-
-        return $key;
-    }
-
     public static function listByServerAndProtocol(int $serverId, int $protocolId): array
     {
         $pdo = DB::conn();
@@ -966,7 +674,7 @@ class VpnClient
                 $clientIp,
                 $serverData['server_public_key'],
                 $presharedKey,
-                $serverData['host'],
+                self::endpointHost($serverData),
                 (int) $serverData['vpn_port'],
                 $awgParams,
                 (string) ($serverData['install_protocol'] ?? '')
@@ -1050,17 +758,7 @@ class VpnClient
             $wgTool
         );
 
-        $escaped = escapeshellarg($cmd);
-        $sshCmd = sprintf(
-            "sshpass -p %s ssh -p %d -q -o LogLevel=ERROR -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o PreferredAuthentications=password -o PubkeyAuthentication=no %s@%s %s 2>&1",
-            escapeshellarg($serverData['password']),
-            $serverData['port'],
-            $serverData['username'],
-            $serverData['host'],
-            $escaped
-        );
-
-        $out = (string) shell_exec($sshCmd);
+        $out = self::executeServerCommand($serverData, $cmd);
         $parts = explode("---", trim($out));
 
         if (count($parts) < 2) {
@@ -1385,6 +1083,18 @@ class VpnClient
     }
 
     /**
+     * Resolve the host used in the client config Endpoint. Prefers the server's
+     * configured domain (e.g. awg.gptanalitika.com) so clients connect via the
+     * domain and the server can be swapped by repointing DNS; falls back to the
+     * raw host IP when no domain is set.
+     */
+    public static function endpointHost(array $serverData): string
+    {
+        $domain = trim((string) ($serverData['domain'] ?? ''));
+        return $domain !== '' ? $domain : (string) ($serverData['host'] ?? '');
+    }
+
+    /**
      * Build client configuration file
      */
     public static function buildClientConfig(
@@ -1601,7 +1311,7 @@ BASH;
         $configDir = '/opt/amnezia/awg'; // Внутри контейнера всегда /opt/amnezia/awg
 
         // Read current table
-        $cmd = sprintf("docker exec -i %s cat %s/clientsTable 2>/dev/null", $containerName, $configDir);
+        $cmd = sprintf("docker exec -i %s cat %s/clientsTable 2>/dev/null", escapeshellarg($containerName), $configDir);
         $tableJson = self::executeServerCommand($serverData, $cmd, true);
         $table = json_decode(trim($tableJson), true);
 
@@ -1618,10 +1328,23 @@ BASH;
             ]
         ];
 
-        // Save back
-        $newTableJson = json_encode($table, JSON_PRETTY_PRINT);
-        $escaped = addslashes($newTableJson);
-        $updateCmd = sprintf("docker exec -i %s sh -c 'echo \"%s\" > %s/clientsTable'", $containerName, $escaped, $configDir);
+        self::writeClientsTable($serverData, $containerName, $configDir, $table);
+    }
+
+    /**
+     * Safely write clientsTable inside the container.
+     *
+     * The JSON is base64-encoded and decoded on the server, so client-controlled
+     * values (e.g. client name) can never break out of the shell command. Do NOT
+     * revert to interpolating JSON into `echo "..."` — addslashes does not escape
+     * `$`/backticks and allows command injection (see WireGuard add-peer path).
+     */
+    private static function writeClientsTable(array $serverData, string $containerName, string $configDir, array $table): void
+    {
+        $payloadB64 = base64_encode((string) json_encode($table, JSON_PRETTY_PRINT));
+        // base64 output contains only [A-Za-z0-9+/=], so it is safe inside single quotes.
+        $innerScript = sprintf("printf '%%s' '%s' | base64 -d > %s/clientsTable", $payloadB64, $configDir);
+        $updateCmd = sprintf('docker exec -i %s sh -c %s', escapeshellarg($containerName), escapeshellarg($innerScript));
         self::executeServerCommand($serverData, $updateCmd, true);
     }
 
@@ -1630,37 +1353,19 @@ BASH;
      */
     private static function executeServerCommand(array $serverData, string $command, bool $sudo = false): string
     {
-        $needsSudo = $sudo && strtolower((string) ($serverData['username'] ?? '')) !== 'root';
         $baseCommand = $command;
+        $needsSudo = $sudo && strtolower((string) ($serverData['username'] ?? '')) !== 'root';
+        $prepared = $needsSudo ? Ssh::wrapSudo($serverData, $command) : $command;
 
-        if ($needsSudo) {
-            // Suppress sudo prompt noise in stdout to keep parser output stable.
-            $command = "echo '{$serverData['password']}' | sudo -S -p '' " . $command;
-        }
-
-        $run = static function (string $cmd) use ($serverData): string {
-            $escapedCommand = escapeshellarg($cmd);
-            $sshCommand = sprintf(
-                "sshpass -p %s ssh  -p %d -q -o LogLevel=ERROR -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o PreferredAuthentications=password -o PubkeyAuthentication=no %s@%s %s 2>&1",
-                escapeshellarg($serverData['password']),
-                $serverData['port'],
-                $serverData['username'],
-                $serverData['host'],
-                $escapedCommand
-            );
-
-            return shell_exec($sshCommand) ?? '';
-        };
-
-        $output = $run($command);
+        $output = Ssh::exec($serverData, $prepared, ['timeout' => 300])->output;
 
         // If sudo auth fails but docker is available without sudo (docker group), retry without sudo.
         if (
             $needsSudo
             && preg_match('/(^|\\n)docker(\\s|$)/', ltrim($baseCommand))
-            && preg_match('/incorrect password attempts|sorry, try again|a password is required/i', $output)
+            && Ssh::isSudoAuthFailure($output)
         ) {
-            $output = $run($baseCommand);
+            $output = Ssh::exec($serverData, $baseCommand, ['timeout' => 300])->output;
         }
 
         return $output;
@@ -1675,37 +1380,6 @@ BASH;
         require_once __DIR__ . '/QrUtil.php';
 
         try {
-            // Check for X-Ray VLESS
-            if (strpos($config, 'vless://') === 0) {
-                // Parse VLESS URI
-                $parsed = parse_url($config);
-                // Allow missing user (UUID) and port for partial configs
-                if ($parsed && isset($parsed['host'])) {
-                    $host = $parsed['host'];
-                    $port = isset($parsed['port']) ? (int) $parsed['port'] : 443;
-                    $clientId = $parsed['user'] ?? '';
-                    $fragment = $parsed['fragment'] ?? '';
-
-                    parse_str($parsed['query'] ?? '', $query);
-                    $flow = $query['flow'] ?? '';
-
-                    $reality = null;
-                    if (($query['security'] ?? '') === 'reality') {
-                        $reality = [
-                            'publicKey' => $query['pbk'] ?? '',
-                            'serverName' => $query['sni'] ?? '',
-                            'shortId' => $query['sid'] ?? '',
-                            'fingerprint' => $query['fp'] ?? 'chrome'
-                        ];
-                    }
-
-                    // Use QrUtil to encode correct X-Ray payload (Native Amnezia Client Config)
-                    $payloadXray = QrUtil::encodeXrayPayload($host, $port, $clientId, $fragment, $reality, $config, $flow);
-                    return QrUtil::pngBase64($payloadXray);
-                }
-            }
-
-            // Fallback for WireGuard / default
             // Use old Amnezia format with Qt/QDataStream encoding, but pass protocol slug
             $payloadOld = QrUtil::encodeOldPayloadFromConf($config, $protocolSlug);
             $dataUri = QrUtil::pngBase64($payloadOld);
@@ -1725,11 +1399,6 @@ BASH;
         require_once __DIR__ . '/QrUtil.php';
 
         try {
-            // For X-Ray VLESS, use same format as regular QR
-            if (strpos($config, 'vless://') === 0) {
-                return self::generateQRCode($config, $protocolSlug);
-            }
-
             // For AWG2 and other WireGuard/AWG, use vpn:// URL format with JSON + zlib
             $payloadVpn = QrUtil::encodeVpnUrlConf($config, $protocolSlug);
             $dataUri = QrUtil::pngBase64($payloadVpn);
@@ -1852,7 +1521,7 @@ BASH;
             $stmt = $pdo->prepare('SELECT slug FROM protocols WHERE id = ?');
             $stmt->execute([$protocolId]);
             $slug = (string) $stmt->fetchColumn();
-            return in_array($slug, ['amnezia-wg-advanced', 'wireguard-standard', 'amnezia-wg', 'awg2'], true);
+            return in_array($slug, ['awg2'], true);
         } catch (Exception $e) {
             return true;
         }
@@ -2067,7 +1736,7 @@ BASH;
         $configDir = '/opt/amnezia/awg'; // Внутри контейнера всегда /opt/amnezia/awg
 
         // Read current table
-        $cmd = sprintf("docker exec -i %s cat %s/clientsTable 2>/dev/null", $containerName, $configDir);
+        $cmd = sprintf("docker exec -i %s cat %s/clientsTable 2>/dev/null", escapeshellarg($containerName), $configDir);
         $tableJson = self::executeServerCommand($serverData, $cmd, true);
         $table = json_decode(trim($tableJson), true);
 
@@ -2083,11 +1752,7 @@ BASH;
         // Re-index array
         $table = array_values($table);
 
-        // Save back
-        $newTableJson = json_encode($table, JSON_PRETTY_PRINT);
-        $escaped = addslashes($newTableJson);
-        $updateCmd = sprintf("docker exec -i %s sh -c 'echo \"%s\" > %s/clientsTable'", $containerName, $escaped, $configDir);
-        self::executeServerCommand($serverData, $updateCmd, true);
+        self::writeClientsTable($serverData, $containerName, $configDir, $table);
     }
 
     /**
@@ -2133,7 +1798,7 @@ BASH;
             $protoRow = $stmt->fetch();
         }
         $slug = $protoRow['slug'] ?? '';
-        $isWireguard = in_array($slug, ['amnezia-wg-advanced', 'wireguard-standard', 'amnezia-wg', 'awg2'], true);
+        $isWireguard = in_array($slug, ['awg2'], true);
 
         if (!$isWireguard) {
             return ['success' => false, 'error' => 'not_wireguard_protocol', 'protocol_slug' => $slug];
@@ -2172,7 +1837,7 @@ BASH;
 
         // If AWG params are missing (common after reinstall), fetch them directly from wg0.conf
         // to avoid falling back to template defaults that will not match the server.
-        if (in_array($slug, ['amnezia-wg-advanced', 'awg2'], true)) {
+        if (in_array($slug, ['awg2'], true)) {
             $needKeys = $slug === 'awg2'
                 ? ['JC', 'JMIN', 'JMAX', 'S1', 'S2', 'S3', 'S4', 'H1', 'H2', 'H3', 'H4', 'I1', 'I2', 'I3', 'I4', 'I5']
                 : ['JC', 'JMIN', 'JMAX', 'S1', 'S2', 'H1', 'H2', 'H3', 'H4'];
@@ -2248,7 +1913,7 @@ BASH;
             'client_ip' => $clientIP,
             'server_public_key' => (string) ($serverData['server_public_key'] ?? ''),
             'preshared_key' => $presharedKeyForConfig,
-            'server_host' => (string) ($serverData['host'] ?? ''),
+            'server_host' => self::endpointHost($serverData),
             'server_port' => (string) ((int) ($serverData['vpn_port'] ?? 0)),
             'dns_servers' => (string) ($serverData['dns_servers'] ?? '1.1.1.1, 1.0.0.1'),
         ];
@@ -2283,7 +1948,7 @@ BASH;
                 $clientIP,
                 (string) ($serverData['server_public_key'] ?? ''),
                 $presharedKeyForConfig,
-                (string) ($serverData['host'] ?? ''),
+                self::endpointHost($serverData),
                 (int) ($serverData['vpn_port'] ?? 0),
                 $awgParams,
                 $slug
@@ -2326,65 +1991,6 @@ BASH;
     }
 
     /**
-     * Get XRay client stats
-     */
-    private static function getXrayStats(array $serverData, string $clientId): array
-    {
-        $stats = [
-            'bytes_sent' => 0,
-            'bytes_received' => 0,
-            'last_handshake' => 0 // XRay stats API does not provide handshake time
-        ];
-
-        $containerName = $serverData['container_name'] ?? 'amnezia-xray';
-
-        // Command to query stats
-        // We query by email, which should be equal to client ID (UUID)
-        $cmd = sprintf(
-            "docker exec -i %s xray api statsquery --server=127.0.0.1:10085 --pattern 'user>>>%s>>>traffic>>>' 2>/dev/null",
-            escapeshellarg($containerName),
-            escapeshellarg($clientId)
-        );
-
-        $output = self::executeServerCommand($serverData, $cmd, true);
-
-        if (empty($output)) {
-            return $stats;
-        }
-
-        // Output format example:
-        // user>>>uuid>>>traffic>>>uplink: 1024
-        // user>>>uuid>>>traffic>>>downlink: 2048
-
-        // Parse JSON output
-        $json = json_decode($output, true);
-        if (is_array($json) && isset($json['stat']) && is_array($json['stat'])) {
-            foreach ($json['stat'] as $item) {
-                if (!isset($item['name']) || !isset($item['value']))
-                    continue;
-                if (strpos($item['name'], 'uplink') !== false) {
-                    $stats['bytes_sent'] += (int) $item['value'];
-                } elseif (strpos($item['name'], 'downlink') !== false) {
-                    $stats['bytes_received'] += (int) $item['value'];
-                }
-            }
-        } else {
-            // Fallback to text parsing (legacy)
-            $lines = explode("\n", trim($output));
-            foreach ($lines as $line) {
-                if (preg_match('/user>>>.+>>>traffic>>>uplink:\s*(\d+)/', $line, $m)) {
-                    $stats['bytes_sent'] = (int) $m[1];
-                } elseif (preg_match('/user>>>.+>>>traffic>>>downlink:\s*(\d+)/', $line, $m)) {
-                    $stats['bytes_received'] = (int) $m[1];
-                }
-            }
-        }
-
-
-        return $stats;
-    }
-
-    /**
      * Sync traffic statistics from server
      */
     public function syncStats(): bool
@@ -2403,122 +2009,16 @@ BASH;
         try {
             // Get previous stats for speed calculation
             $pdo = DB::conn();
-            $stmtPrev = $pdo->prepare('SELECT bytes_sent, bytes_received, last_sync_at, last_handshake, aivpn_raw_bytes_in, aivpn_raw_bytes_out, aivpn_offset_bytes_in, aivpn_offset_bytes_out FROM vpn_clients WHERE id = ?');
+            $stmtPrev = $pdo->prepare('SELECT bytes_sent, bytes_received, last_sync_at, last_handshake FROM vpn_clients WHERE id = ?');
             $stmtPrev->execute([$this->clientId]);
             $prev = $stmtPrev->fetch();
 
             $prevSent = (int) ($prev['bytes_sent'] ?? 0);
             $prevReceived = (int) ($prev['bytes_received'] ?? 0);
             $prevSyncAt = $prev['last_sync_at'] ? strtotime($prev['last_sync_at']) : 0;
-            $prevHandshake = $prev['last_handshake'] ? strtotime($prev['last_handshake']) : 0;
-            $aivpnRawInPrev = (int) ($prev['aivpn_raw_bytes_in'] ?? 0);
-            $aivpnRawOutPrev = (int) ($prev['aivpn_raw_bytes_out'] ?? 0);
-            $aivpnOffsetIn = (int) ($prev['aivpn_offset_bytes_in'] ?? 0);
-            $aivpnOffsetOut = (int) ($prev['aivpn_offset_bytes_out'] ?? 0);
 
-            // XRay stats logic
-            $stats = [];
-
-            // Determine protocol by client's protocol_id
-            $isXray = false;
-            $isAivpn = false;
-            $xrayContainerName = 'amnezia-xray'; // Default XRay container name
-            
-            if (!empty($this->data['protocol_id'])) {
-                $stmtProto = $pdo->prepare('SELECT slug FROM protocols WHERE id = ?');
-                $stmtProto->execute([$this->data['protocol_id']]);
-                $protoData = $stmtProto->fetch();
-                if ($protoData) {
-                    $slug = (string) ($protoData['slug'] ?? '');
-                    if (stripos($slug, 'xray') !== false) {
-                        $isXray = true;
-                    }
-                    if (stripos($slug, 'aivpn') !== false) {
-                        $isAivpn = true;
-                    }
-                }
-            }
-            
-            // Fallback: check container_name or config for xray indicators
-            if (!$isXray) {
-                $containerName = $serverData['container_name'] ?? '';
-                if (strpos($containerName, 'xray') !== false) {
-                    $isXray = true;
-                    $xrayContainerName = $containerName;
-                } elseif (strpos($containerName, 'aivpn') !== false) {
-                    $isAivpn = true;
-                } elseif (!empty($this->data['config']) && strpos($this->data['config'], 'vless://') !== false) {
-                    $isXray = true;
-                } elseif (!empty($this->data['config']) && strpos($this->data['config'], 'aivpn://') === 0) {
-                    $isAivpn = true;
-                }
-            }
-
-            if ($isXray) {
-                // XRay stats are tracked by email field in xray config
-                // Try client name first (typically used as email), then UUID from config as fallback
-                $identifier = null;
-                $uuid = null;
-                
-                // Extract UUID from config 
-                if (!empty($this->data['config']) && preg_match('/vless:\/\/([0-9a-fA-F-]{36})@/i', $this->data['config'], $m)) {
-                    $uuid = $m[1];
-                }
-                
-                // Override container_name for XRay stats
-                $xrayServerData = $serverData;
-                $xrayServerData['container_name'] = $xrayContainerName;
-                
-                // Try name first (typically matches email in xray config)
-                if (!empty($this->data['name'])) {
-                    $identifier = $this->data['name'];
-                    $stats = self::getXrayStats($xrayServerData, $identifier);
-                }
-                
-                // If no stats found by name, try UUID
-                if ((empty($stats) || ($stats['bytes_sent'] == 0 && $stats['bytes_received'] == 0)) && $uuid) {
-                    $identifier = $uuid;
-                    $stats = self::getXrayStats($xrayServerData, $identifier);
-                }
-
-                if ($identifier && !empty($stats)) {
-                    // Infer online status for XRay: if traffic increased, they are online.
-                    // Update last_handshake to NOW() if activity detected.
-                    if ($stats['bytes_sent'] > $prevSent || $stats['bytes_received'] > $prevReceived) {
-                        $stats['last_handshake'] = time();
-                    } else {
-                        // Keep previous handshake if no new activity
-                        $stats['last_handshake'] = $prevHandshake;
-                    }
-                }
-
-            } elseif ($isAivpn) {
-                $stats = self::getAivpnStatsFromServer($serverData, $this->data);
-                if (!empty($stats)) {
-                    $rawInNow = (int) ($stats['bytes_sent'] ?? 0);
-                    $rawOutNow = (int) ($stats['bytes_received'] ?? 0);
-
-                    if ($rawInNow < $aivpnRawInPrev) {
-                        $aivpnOffsetIn = max($aivpnOffsetIn + $aivpnRawInPrev, $prevSent);
-                    }
-                    if ($rawOutNow < $aivpnRawOutPrev) {
-                        $aivpnOffsetOut = max($aivpnOffsetOut + $aivpnRawOutPrev, $prevReceived);
-                    }
-
-                    $candidateSent = $aivpnOffsetIn + $rawInNow;
-                    $candidateReceived = $aivpnOffsetOut + $rawOutNow;
-                    $stats['bytes_sent'] = max($prevSent, $candidateSent);
-                    $stats['bytes_received'] = max($prevReceived, $candidateReceived);
-
-                    if (empty($stats['last_handshake']) || (int) $stats['last_handshake'] <= 0) {
-                        $stats['last_handshake'] = $prevHandshake;
-                    }
-                }
-            }
-
-            if (empty($stats)) {
-                $stats = self::getClientStatsFromServer($serverData, $this->data['public_key']);
-            }
+            // AmneziaWG 2.0 stats are read directly from the WireGuard peer dump.
+            $stats = self::getClientStatsFromServer($serverData, $this->data['public_key']);
 
             // Calculate speeds (bytes per second)
             $now = time();
@@ -2547,42 +2047,15 @@ BASH;
                 }
             }
 
-            $isAivpnPersist = $isAivpn && !empty($stats);
-            if ($isAivpnPersist) {
-                $stmt = $pdo->prepare('
-                    UPDATE vpn_clients 
-                    SET bytes_sent = ?, bytes_received = ?, last_handshake = ?, current_speed = ?, speed_up = ?, speed_down = ?,
-                        aivpn_raw_bytes_in = ?, aivpn_raw_bytes_out = ?, aivpn_offset_bytes_in = ?, aivpn_offset_bytes_out = ?,
-                        last_sync_at = NOW()
-                    WHERE id = ?
-                ');
-            } else {
-                $stmt = $pdo->prepare('
-                    UPDATE vpn_clients 
-                    SET bytes_sent = ?, bytes_received = ?, last_handshake = ?, current_speed = ?, speed_up = ?, speed_down = ?, last_sync_at = NOW()
-                    WHERE id = ?
-                ');
-            }
+            $stmt = $pdo->prepare('
+                UPDATE vpn_clients
+                SET bytes_sent = ?, bytes_received = ?, last_handshake = ?, current_speed = ?, speed_up = ?, speed_down = ?, last_sync_at = NOW()
+                WHERE id = ?
+            ');
 
             $lastHandshake = $stats['last_handshake'] > 0
                 ? date('Y-m-d H:i:s', $stats['last_handshake'])
                 : null;
-
-            if ($isAivpnPersist) {
-                return $stmt->execute([
-                    $stats['bytes_sent'],
-                    $stats['bytes_received'],
-                    $lastHandshake,
-                    $currentSpeed,
-                    $speedUp,
-                    $speedDown,
-                    (int) ($stats['bytes_sent_raw'] ?? 0),
-                    (int) ($stats['bytes_received_raw'] ?? 0),
-                    $aivpnOffsetIn,
-                    $aivpnOffsetOut,
-                    $this->clientId
-                ]);
-            }
 
             return $stmt->execute([
                 $stats['bytes_sent'],
@@ -2597,110 +2070,6 @@ BASH;
             error_log('Failed to sync client stats: ' . $e->getMessage());
             return false;
         }
-    }
-
-    private static function getAivpnStatsFromServer(array $serverData, array $clientData): array
-    {
-        $stats = [
-            'bytes_sent' => 0,
-            'bytes_received' => 0,
-            'bytes_sent_raw' => 0,
-            'bytes_received_raw' => 0,
-            'last_handshake' => 0,
-        ];
-
-        $containerName = (string) ($serverData['container_name'] ?? '');
-        if ($containerName === '' || stripos($containerName, 'aivpn') === false) {
-            $containerName = 'aivpn-server';
-        }
-
-        $cmd = sprintf('docker exec -i %s cat /etc/aivpn/clients.json 2>/dev/null', escapeshellarg($containerName));
-        $output = self::executeServerCommand($serverData, $cmd, true);
-        if (trim((string) $output) === '') {
-            return $stats;
-        }
-
-        $data = json_decode((string) $output, true);
-        if (!is_array($data) || !isset($data['clients']) || !is_array($data['clients'])) {
-            return $stats;
-        }
-
-        $name = strtolower(trim((string) ($clientData['name'] ?? '')));
-        $clientIp = trim((string) ($clientData['client_ip'] ?? ''));
-        $cfgIp = self::extractAivpnIpFromConfig((string) ($clientData['config'] ?? ''));
-
-        $match = null;
-        foreach ($data['clients'] as $entry) {
-            if (!is_array($entry)) {
-                continue;
-            }
-            $entryName = strtolower(trim((string) ($entry['name'] ?? '')));
-            $entryIp = trim((string) ($entry['vpn_ip'] ?? ''));
-            if ($name !== '' && $entryName === $name) {
-                $match = $entry;
-                break;
-            }
-            if ($clientIp !== '' && $entryIp === $clientIp) {
-                $match = $entry;
-                break;
-            }
-            if ($cfgIp !== '' && $entryIp === $cfgIp) {
-                $match = $entry;
-                break;
-            }
-        }
-
-        if (!is_array($match)) {
-            return $stats;
-        }
-
-        $s = is_array($match['stats'] ?? null) ? $match['stats'] : [];
-        $rawIn = (int) ($s['bytes_in'] ?? 0);
-        $rawOut = (int) ($s['bytes_out'] ?? 0);
-        $stats['bytes_sent_raw'] = $rawIn;
-        $stats['bytes_received_raw'] = $rawOut;
-        $stats['bytes_sent'] = $rawIn;
-        $stats['bytes_received'] = $rawOut;
-
-        if (!empty($s['last_handshake']) && is_string($s['last_handshake'])) {
-            $ts = strtotime($s['last_handshake']);
-            if ($ts !== false) {
-                $stats['last_handshake'] = (int) $ts;
-            }
-        }
-
-        return $stats;
-    }
-
-    private static function extractAivpnIpFromConfig(string $config): string
-    {
-        if (stripos($config, 'aivpn://') !== 0) {
-            return '';
-        }
-
-        $payload = substr($config, strlen('aivpn://'));
-        if ($payload === '') {
-            return '';
-        }
-
-        $b64 = strtr($payload, '-_', '+/');
-        $padLen = strlen($b64) % 4;
-        if ($padLen > 0) {
-            $b64 .= str_repeat('=', 4 - $padLen);
-        }
-
-        $decoded = base64_decode($b64, true);
-        if ($decoded === false) {
-            return '';
-        }
-
-        $data = json_decode($decoded, true);
-        if (!is_array($data)) {
-            return '';
-        }
-
-        $ip = trim((string) ($data['i'] ?? ''));
-        return preg_match('/^\d{1,3}(?:\.\d{1,3}){3}$/', $ip) ? $ip : '';
     }
 
     /**

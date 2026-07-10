@@ -13,6 +13,7 @@ class SettingsController {
         $stats = $this->getTranslationStats();
         $users = $this->getAllUsers();
         $apiKey = $this->getApiKey('openrouter');
+        $timewebKey = $this->getApiKey('timeweb');
 
         // LDAP data for embedded tab
         $stmt = $this->pdo->query("SELECT * FROM ldap_configs WHERE id = 1");
@@ -46,6 +47,7 @@ class SettingsController {
             'translation_stats' => $stats,
             'users' => $users,
             'openrouter_key' => $apiKey,
+            'timeweb_key' => $timewebKey,
             'alert_settings' => $this->getAlertSettings(),
             'alert_states' => $this->getAlertStates(),
             // LDAP
@@ -56,7 +58,7 @@ class SettingsController {
             'editing' => $editing,
             'definition_json' => $definitionPretty,
             'is_new' => $isNew,
-            'default_slug' => isset($editing['slug']) ? $editing['slug'] : (isset($protocols[0]['slug']) ? $protocols[0]['slug'] : 'amnezia-wg'),
+            'default_slug' => isset($editing['slug']) ? $editing['slug'] : (isset($protocols[0]['slug']) ? $protocols[0]['slug'] : 'awg2'),
         ];
         
         // Check for session messages
@@ -468,6 +470,22 @@ class SettingsController {
             return;
         }
         
+        // Validate a DNS provider token against the provider API before saving,
+        // so a broken token is caught here and not during a deploy.
+        if ($service === DnsManager::provider()) {
+            $testResult = DnsManager::verifyToken($apiKey);
+            if (!$testResult['success']) {
+                $_SESSION['settings_error'] = $testResult['message'];
+                header('Location: /settings#api');
+                exit;
+            }
+            $saved = $this->translator->saveApiKey($service, $apiKey);
+            $_SESSION[$saved ? 'settings_success' : 'settings_error'] =
+                $saved ? $testResult['message'] : $this->translator->translate('message.error');
+            header('Location: /settings#api');
+            exit;
+        }
+
         // Test the API key (unless skip_test is set)
         if ($service === 'openrouter' && !$skipTest) {
             $testResult = $this->testOpenRouterKey($apiKey);
