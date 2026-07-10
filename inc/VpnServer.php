@@ -668,6 +668,45 @@ BASH;
         ];
     }
 
+    /**
+     * Live per-peer state from awg0, keyed by public key:
+     * [pubkey => ['handshake_age' => int|null, 'rx' => int, 'tx' => int]].
+     * Used to drive a live online indicator that doesn't wait for the
+     * metrics-collector cycle.
+     */
+    public function liveClientPeers(): array
+    {
+        $container = trim((string) ($this->data['container_name'] ?? 'amnezia-awg2')) ?: 'amnezia-awg2';
+        $dump = (string) $this->executeCommand(
+            'docker exec ' . escapeshellarg($container) . ' awg show awg0 dump 2>/dev/null '
+            . '|| docker exec ' . escapeshellarg($container) . ' wg show wg0 dump 2>/dev/null',
+            true
+        );
+        $lines = array_values(array_filter(explode("\n", trim($dump)), static fn($l) => trim($l) !== ''));
+        $now = time();
+        $peers = [];
+        foreach ($lines as $i => $line) {
+            if ($i === 0) {
+                continue; // interface line
+            }
+            $f = explode("\t", $line);
+            if (count($f) < 7) {
+                continue;
+            }
+            $pub = trim($f[0]);
+            $hs = (int) $f[4];
+            if ($pub === '') {
+                continue;
+            }
+            $peers[$pub] = [
+                'handshake_age' => $hs > 0 ? ($now - $hs) : null,
+                'rx' => (int) $f[5],
+                'tx' => (int) $f[6],
+            ];
+        }
+        return $peers;
+    }
+
     public static function decryptServerSecrets(array $serverData): array
     {
         foreach (['password', 'ssh_key'] as $field) {

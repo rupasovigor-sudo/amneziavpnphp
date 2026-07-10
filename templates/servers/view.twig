@@ -450,12 +450,12 @@
         {% for client in clients %}
         {% set is_online_by_handshake = client.last_handshake and (("now"|date('U') - client.last_handshake|date('U')) < 300) %}
         {% set is_online = client.name in online_logins or is_online_by_handshake %}
-        <tr class="border-t client-row" data-search="{{ (client.name ~ ' ' ~ client.client_ip)|lower }}">
+        <tr class="border-t client-row" data-search="{{ (client.name ~ ' ' ~ client.client_ip)|lower }}" data-public-key="{{ client.public_key }}">
           <td class="px-4 py-3">
             <div class="font-medium text-gray-900">{{ client.name }}</div>
             <div class="text-xs text-gray-400 font-mono">{{ client.client_ip }}</div>
           </td>
-          <td class="px-4 py-3" data-client-name="{{ client.name }}" data-client-status="{{ client.status }}" data-last-handshake="{{ client.last_handshake }}">
+          <td class="px-4 py-3" data-status-cell data-client-name="{{ client.name }}" data-client-status="{{ client.status }}" data-last-handshake="{{ client.last_handshake }}">
             {% if is_online %}
               <span class="online-badge inline-flex items-center gap-1 px-2 py-1 bg-green-100 text-green-800 rounded text-xs"><i class="fas fa-wifi"></i>Online</span>
             {% elseif client.status == 'active' %}
@@ -500,7 +500,7 @@
               <div class="text-blue-600">&darr;{{ ((client.speed_down|default(0) * 8) / 1000000)|number_format(2) }} Mbit</div>
             </div>
           </td>
-          <td class="px-4 py-3 text-xs whitespace-nowrap">
+          <td class="px-4 py-3 text-xs whitespace-nowrap" data-hs-cell>
             {% if client.last_handshake %}
               <span class="text-gray-600 block">{{ client.last_handshake|split(' ')|first }}</span>
               <span class="text-gray-400 block">{{ client.last_handshake|split(' ')|last }}</span>
@@ -1072,6 +1072,50 @@ function filterClients() {
 if (document.querySelector('[id^="client-speed-"]')) {
   updateClientSpeeds();
   setInterval(updateClientSpeeds, 60000);
+}
+
+// Live online status: poll the active member's awg0 so the status badge and
+// last-handshake reflect reality without waiting for the collector cycle.
+const STATUS_LABELS = { active: '{{ t('status.active') }}', disabled: '{{ t('status.disabled') }}' };
+function fmtHsAge(sec) {
+  if (sec == null) return '—';
+  if (sec < 60) return sec + 'с назад';
+  if (sec < 3600) return Math.floor(sec / 60) + 'м назад';
+  if (sec < 86400) return Math.floor(sec / 3600) + 'ч назад';
+  return Math.floor(sec / 86400) + 'д назад';
+}
+async function refreshLiveStatus() {
+  try {
+    const r = await fetch(`/servers/{{ server.id }}/clients/live-status`, { credentials: 'same-origin' });
+    const d = await r.json();
+    if (!d || !d.success || !d.peers) return;
+    document.querySelectorAll('#clientsTableBody .client-row').forEach(row => {
+      const pk = row.getAttribute('data-public-key');
+      const peer = pk ? d.peers[pk] : null;
+      const cell = row.querySelector('[data-status-cell]');
+      if (cell) {
+        const dbStatus = cell.getAttribute('data-client-status');
+        const online = peer && peer.handshake_age != null && peer.handshake_age < 300;
+        let html;
+        if (online) {
+          html = '<span class="online-badge inline-flex items-center gap-1 px-2 py-1 bg-green-100 text-green-800 rounded text-xs"><i class="fas fa-wifi"></i>Online</span>';
+        } else if (dbStatus === 'active') {
+          html = '<span class="status-badge inline-flex items-center gap-1 px-2 py-1 bg-gray-100 text-gray-600 rounded text-xs"><i class="fas fa-circle text-[7px]"></i>' + STATUS_LABELS.active + '</span>';
+        } else {
+          html = '<span class="status-badge inline-flex items-center gap-1 px-2 py-1 bg-red-100 text-red-800 rounded text-xs"><i class="fas fa-ban"></i>' + STATUS_LABELS.disabled + '</span>';
+        }
+        cell.innerHTML = html;
+      }
+      const hsCell = row.querySelector('[data-hs-cell]');
+      if (hsCell && peer && peer.handshake_age != null) {
+        hsCell.innerHTML = '<span class="text-gray-600 block">' + fmtHsAge(peer.handshake_age) + '</span>';
+      }
+    });
+  } catch (e) { /* keep server-rendered status on error */ }
+}
+if (document.querySelector('#clientsTableBody .client-row')) {
+  refreshLiveStatus();
+  setInterval(refreshLiveStatus, 45000);
 }
 
 async function diagnoseClient(clientId) {

@@ -735,6 +735,40 @@ Router::get('/servers/{id}/net/live-clients', function ($params) {
     }
 });
 
+// Live per-client online status from awg0, keyed by public key. Pool-aware:
+// reads the ACTIVE member's interface (that's where clients actually connect),
+// so the table's status/last-handshake stay live without waiting for the
+// metrics-collector cycle.
+Router::get('/servers/{id}/clients/live-status', function ($params) {
+    requireAuth();
+    header('Content-Type: application/json');
+    $serverId = (int) $params['id'];
+    try {
+        $server = new VpnServer($serverId);
+        $serverData = $server->getData();
+        $user = Auth::user();
+        if ($serverData['user_id'] != $user['id'] && !Auth::isAdmin()) {
+            http_response_code(403);
+            echo json_encode(['error' => 'Forbidden']);
+            return;
+        }
+        $readServer = $server;
+        $poolId = (int) ($serverData['pool_id'] ?? 0);
+        if ($poolId > 0) {
+            $stmt = DB::conn()->prepare('SELECT active_server_id FROM server_pools WHERE id = ?');
+            $stmt->execute([$poolId]);
+            $activeId = (int) $stmt->fetchColumn();
+            if ($activeId > 0 && $activeId !== $serverId) {
+                $readServer = new VpnServer($activeId);
+            }
+        }
+        echo json_encode(['success' => true, 'peers' => $readServer->liveClientPeers()], JSON_UNESCAPED_SLASHES);
+    } catch (Exception $e) {
+        http_response_code(500);
+        echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+    }
+});
+
 // Add this (standalone) server to an existing pool (AJAX, admin).
 // Redeploys the server with the pool's shared identity and syncs client peers —
 // a multi-minute operation (docker build); the request blocks until done.
