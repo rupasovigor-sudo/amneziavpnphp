@@ -3,7 +3,7 @@
 {% block content %}
 <div class="max-w-4xl mx-auto px-4 py-8">
   <h1 class="text-2xl font-bold mb-1">Deploying: {{ server.name }}</h1>
-  <p class="text-sm text-gray-400 mb-6">Protocol: {{ server.install_protocol ?? 'amnezia-wg' }}</p>
+  <p class="text-sm text-gray-400 mb-6">Protocol: {{ server.install_protocol ?? 'awg2' }}</p>
   <div id="deployLog" class="bg-gray-900 text-green-400 p-4 rounded font-mono text-sm h-96 overflow-y-auto mb-4">
     <div>Ready to deploy...</div>
   </div>
@@ -35,7 +35,7 @@ function appendLog(message, cssClass) {
   if (cssClass) {
     line.className = cssClass;
   }
-  line.innerHTML = message;
+  line.textContent = message;
   log.appendChild(line);
   log.scrollTop = log.scrollHeight;
 }

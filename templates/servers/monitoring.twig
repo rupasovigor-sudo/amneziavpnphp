@@ -194,7 +194,7 @@
     <h1>{{ server.name }} - Monitoring</h1>
     
     <div class="refresh-info">
-        Auto-refresh every 30 seconds
+        Auto-refresh every 60 seconds
     </div>
 
     <div class="health-panel">
@@ -261,7 +261,6 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script>
 const serverId = {{ server.id }};
 let charts = {};
@@ -437,10 +436,11 @@ async function updateServerMetrics() {
             
             // Update current values
             document.getElementById('cpu-current').textContent = `${latest.cpu_percent}%`;
-            document.getElementById('ram-current').textContent = 
-                `${latest.ram_used_mb} / ${latest.ram_total_mb} MB (${Math.round(latest.ram_used_mb / latest.ram_total_mb * 100)}%)`;
-            document.getElementById('disk-current').textContent = 
-                `${latest.disk_used_gb} / ${latest.disk_total_gb} GB (${Math.round(latest.disk_used_gb / latest.disk_total_gb * 100)}%)`;
+            const pct = (used, total) => (Number(total) > 0 ? Math.round(used / total * 100) : 0);
+            document.getElementById('ram-current').textContent =
+                `${latest.ram_used_mb} / ${latest.ram_total_mb} MB (${pct(latest.ram_used_mb, latest.ram_total_mb)}%)`;
+            document.getElementById('disk-current').textContent =
+                `${latest.disk_used_gb} / ${latest.disk_total_gb} GB (${pct(latest.disk_used_gb, latest.disk_total_gb)}%)`;
             document.getElementById('network-current').textContent = 
                 `↓ ${latest.network_rx_mbps} Mbps ↑ ${latest.network_tx_mbps} Mbps`;
             
@@ -545,7 +545,7 @@ updateClientSpeeds();
 
 document.getElementById('refresh-health')?.addEventListener('click', updateHealthChecks);
 
-// Auto-refresh every 30 seconds
+// Auto-refresh every 60 seconds
 setInterval(() => {
     updateHealthChecks();
     updateServerMetrics();

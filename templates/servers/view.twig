@@ -425,124 +425,87 @@
     <div class="px-6 py-4 border-b flex justify-between items-center">
       <h3 class="font-bold">{{ t('clients.title') }} ({{ clients|length }})</h3>
       <div class="flex items-center gap-3">
-        <form method="GET" action="/servers/{{ server.id }}" class="flex items-center gap-2">
-          <label class="text-sm text-gray-600">{{ t('ai.protocol_type') }}</label>
-          <select name="protocol_id" class="px-3 py-2 border rounded" onchange="this.form.submit()">
-            <option value="">Все</option>
-            {% for sp in server_protocols %}
-              <option value="{{ sp.protocol_id }}" {% if selected_protocol_id == sp.protocol_id %}selected{% endif %}>{{ sp.name }}</option>
-            {% endfor %}
-          </select>
-        </form>
-        <button onclick="syncAllStats({{ server.id }})" class="text-purple-600 hover:text-purple-800 text-sm">
+        {% if clients|length > 0 %}
+        <div class="relative">
+          <i class="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm"></i>
+          <input id="clientSearch" type="text" oninput="filterClients()" placeholder="Поиск по имени или IP"
+                 class="pl-9 pr-3 py-2 border rounded text-sm w-56">
+        </div>
+        {% endif %}
+        <button onclick="syncAllStats({{ server.id }})" class="text-purple-600 hover:text-purple-800 text-sm whitespace-nowrap">
           <i class="fas fa-sync-alt"></i> {{ t('clients.sync_stats') }}
         </button>
       </div>
     </div>
     {% if clients|length > 0 %}
     <div class="w-full overflow-x-auto">
-    <table class="w-full" style="min-width: 1120px;">
+    <table class="w-full" style="min-width: 760px;">
       <thead class="bg-gray-50">
         <tr>
-          <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('clients.name') }}</th>
-          <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Логин</th>
-          <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('ai.protocol_type') }}</th>
-          <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('clients.ip') }}</th>
-          <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('clients.status') }}</th>
-          <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('clients.expiration') }}</th>
-          <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('clients.traffic') }}</th>
-          <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('clients.traffic_limit') }}</th>
-          <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('common.speed') }}</th>
-          <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('clients.last_handshake') }}</th>
-          <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('clients.actions') }}</th>
+          <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('clients.name') }}</th>
+          <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('clients.status') }}</th>
+          <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('clients.expiration') }}</th>
+          <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('clients.traffic') }}</th>
+          <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('common.speed') }}</th>
+          <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('clients.last_handshake') }}</th>
+          <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">{{ t('clients.actions') }}</th>
         </tr>
       </thead>
-      <tbody>
+      <tbody id="clientsTableBody">
         {% for client in clients %}
-        <tr class="border-t">
-          <td class="px-6 py-4">{{ client.name }}</td>
-          <td class="px-6 py-4">{{ client.name }}</td>
-          <td class="px-6 py-4">
-            {% if client.protocol_name %}
-              <span class="px-2 py-1 bg-blue-100 text-blue-800 rounded text-xs">{{ client.protocol_name }}</span>
-            {% else %}
-              <span class="text-gray-400">-</span>
-            {% endif %}
+        {% set is_online_by_handshake = client.last_handshake and (("now"|date('U') - client.last_handshake|date('U')) < 300) %}
+        {% set is_online = client.name in online_logins or is_online_by_handshake %}
+        <tr class="border-t client-row" data-search="{{ (client.name ~ ' ' ~ client.client_ip)|lower }}">
+          <td class="px-4 py-3">
+            <div class="font-medium text-gray-900">{{ client.name }}</div>
+            <div class="text-xs text-gray-400 font-mono">{{ client.client_ip }}</div>
           </td>
-          <td class="px-6 py-4">{{ client.client_ip }}</td>
-          <td class="px-6 py-4" data-client-name="{{ client.name }}" data-client-status="{{ client.status }}" data-last-handshake="{{ client.last_handshake }}">
-            {% set is_online_by_handshake = client.last_handshake and (("now"|date('U') - client.last_handshake|date('U')) < 300) %}
-            {% if client.name in online_logins or is_online_by_handshake %}
-              <span class="online-badge px-2 py-1 bg-green-100 text-green-800 rounded text-xs"><i class="fas fa-wifi mr-1"></i>Online</span>
+          <td class="px-4 py-3" data-client-name="{{ client.name }}" data-client-status="{{ client.status }}" data-last-handshake="{{ client.last_handshake }}">
+            {% if is_online %}
+              <span class="online-badge inline-flex items-center gap-1 px-2 py-1 bg-green-100 text-green-800 rounded text-xs"><i class="fas fa-wifi"></i>Online</span>
             {% elseif client.status == 'active' %}
-              <span class="status-badge px-2 py-1 bg-gray-100 text-gray-600 rounded text-xs">{{ t('status.active') }}</span>
+              <span class="status-badge inline-flex items-center gap-1 px-2 py-1 bg-gray-100 text-gray-600 rounded text-xs"><i class="fas fa-circle text-[7px]"></i>{{ t('status.active') }}</span>
             {% else %}
-              <span class="status-badge px-2 py-1 bg-red-100 text-red-800 rounded text-xs">{{ t('status.disabled') }}</span>
+              <span class="status-badge inline-flex items-center gap-1 px-2 py-1 bg-red-100 text-red-800 rounded text-xs"><i class="fas fa-ban"></i>{{ t('status.disabled') }}</span>
             {% endif %}
           </td>
-          <td class="px-6 py-4 text-sm">
+          <td class="px-4 py-3 text-sm">
             {% if client.expires_at %}
-              {% set expires_ts = client.expires_at|date('U') %}
-              {% set now_ts = "now"|date('U') %}
-              {% set diff_days = ((expires_ts - now_ts) / 86400)|round %}
-              
+              {% set diff_days = ((client.expires_at|date('U') - "now"|date('U')) / 86400)|round %}
               {% if diff_days < 0 %}
-                <span class="px-2 py-1 bg-red-100 text-red-800 rounded text-xs">
-                  <i class="fas fa-exclamation-circle"></i> {{ t('clients.expired') }}
-                </span>
+                <span class="inline-flex items-center gap-1 px-2 py-1 bg-red-100 text-red-800 rounded text-xs"><i class="fas fa-exclamation-circle"></i>{{ t('clients.expired') }}</span>
               {% elseif diff_days <= 7 %}
-                <span class="px-2 py-1 bg-yellow-100 text-yellow-800 rounded text-xs">
-                  <i class="fas fa-clock"></i> {{ diff_days }} {{ t('common.days') }}
-                </span>
+                <span class="inline-flex items-center gap-1 px-2 py-1 bg-yellow-100 text-yellow-800 rounded text-xs"><i class="fas fa-clock"></i>{{ diff_days }} {{ t('common.days') }}</span>
               {% else %}
                 <span class="text-gray-600">{{ client.expires_at|date('Y-m-d') }}</span>
               {% endif %}
             {% else %}
-              <span class="text-green-500 text-xl" title="{{ t('clients.never_expires') }}">&infin;</span>
+              <span class="text-green-500 text-lg" title="{{ t('clients.never_expires') }}">&infin;</span>
             {% endif %}
           </td>
-          <td class="px-2 py-2 text-xs">
-            <div class="text-gray-600 font-mono">
-              ↑{{ (client.bytes_sent|default(0) / 1024 / 1024)|number_format(2) }} MB
-            </div>
-            <div class="text-gray-600 font-mono">
-              ↓{{ (client.bytes_received|default(0) / 1024 / 1024)|number_format(2) }} MB
-            </div>
-          </td>
-          <td class="px-2 py-2 text-xs text-center">
+          <td class="px-4 py-3 text-xs">
+            <div class="text-gray-600 font-mono whitespace-nowrap">&uarr;{{ client.bytes_sent|default(0)|bytes_format }} &darr;{{ client.bytes_received|default(0)|bytes_format }}</div>
             {% if client.traffic_limit %}
               {% set total_traffic = (client.bytes_sent|default(0) + client.bytes_received|default(0)) %}
-              {% set limit_gb = (client.traffic_limit / 1073741824)|number_format(2) %}
-              {% set used_gb = (total_traffic / 1073741824)|number_format(2) %}
               {% set percentage = ((total_traffic / client.traffic_limit) * 100)|round %}
-              
-              {% if percentage >= 100 %}
-                <span class="px-2 py-1 bg-red-100 text-red-800 rounded">
-                  <i class="fas fa-exclamation-circle"></i> {{ t('clients.overlimit') }}
-                </span>
-              {% elseif percentage >= 80 %}
-                <span class="px-2 py-1 bg-yellow-100 text-yellow-800 rounded">
-                  {{ used_gb }} / {{ limit_gb }} GB ({{ percentage }}%)
-                </span>
-              {% else %}
-                <span class="text-gray-600">{{ used_gb }} / {{ limit_gb }} GB</span>
-              {% endif %}
+              {% set bar_color = percentage >= 100 ? 'bg-red-500' : (percentage >= 80 ? 'bg-yellow-500' : 'bg-green-500') %}
+              <div class="mt-1" style="width: 7rem; max-width: 7rem;">
+                <div class="h-1.5 bg-gray-200 rounded-full overflow-hidden">
+                  <div class="{{ bar_color }} h-1.5" style="width: {{ percentage > 100 ? 100 : percentage }}%"></div>
+                </div>
+                <div class="text-[10px] text-gray-400 mt-0.5 whitespace-nowrap">{{ total_traffic|bytes_format }} / {{ client.traffic_limit|bytes_format }}{% if percentage >= 80 %} &middot; {{ percentage }}%{% endif %}</div>
+              </div>
             {% else %}
-              <span class="text-green-500 text-lg" title="{{ t('clients.unlimited') }}">&infin;</span>
+              <div class="text-[10px] text-gray-400 mt-0.5">{{ t('clients.unlimited') }}</div>
             {% endif %}
           </td>
-          <td class="px-2 py-2 text-xs">
-            <div class="flex flex-col items-center" style="width: 120px; max-width: 120px;">
-              <div style="height: 30px; width: 100%;">
-                <canvas id="clientSparkline-{{ client.id }}"></canvas>
-              </div>
-              <div id="client-speed-{{ client.id }}" class="text-gray-600 text-[10px] mt-1 font-mono text-center leading-tight">
-                <div class="text-green-600 whitespace-nowrap">↑{{ ((client.speed_up|default(0) * 8) / 1000000)|number_format(2) }} Mbit</div>
-                <div class="text-blue-600 whitespace-nowrap">↓{{ ((client.speed_down|default(0) * 8) / 1000000)|number_format(2) }} Mbit</div>
-              </div>
+          <td class="px-4 py-3 text-xs">
+            <div id="client-speed-{{ client.id }}" class="font-mono leading-tight whitespace-nowrap">
+              <div class="text-green-600">&uarr;{{ ((client.speed_up|default(0) * 8) / 1000000)|number_format(2) }} Mbit</div>
+              <div class="text-blue-600">&darr;{{ ((client.speed_down|default(0) * 8) / 1000000)|number_format(2) }} Mbit</div>
             </div>
           </td>
-          <td class="px-2 py-2 text-xs whitespace-nowrap text-right">
+          <td class="px-4 py-3 text-xs whitespace-nowrap">
             {% if client.last_handshake %}
               <span class="text-gray-600 block">{{ client.last_handshake|split(' ')|first }}</span>
               <span class="text-gray-400 block">{{ client.last_handshake|split(' ')|last }}</span>
@@ -550,20 +513,20 @@
               <span class="text-gray-400">{{ t('clients.never') }}</span>
             {% endif %}
           </td>
-          <td class="px-6 py-4">
-            <a href="/clients/{{ client.id }}" class="text-purple-600 hover:text-purple-800 mr-2">{{ t('servers.view') }}</a>
-            <button type="button" class="text-blue-600 hover:text-blue-800 mr-2" onclick="diagnoseClient({{ client.id }})">Диагностика</button>
+          <td class="px-4 py-3 text-right whitespace-nowrap">
+            <a href="/clients/{{ client.id }}" class="text-purple-600 hover:text-purple-800 px-1.5" title="{{ t('servers.view') }}" aria-label="{{ t('servers.view') }}"><i class="fas fa-eye"></i></a>
+            <button type="button" class="text-blue-600 hover:text-blue-800 px-1.5" onclick="diagnoseClient({{ client.id }})" title="Диагностика" aria-label="Диагностика"><i class="fas fa-stethoscope"></i></button>
             {% if client.status == 'active' %}
               <form method="POST" action="/clients/{{ client.id }}/revoke" style="display:inline;">
-                <button type="button" class="text-orange-600 hover:text-orange-800 mr-2" onclick="confirmAction(this, '{{ t('clients.revoke_confirm') }}')">{{ t('clients.revoke') }}</button>
+                <button type="button" class="text-orange-600 hover:text-orange-800 px-1.5" onclick="confirmAction(this, '{{ t('clients.revoke_confirm') }}')" title="{{ t('clients.revoke') }}" aria-label="{{ t('clients.revoke') }}"><i class="fas fa-user-slash"></i></button>
               </form>
             {% else %}
               <form method="POST" action="/clients/{{ client.id }}/restore" style="display:inline;">
-                <button type="submit" class="text-green-600 hover:text-green-800 mr-2">{{ t('clients.restore') }}</button>
+                <button type="submit" class="text-green-600 hover:text-green-800 px-1.5" title="{{ t('clients.restore') }}" aria-label="{{ t('clients.restore') }}"><i class="fas fa-user-check"></i></button>
               </form>
             {% endif %}
             <form method="POST" action="/clients/{{ client.id }}/delete" style="display:inline;">
-              <button type="button" class="text-red-600 hover:text-red-800" onclick="confirmAction(this, '{{ t('clients.delete_confirm') }}')">{{ t('clients.delete') }}</button>
+              <button type="button" class="text-red-600 hover:text-red-800 px-1.5" onclick="confirmAction(this, '{{ t('clients.delete_confirm') }}')" title="{{ t('clients.delete') }}" aria-label="{{ t('clients.delete') }}"><i class="fas fa-trash"></i></button>
             </form>
           </td>
         </tr>
@@ -571,6 +534,7 @@
       </tbody>
     </table>
     </div>
+    <div id="clientsNoResults" class="p-6 text-center text-gray-400 hidden">Ничего не найдено</div>
     {% else %}
     <div class="p-12 text-center text-gray-500">{{ t('clients.no_clients') }}</div>
     {% endif %}
@@ -1068,41 +1032,6 @@ if (document.getElementById('cpuSparkline')) {
 }
 
 // Update client speeds
-let clientCharts = {};
-
-function prepareSparklineSeries(values) {
-  const cleaned = values.map(v => {
-    const n = Number(v);
-    return Number.isFinite(n) && n > 0 ? n : 0;
-  });
-
-  const nonZero = cleaned.filter(v => v > 0).sort((a, b) => a - b);
-  let capped = cleaned;
-
-  // Suppress single extreme spikes that make the mini-chart unreadable.
-  if (nonZero.length >= 5) {
-    const p95Index = Math.floor((nonZero.length - 1) * 0.95);
-    const p95 = nonZero[p95Index] || 0;
-    const cap = p95 > 0 ? p95 * 2 : 0;
-    if (cap > 0) {
-      capped = cleaned.map(v => Math.min(v, cap));
-    }
-  }
-
-  // Small moving average to reduce jitter on tiny sparklines.
-  return capped.map((_, i, arr) => {
-    const from = Math.max(0, i - 1);
-    const to = Math.min(arr.length - 1, i + 1);
-    let sum = 0;
-    let count = 0;
-    for (let j = from; j <= to; j++) {
-      sum += arr[j];
-      count++;
-    }
-    return count > 0 ? sum / count : 0;
-  });
-}
-
 async function updateClientSpeeds() {
   const clientRows = document.querySelectorAll('[id^="client-speed-"]');
 
@@ -1131,64 +1060,9 @@ async function updateClientSpeeds() {
 
   for (const row of clientRows) {
     const clientId = row.id.replace('client-speed-', '');
-    const canvasId = `clientSparkline-${clientId}`;
-    const canvas = document.getElementById(canvasId);
-
     const metrics = metricsByClient[String(clientId)] || [];
     if (metrics.length === 0) {
       continue;
-    }
-
-    if (canvas) {
-      const labels = metrics.map((_, i) => i);
-      const rawUp = metrics.map(m => (parseFloat(m.speed_up_kbps) / 1000));
-      const rawDown = metrics.map(m => (parseFloat(m.speed_down_kbps) / 1000));
-      const dataUp = prepareSparklineSeries(rawUp);
-      const dataDown = prepareSparklineSeries(rawDown);
-
-      if (clientCharts[clientId]) {
-        clientCharts[clientId].data.labels = labels;
-        clientCharts[clientId].data.datasets[0].data = dataUp;
-        clientCharts[clientId].data.datasets[1].data = dataDown;
-        clientCharts[clientId].update('none');
-      } else {
-        clientCharts[clientId] = new Chart(canvas, {
-          type: 'line',
-          data: {
-            labels: labels,
-            datasets: [
-              {
-                label: 'Up',
-                data: dataUp,
-                borderColor: '#16a34a',
-                borderWidth: 1.5,
-                pointRadius: 0,
-                fill: false,
-                tension: 0.4
-              },
-              {
-                label: 'Down',
-                data: dataDown,
-                borderColor: '#2563eb',
-                borderWidth: 1.5,
-                pointRadius: 0,
-                fill: false,
-                tension: 0.4
-              }
-            ]
-          },
-          options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: { legend: { display: false }, tooltip: { enabled: false } },
-            scales: {
-              x: { display: false },
-              y: { display: false, beginAtZero: true }
-            },
-            animation: false
-          }
-        });
-      }
     }
 
     const latest = metrics[metrics.length - 1];
@@ -1200,6 +1074,21 @@ async function updateClientSpeeds() {
         <div class="text-blue-600 whitespace-nowrap">↓${speedDown} Mbit</div>
     `;
   }
+}
+
+// Live client search filter (name / IP)
+function filterClients() {
+  const q = (document.getElementById('clientSearch')?.value || '').trim().toLowerCase();
+  const rows = document.querySelectorAll('#clientsTableBody .client-row');
+  let visible = 0;
+  rows.forEach(row => {
+    const hay = row.getAttribute('data-search') || '';
+    const show = q === '' || hay.indexOf(q) !== -1;
+    row.style.display = show ? '' : 'none';
+    if (show) visible++;
+  });
+  const noResults = document.getElementById('clientsNoResults');
+  if (noResults) noResults.classList.toggle('hidden', visible !== 0);
 }
 
 // Update client speeds on load and every 30 seconds

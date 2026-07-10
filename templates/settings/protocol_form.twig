@@ -129,19 +129,19 @@
                 </div>
 
                 <div>
-                    <textarea id="output_template" name="output_template" rows="10" class="w-full px-3 py-2 border border-gray-300 rounded-md font-mono text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="[Interface]&#10;PrivateKey = {{private_key}}&#10;Address = {{client_ip}}/32">{{ editing.output_template ?? '' }}</textarea>
+                    <textarea id="output_template" name="output_template" rows="10" class="w-full px-3 py-2 border border-gray-300 rounded-md font-mono text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="[Interface]&#10;PrivateKey = &#123;&#123;private_key&#125;&#125;&#10;Address = &#123;&#123;client_ip&#125;&#125;/32">{{ editing.output_template ?? '' }}</textarea>
                     <p class="mt-1 text-sm text-gray-500">{{ t('protocols.output_template_help') }}</p>
                 </div>
                 
                 <div class="mt-4 p-4 bg-blue-50 rounded-md">
                     <h3 class="text-sm font-medium text-blue-900 mb-2">{{ t('protocols.available_variables') }}</h3>
                     <div class="text-sm text-blue-800 space-y-1">
-                        <p><code>{{private_key}}</code> - {{ t('protocols.variable_private_key_help') }}</p>
-                        <p><code>{{public_key}}</code> - {{ t('protocols.variable_public_key_help') }}</p>
-                        <p><code>{{client_ip}}</code> - {{ t('protocols.variable_client_ip_help') }}</p>
-                        <p><code>{{server_host}}</code> - {{ t('protocols.variable_server_host_help') }}</p>
-                        <p><code>{{server_port}}</code> - {{ t('protocols.variable_server_port_help') }}</p>
-                        <p><code>{{preshared_key}}</code> - {{ t('protocols.variable_preshared_key_help') }}</p>
+                        <p><code>&#123;&#123;private_key&#125;&#125;</code> - {{ t('protocols.variable_private_key_help') }}</p>
+                        <p><code>&#123;&#123;public_key&#125;&#125;</code> - {{ t('protocols.variable_public_key_help') }}</p>
+                        <p><code>&#123;&#123;client_ip&#125;&#125;</code> - {{ t('protocols.variable_client_ip_help') }}</p>
+                        <p><code>&#123;&#123;server_host&#125;&#125;</code> - {{ t('protocols.variable_server_host_help') }}</p>
+                        <p><code>&#123;&#123;server_port&#125;&#125;</code> - {{ t('protocols.variable_server_port_help') }}</p>
+                        <p><code>&#123;&#123;preshared_key&#125;&#125;</code> - {{ t('protocols.variable_preshared_key_help') }}</p>
                     </div>
                 </div>
             </div>
@@ -167,14 +167,14 @@
                     </div>
 
                     <div>
-                        <textarea id="qr_code_template" name="qr_code_template" rows="10" class="w-full px-3 py-2 border border-gray-300 rounded-md font-mono text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="{&quot;last_config&quot;:{{last_config_json}}}">{{ editing.qr_code_template ?? '' }}</textarea>
+                        <textarea id="qr_code_template" name="qr_code_template" rows="10" class="w-full px-3 py-2 border border-gray-300 rounded-md font-mono text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="{&quot;last_config&quot;:&#123;&#123;last_config_json&#125;&#125;}">{{ editing.qr_code_template ?? '' }}</textarea>
                         <p class="mt-1 text-sm text-gray-500">{{ t('protocols.qr_code_template_help') }}</p>
                     </div>
                     
                     <div class="mt-4 p-4 bg-blue-50 rounded-md">
                         <h3 class="text-sm font-medium text-blue-900 mb-2">{{ t('protocols.available_variables') }}</h3>
                         <div class="text-sm text-blue-800 space-y-1">
-                            <p><code>{{last_config_json}}</code> - {{ t('protocols.variable_last_config_json_help') }}</p>
+                            <p><code>&#123;&#123;last_config_json&#125;&#125;</code> - {{ t('protocols.variable_last_config_json_help') }}</p>
                             <p>{{ t('protocols.plus_all_output_variables') }}</p>
                         </div>
                     </div>

@@ -155,9 +155,6 @@
                 <div class="bg-white shadow rounded-lg">
                     <div class="px-6 py-3 border-b border-gray-200 flex items-center justify-between">
                         <h3 class="text-sm font-medium text-gray-900">{{ 'Содержание логов' | trans }}</h3>
-                        <button type="button" class="px-2 py-1 text-sm border rounded hover:bg-gray-50" id="toggleLineNumbers">
-                            <i class="fas fa-list-ol"></i>
-                        </button>
                     </div>
                     <div class="px-6 py-4">
                         <pre class="mb-0 max-h-[600px] overflow-auto"><code id="logContent" class="show-line-numbers">{{ log_content }}</code></pre>
@@ -254,12 +251,6 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     });
 
-    // Toggle line numbers
-    document.getElementById('toggleLineNumbers').addEventListener('click', function() {
-        const content = document.getElementById('logContent');
-        content.classList.toggle('show-line-numbers');
-    });
-
     function showSearchResults(data) {
         const resultsDiv = document.getElementById('searchResults');
         const resultsContent = document.getElementById('resultsContent');
@@ -271,8 +262,8 @@ document.addEventListener('DOMContentLoaded', function() {
             html += '<div class="results-list" style="max-height: 300px; overflow-y: auto;">';
             
             data.results.forEach((result, idx) => {
-                html += '<div class="border-bottom pb-2 mb-2">';
-                html += '<small class="text-muted">{{ "Строка" | trans }} ' + result.line + ':</small><br>';
+                html += '<div class="border-b border-gray-200 pb-2 mb-2">';
+                html += '<small class="text-gray-500">{{ "Строка" | trans }} ' + result.line + ':</small><br>';
                 html += '<code>' + escapeHtml(result.content.substring(0, 200)) + (result.content.length > 200 ? '...' : '') + '</code>';
                 html += '</div>';
             });
