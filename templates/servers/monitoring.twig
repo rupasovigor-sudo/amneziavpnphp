@@ -1,6 +1,6 @@
 {% extends "layout.twig" %}
 
-{% block title %}{{ server.name }} - Monitoring{% endblock %}
+{% block title %}{{ server.name }} - {{ t('monitoring.title') }}{% endblock %}
 
 {% block styles %}
 <style>
@@ -189,30 +189,30 @@
 
 {% block content %}
 <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-    <a href="/servers/{{ server.id }}" class="back-link">← Back to Server</a>
-    
-    <h1>{{ server.name }} - Monitoring</h1>
-    
+    <a href="/servers/{{ server.id }}" class="back-link">← {{ t('monitoring.back') }}</a>
+
+    <h1>{{ server.name }} - {{ t('monitoring.title') }}</h1>
+
     <div class="refresh-info">
-        Auto-refresh every 60 seconds
+        {{ t('monitoring.auto_refresh') }}
     </div>
 
     <div class="health-panel">
         <div class="health-panel-header">
-            <h3>Health checks</h3>
+            <h3>{{ t('monitoring.health_checks') }}</h3>
             <button type="button" id="refresh-health" style="background:#4f46e5;color:white;border:0;border-radius:6px;padding:8px 12px;cursor:pointer;">
-                Refresh
+                {{ t('monitoring.refresh') }}
             </button>
         </div>
         <div id="health-list" class="health-list">
-            <div class="no-data">Loading...</div>
+            <div class="no-data">{{ t('form.loading') }}</div>
         </div>
     </div>
     
     <div class="metrics-container">
         <div class="metric-card">
             <h3>
-                CPU Usage
+                {{ t('monitoring.cpu_usage') }}
                 <span class="metric-value" id="cpu-current">--</span>
             </h3>
             <div class="chart-container">
@@ -222,7 +222,7 @@
         
         <div class="metric-card">
             <h3>
-                RAM Usage
+                {{ t('monitoring.ram_usage') }}
                 <span class="metric-value" id="ram-current">--</span>
             </h3>
             <div class="chart-container">
@@ -232,7 +232,7 @@
         
         <div class="metric-card">
             <h3>
-                Disk Usage
+                {{ t('monitoring.disk_usage') }}
                 <span class="metric-value" id="disk-current">--</span>
             </h3>
             <div class="chart-container">
@@ -242,7 +242,7 @@
         
         <div class="metric-card">
             <h3>
-                Network Speed
+                {{ t('monitoring.network_speed') }}
                 <span class="metric-value" id="network-current">--</span>
             </h3>
             <div class="chart-container">
@@ -252,9 +252,9 @@
     </div>
     
     <div class="clients-metrics">
-        <h3>Client Speeds</h3>
+        <h3>{{ t('monitoring.client_speeds') }}</h3>
         <div id="clients-list">
-            <div class="no-data">Loading...</div>
+            <div class="no-data">{{ t('form.loading') }}</div>
         </div>
     </div>
 </div>
@@ -398,13 +398,13 @@ async function updateHealthChecks() {
         });
         const data = await response.json();
         if (!data.success) {
-            throw new Error(data.error || 'Failed to load health checks');
+            throw new Error(data.error || '{{ t('monitoring.health_load_failed') }}');
         }
 
         container.innerHTML = (data.checks || []).map(check => {
             const ok = Boolean(check.ok);
             const statusClass = ok ? 'ok' : 'problem';
-            const statusText = ok ? 'OK' : String(check.severity || 'problem').toUpperCase();
+            const statusText = ok ? '{{ t('monitoring.ok') }}' : String(check.severity || 'problem').toUpperCase();
             return `
                 <div class="health-item ${statusClass}">
                     <div class="health-name">
@@ -414,10 +414,10 @@ async function updateHealthChecks() {
                     <div class="health-message">${escapeHtml(check.message)}</div>
                 </div>
             `;
-        }).join('') || '<div class="no-data">No health checks</div>';
+        }).join('') || '<div class="no-data">{{ t('monitoring.no_health_checks') }}</div>';
     } catch (error) {
         console.error('Failed to update health checks:', error);
-        container.innerHTML = '<div class="no-data">Failed to load health checks</div>';
+        container.innerHTML = '<div class="no-data">{{ t('monitoring.health_load_failed') }}</div>';
     }
 }
 
@@ -481,8 +481,8 @@ async function updateClientSpeeds() {
         const clientIds = clients.map(c => Number(c.id));
         
         if (clientIds.length === 0) {
-            document.getElementById('clients-list').innerHTML = 
-                '<div class="no-data">No active clients</div>';
+            document.getElementById('clients-list').innerHTML =
+                '<div class="no-data">{{ t('monitoring.no_active_clients') }}</div>';
             return;
         }
 
@@ -492,7 +492,7 @@ async function updateClientSpeeds() {
 
         const data = await response.json();
         if (!data.success) {
-            throw new Error(data.error || 'Failed to load client metrics');
+            throw new Error(data.error || '{{ t('monitoring.client_metrics_failed') }}');
         }
 
         const latestByClient = {};
@@ -529,8 +529,8 @@ async function updateClientSpeeds() {
             </div>
         `).join('');
         
-        document.getElementById('clients-list').innerHTML = html || 
-            '<div class="no-data">No active traffic</div>';
+        document.getElementById('clients-list').innerHTML = html ||
+            '<div class="no-data">{{ t('monitoring.no_active_traffic') }}</div>';
             
     } catch (error) {
         console.error('Failed to update client speeds:', error);

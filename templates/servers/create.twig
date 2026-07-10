@@ -1,8 +1,8 @@
 {% extends "layout.twig" %}
-{% block title %}Add Server{% endblock %}
+{% block title %}{{ t('servers.add') }}{% endblock %}
 {% block content %}
 <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-  <h1 class="text-3xl font-bold mb-8"><i class="fas fa-plus-circle text-purple-600"></i> Add New Server</h1>
+  <h1 class="text-3xl font-bold mb-8"><i class="fas fa-plus-circle text-purple-600"></i> {{ t('servers.add_new') }}</h1>
   {% if error %}
     <div class="mb-4 bg-red-50 border border-red-400 text-red-700 px-4 py-3 rounded">{{ error }}</div>
   {% endif %}
@@ -11,11 +11,11 @@
 
     <div id="manualSection" class="space-y-4">
       <div>
-        <label class="block text-sm font-medium text-gray-700">Server Name</label>
+        <label class="block text-sm font-medium text-gray-700">{{ t('servers.server_name') }}</label>
         <input name="name" data-field-manual required class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md" placeholder="US Server 1" value="{{ form_data.name ?? '' }}">
       </div>
       <div>
-        <label class="block text-sm font-medium text-gray-700">Installation Protocol</label>
+        <label class="block text-sm font-medium text-gray-700">{{ t('servers.install_protocol') }}</label>
         {% set selectedProtocol = form_data.install_protocol ?? default_protocol %}
         {% if protocols|length == 1 %}
           <input type="hidden" name="install_protocol" data-field-manual value="{{ protocols[0].slug }}">
@@ -33,52 +33,52 @@
         {% endif %}
       </div>
       <div>
-        <label class="block text-sm font-medium text-gray-700">Host IP</label>
+        <label class="block text-sm font-medium text-gray-700">{{ t('servers.host_ip') }}</label>
         <input name="host" data-field-manual required class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md" placeholder="123.456.789.0" value="{{ form_data.host ?? '' }}">
       </div>
       <div>
-        <label class="block text-sm font-medium text-gray-700">Client endpoint domain <span class="text-gray-400">(optional)</span></label>
+        <label class="block text-sm font-medium text-gray-700">{{ t('servers.client_endpoint_domain') }} <span class="text-gray-400">({{ t('servers.optional') }})</span></label>
         <input name="domain" data-field-manual class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md" placeholder="awg.gptanalitika.com" value="{{ form_data.domain ?? '' }}">
-        <p class="mt-1 text-xs text-gray-500">AmneziaWG 2.0 clients connect to <code>domain:443</code>. Point this domain's DNS A-record at the server IP (or configure a Timeweb token in Settings to manage it automatically). Leave empty to use the raw IP.</p>
+        <p class="mt-1 text-xs text-gray-500">{{ t('servers.domain_help_before') }} <code>domain:443</code>. {{ t('servers.domain_help_after') }}</p>
       </div>
       <div>
-        <label class="block text-sm font-medium text-gray-700">SSH Port</label>
+        <label class="block text-sm font-medium text-gray-700">{{ t('servers.ssh_port') }}</label>
         <input name="port" data-field-manual type="number" value="{{ form_data.port ?? 22 }}" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md">
       </div>
       <div>
-        <label class="block text-sm font-medium text-gray-700">SSH Username</label>
+        <label class="block text-sm font-medium text-gray-700">{{ t('servers.ssh_username') }}</label>
         <input name="username" data-field-manual value="{{ form_data.username ?? 'root' }}" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md">
       </div>
       <div class="space-y-4">
         <div>
-          <label class="block text-sm font-medium text-gray-700">Authentication Method</label>
+          <label class="block text-sm font-medium text-gray-700">{{ t('servers.auth_method') }}</label>
           <div class="mt-2 flex items-center gap-6">
             <label class="inline-flex items-center">
               <input type="radio" name="auth_method" value="password" class="text-purple-600" checked onchange="toggleAuthMethod()">
-              <span class="ml-2 text-sm text-gray-700">Password</span>
+              <span class="ml-2 text-sm text-gray-700">{{ t('auth.password') }}</span>
             </label>
             <label class="inline-flex items-center">
               <input type="radio" name="auth_method" value="ssh_key" class="text-purple-600" onchange="toggleAuthMethod()">
-              <span class="ml-2 text-sm text-gray-700">SSH Key</span>
+              <span class="ml-2 text-sm text-gray-700">{{ t('servers.ssh_key') }}</span>
             </label>
           </div>
         </div>
 
         <div id="authPassword">
-          <label class="block text-sm font-medium text-gray-700">SSH Password</label>
+          <label class="block text-sm font-medium text-gray-700">{{ t('servers.ssh_password') }}</label>
           <input name="password" data-field-manual type="password" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md">
         </div>
 
         <div id="authSshKey" style="display: none;">
-          <label class="block text-sm font-medium text-gray-700">SSH Private Key</label>
+          <label class="block text-sm font-medium text-gray-700">{{ t('servers.ssh_private_key') }}</label>
           <textarea name="ssh_key" data-field-manual rows="6" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md font-mono text-xs" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----..."></textarea>
-          <p class="mt-1 text-xs text-gray-500">Paste your private key (PEM or OpenSSH format)</p>
+          <p class="mt-1 text-xs text-gray-500">{{ t('servers.ssh_key_hint') }}</p>
         </div>
       </div>
     </div>
 
     <button type="submit" class="w-full gradient-bg text-white py-2 px-4 rounded-md hover:opacity-90">
-      <i class="fas fa-save mr-2"></i>Create Server
+      <i class="fas fa-save mr-2"></i>{{ t('servers.create_server') }}
     </button>
   </form>
 </div>

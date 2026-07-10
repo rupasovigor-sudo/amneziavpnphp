@@ -1,15 +1,15 @@
 {% extends "layout.twig" %}
-{% block title %}Deploy {{ server.name }}{% endblock %}
+{% block title %}{{ t('servers.deploy') }} {{ server.name }}{% endblock %}
 {% block content %}
 <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-  <h1 class="text-2xl font-bold mb-1">Deploying: {{ server.name }}</h1>
-  <p class="text-sm text-gray-400 mb-6">Protocol: {{ server.install_protocol ?? 'awg2' }}</p>
+  <h1 class="text-2xl font-bold mb-1">{{ t('status.deploying') }}: {{ server.name }}</h1>
+  <p class="text-sm text-gray-400 mb-6">{{ t('deploy.protocol') }}: {{ server.install_protocol ?? 'awg2' }}</p>
   <div id="deployLog" class="bg-gray-900 text-green-400 p-4 rounded font-mono text-sm h-96 overflow-y-auto mb-4">
-    <div>Ready to deploy...</div>
+    <div>{{ t('deploy.ready') }}</div>
   </div>
   <div id="deployActions" class="flex gap-3 mb-4 hidden"></div>
   <button id="deployBtn" onclick="deploy()" class="gradient-bg text-white px-6 py-2 rounded hover:opacity-90 transition-all disabled:opacity-50 disabled:cursor-not-allowed">
-    <span id="btnText">Start Deployment</span>
+    <span id="btnText">{{ t('deploy.start') }}</span>
     <i id="btnSpinner" class="fas fa-spinner fa-spin ml-2 hidden"></i>
   </button>
 </div>
@@ -78,12 +78,12 @@ function deploy(mode) {
   if (!mode) {
     pendingDecisionToken = null;
     document.getElementById('deployLog').innerHTML = '';
-    appendLog('📡 Connecting to server...');
-    appendLog('🔧 Preparing environment...');
+    appendLog('📡 {{ t('deploy.connecting') }}');
+    appendLog('🔧 {{ t('deploy.preparing') }}');
   }
 
   hideActions();
-  setButtonState(true, mode ? 'Processing...' : 'Deploying...');
+  setButtonState(true, mode ? '{{ t('form.processing') }}' : '{{ t('deploy.in_progress') }}');
 
   fetch('/servers/{{ server.id }}/deploy', {
     method: 'POST',
@@ -91,7 +91,7 @@ function deploy(mode) {
     body: JSON.stringify(payload)
   })
     .then(async response => {
-      const data = await response.json().catch(() => ({ success: false, error: 'Invalid server response' }));
+      const data = await response.json().catch(() => ({ success: false, error: '{{ t('deploy.invalid_response') }}' }));
       if (!response.ok && !data.requires_action) {
         throw new Error(data.error || ('HTTP ' + response.status));
       }
@@ -101,37 +101,37 @@ function deploy(mode) {
       if (data.requires_action) {
         pendingDecisionToken = data.decision_token || null;
         const details = data.details || {};
-        appendLog('⚠️ ' + (details.message || 'Existing configuration detected'), 'text-yellow-300');
+        appendLog('⚠️ ' + (details.message || '{{ t('deploy.existing_config') }}'), 'text-yellow-300');
         if (details.details && details.details.summary) {
           appendLog(details.details.summary, 'text-yellow-200');
         } else if (details.details) {
           appendLog(JSON.stringify(details.details), 'text-yellow-200 text-xs');
         }
         showActions(data.options);
-        setButtonState(false, 'Select action');
+        setButtonState(false, '{{ t('deploy.select_action') }}');
         return;
       }
 
       if (data.success) {
         pendingDecisionToken = null;
         hideActions();
-        appendLog('✅ Deployment successful!', 'text-green-500 font-bold');
+        appendLog('✅ {{ t('deploy.success') }}', 'text-green-500 font-bold');
         if (data.vpn_port) {
-          appendLog('🔌 VPN Port: ' + data.vpn_port, 'text-yellow-300');
+          appendLog('🔌 {{ t('deploy.vpn_port') }}: ' + data.vpn_port, 'text-yellow-300');
         }
         if (data.public_key) {
-          appendLog('🔑 Public Key: ' + data.public_key.substring(0, 40) + '...', 'text-yellow-300');
+          appendLog('🔑 {{ t('deploy.public_key') }}: ' + data.public_key.substring(0, 40) + '...', 'text-yellow-300');
         }
-        setButtonState(true, 'Redirecting...');
+        setButtonState(true, '{{ t('deploy.redirecting') }}');
         setTimeout(() => window.location.href = '/servers/{{ server.id }}', 2000);
       } else {
-        appendLog('❌ ' + (data.error || 'Unknown error'), 'text-red-500 font-bold');
-        setButtonState(false, 'Retry Deployment');
+        appendLog('❌ ' + (data.error || '{{ t('deploy.unknown_error') }}'), 'text-red-500 font-bold');
+        setButtonState(false, '{{ t('deploy.retry') }}');
       }
     })
     .catch(error => {
-      appendLog('❌ Network error: ' + error.message, 'text-red-500 font-bold');
-      setButtonState(false, 'Retry Deployment');
+      appendLog('❌ {{ t('deploy.network_error') }}: ' + error.message, 'text-red-500 font-bold');
+      setButtonState(false, '{{ t('deploy.retry') }}');
     });
 }
 </script>

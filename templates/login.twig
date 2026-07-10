@@ -1,6 +1,6 @@
 {% extends "layout.twig" %}
 
-{% block title %}Login - {{ app_name }}{% endblock %}
+{% block title %}{{ t('auth.login') }} - {{ app_name }}{% endblock %}
 
 {% block content %}
 <div class="min-h-screen flex items-center justify-center gradient-bg py-12 px-4 sm:px-6 lg:px-8">
@@ -13,7 +13,7 @@
                 {{ app_name }}
             </h2>
             <p class="mt-2 text-center text-sm text-gray-100">
-                Sign in to manage your VPN servers
+                {{ t('auth.login_subtitle') }}
             </p>
         </div>
         
@@ -27,7 +27,7 @@
             <form class="space-y-6" method="POST" action="/login">
                 <div>
                     <label for="email" class="block text-sm font-medium text-gray-700">
-                        Email address
+                        {{ t('auth.email_address') }}
                     </label>
                     <div class="mt-1 relative">
                         <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
@@ -41,7 +41,7 @@
 
                 <div>
                     <label for="password" class="block text-sm font-medium text-gray-700">
-                        Password
+                        {{ t('auth.password') }}
                     </label>
                     <div class="mt-1 relative">
                         <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
@@ -57,7 +57,7 @@
                     <button type="submit"
                             class="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white gradient-bg hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500">
                         <i class="fas fa-sign-in-alt mr-2"></i>
-                        Sign in
+                        {{ t('auth.sign_in') }}
                     </button>
                 </div>
             </form>

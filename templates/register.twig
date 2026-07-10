@@ -1,6 +1,6 @@
 {% extends "layout.twig" %}
 
-{% block title %}Register - {{ app_name }}{% endblock %}
+{% block title %}{{ t('auth.register') }} - {{ app_name }}{% endblock %}
 
 {% block content %}
 <div class="min-h-screen flex items-center justify-center gradient-bg py-12 px-4 sm:px-6 lg:px-8">
@@ -10,7 +10,7 @@
                 <i class="fas fa-user-plus text-white text-6xl"></i>
             </div>
             <h2 class="mt-6 text-center text-3xl font-extrabold text-white">
-                Create Account
+                {{ t('auth.create_account') }}
             </h2>
         </div>
         
@@ -23,31 +23,31 @@
 
             <form class="space-y-6" method="POST" action="/register">
                 <div>
-                    <label for="name" class="block text-sm font-medium text-gray-700">Full Name</label>
+                    <label for="name" class="block text-sm font-medium text-gray-700">{{ t('auth.full_name') }}</label>
                     <input id="name" name="name" type="text" required
                            class="mt-1 appearance-none block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-purple-500 focus:border-purple-500">
                 </div>
 
                 <div>
-                    <label for="email" class="block text-sm font-medium text-gray-700">Email</label>
+                    <label for="email" class="block text-sm font-medium text-gray-700">{{ t('auth.email') }}</label>
                     <input id="email" name="email" type="email" required
                            class="mt-1 appearance-none block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-purple-500 focus:border-purple-500">
                 </div>
 
                 <div>
-                    <label for="password" class="block text-sm font-medium text-gray-700">Password</label>
+                    <label for="password" class="block text-sm font-medium text-gray-700">{{ t('auth.password') }}</label>
                     <input id="password" name="password" type="password" required
                            class="mt-1 appearance-none block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-purple-500 focus:border-purple-500">
-                    <p class="mt-1 text-sm text-gray-500">Must be at least 6 characters</p>
+                    <p class="mt-1 text-sm text-gray-500">{{ t('auth.password_hint') }}</p>
                 </div>
 
                 <button type="submit" class="w-full gradient-bg text-white py-2 px-4 rounded-md hover:opacity-90">
-                    Register
+                    {{ t('auth.register') }}
                 </button>
 
                 <div class="text-center text-sm">
                     <a href="/login" class="text-purple-600 hover:text-purple-500">
-                        Already have an account? Sign in
+                        {{ t('auth.already_have_account') }}
                     </a>
                 </div>
             </form>
