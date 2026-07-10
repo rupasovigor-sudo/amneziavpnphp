@@ -76,6 +76,7 @@
                 {{ t('dashboard.recent_servers') }}
             </h2>
         </div>
+        <div class="overflow-x-auto">
         <table class="min-w-full divide-y divide-gray-200">
             <thead class="bg-gray-50">
                 <tr>
@@ -118,6 +119,7 @@
                 {% endfor %}
             </tbody>
         </table>
+        </div>
     </div>
     {% else %}
     <div class="bg-white rounded-lg shadow p-12 text-center">

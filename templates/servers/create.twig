@@ -1,12 +1,12 @@
 {% extends "layout.twig" %}
 {% block title %}Add Server{% endblock %}
 {% block content %}
-<div class="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8">
+<div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
   <h1 class="text-3xl font-bold mb-8"><i class="fas fa-plus-circle text-purple-600"></i> Add New Server</h1>
   {% if error %}
     <div class="mb-4 bg-red-50 border border-red-400 text-red-700 px-4 py-3 rounded">{{ error }}</div>
   {% endif %}
-  <form method="POST" action="/servers/create" class="bg-white shadow rounded-lg p-6 space-y-6">
+  <form method="POST" action="/servers/create" class="bg-white shadow rounded-lg p-6 space-y-6 max-w-2xl">
     <input type="hidden" name="creation_mode" value="manual">
 
     <div id="manualSection" class="space-y-4">

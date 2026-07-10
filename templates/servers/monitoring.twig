@@ -6,7 +6,7 @@
 <style>
 .metrics-container {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
     gap: 20px;
     margin-bottom: 30px;
 }
@@ -188,7 +188,7 @@
 {% endblock %}
 
 {% block content %}
-<div style="max-width: 1400px; margin: 0 auto;">
+<div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
     <a href="/servers/{{ server.id }}" class="back-link">← Back to Server</a>
     
     <h1>{{ server.name }} - Monitoring</h1>
