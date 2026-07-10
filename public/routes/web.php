@@ -1469,39 +1469,6 @@ Router::post('/clients/{id}/delete', function ($params) {
     }
 });
 
-// Sync client stats
-Router::post('/clients/{id}/sync-stats', function ($params) {
-    requireAuth();
-    $clientId = (int) $params['id'];
-
-    header('Content-Type: application/json');
-
-    try {
-        $client = new VpnClient($clientId);
-        $clientData = $client->getData();
-
-        // Check ownership
-        $user = Auth::user();
-        if ($clientData['user_id'] != $user['id'] && !Auth::isAdmin()) {
-            http_response_code(403);
-            echo json_encode(['error' => 'Forbidden']);
-            return;
-        }
-
-        if ($client->syncStats()) {
-            // Reload client data
-            $client = new VpnClient($clientId);
-            $stats = $client->getFormattedStats();
-            echo json_encode(['success' => true, 'stats' => $stats]);
-        } else {
-            echo json_encode(['success' => false, 'error' => 'Failed to sync stats']);
-        }
-    } catch (Exception $e) {
-        http_response_code(500);
-        echo json_encode(['error' => $e->getMessage()]);
-    }
-});
-
 // Set client expiration (web session auth)
 Router::post('/clients/{id}/set-expiration', function ($params) {
     requireAuth();

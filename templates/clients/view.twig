@@ -44,9 +44,6 @@
     <div class="bg-white rounded shadow p-6">
       <div class="flex justify-between items-center mb-4">
         <h3 class="font-bold">{{ t('clients.traffic_stats') }}</h3>
-        <button onclick="syncStats({{ client.id }})" class="text-purple-600 hover:text-purple-800 text-sm">
-          <i class="fas fa-sync-alt"></i> Refresh
-        </button>
       </div>
       <dl class="space-y-2" id="stats">
         <div><dt class="text-sm text-gray-600">{{ t('common.uploaded') }}</dt><dd id="stat-sent">{{ (client.bytes_sent|default(0) / 1048576)|number_format(2) }} MB</dd></div>
@@ -315,28 +312,5 @@ async function updateTrafficLimit(event, clientId) {
   }
 }
 
-async function syncStats(clientId) {
-  try {
-    const response = await fetch(`/clients/${clientId}/sync-stats`, {
-      method: 'POST'
-    });
-    
-    const data = await response.json();
-    
-    if (data.success && data.stats) {
-      // Update stats display
-      document.getElementById('stat-sent').textContent = data.stats.sent;
-      document.getElementById('stat-received').textContent = data.stats.received;
-      document.getElementById('stat-total').textContent = data.stats.total;
-      document.getElementById('stat-last-seen').innerHTML = data.stats.is_online 
-        ? '<span class="text-green-600"><i class="fas fa-circle text-xs"></i> ' + data.stats.last_seen + '</span>'
-        : data.stats.last_seen;
-    } else {
-      showToast('Ошибка синхронизации: ' + (data.error || 'Unknown error'), 'error');
-    }
-  } catch (error) {
-    showToast('Ошибка: ' + error.message, 'error');
-  }
-}
 </script>
 {% endblock %}

@@ -6,33 +6,6 @@
  * preserved by the require order in index.php.
  */
 
-// Sync all stats for server
-Router::post('/servers/{id}/sync-stats', function ($params) {
-    requireAuth();
-    $serverId = (int) $params['id'];
-
-    header('Content-Type: application/json');
-
-    try {
-        $server = new VpnServer($serverId);
-        $serverData = $server->getData();
-
-        // Check ownership
-        $user = Auth::user();
-        if ($serverData['user_id'] != $user['id'] && !Auth::isAdmin()) {
-            http_response_code(403);
-            echo json_encode(['error' => 'Forbidden']);
-            return;
-        }
-
-        $synced = VpnClient::syncAllStatsForServer($serverId);
-        echo json_encode(['success' => true, 'synced' => $synced]);
-    } catch (Exception $e) {
-        http_response_code(500);
-        echo json_encode(['error' => $e->getMessage()]);
-    }
-});
-
 /**
  * API ROUTES (for Telegram bot integration)
  */
