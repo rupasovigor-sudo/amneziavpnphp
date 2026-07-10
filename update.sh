@@ -557,15 +557,17 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 );
 EOF
     
-    # Detect legacy installs missing baseline migration records
-    LEGACY_BASELINE_CHECK=$($DOCKER_COMPOSE exec -T db mysql -uroot -p"$DB_ROOT_PASS" "$DB_NAME" -sN -e "SELECT COUNT(*) FROM schema_migrations WHERE filename = '010_add_monitoring_translations.sql';" 2>/dev/null || echo "0")
-    if [ "$LEGACY_BASELINE_CHECK" = "0" ]; then
-        HAS_TRANSLATIONS_LOCALE=$($DOCKER_COMPOSE exec -T db mysql -uroot -p"$DB_ROOT_PASS" "$DB_NAME" -sN -e "SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'translations' AND COLUMN_NAME = 'locale';" 2>/dev/null || echo "0")
-        HAS_TRANSLATIONS_LANGUAGE_CODE=$($DOCKER_COMPOSE exec -T db mysql -uroot -p"$DB_ROOT_PASS" "$DB_NAME" -sN -e "SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'translations' AND COLUMN_NAME = 'language_code';" 2>/dev/null || echo "0")
-        if [ "$HAS_TRANSLATIONS_LOCALE" != "0" ] && [ "$HAS_TRANSLATIONS_LANGUAGE_CODE" = "0" ]; then
-            log_warning "Detected legacy install without migration records. Seeding baseline entries..."
-            $DOCKER_COMPOSE exec -T db mysql -uroot -p"$DB_ROOT_PASS" "$DB_NAME" -e "INSERT IGNORE INTO schema_migrations (filename) VALUES \
-            ('000_create_user.sql'),('001_init.sql'),('002_translations_ru.sql'),('003_translations_es.sql'),('004_translations_de.sql'),('005_translations_fr.sql'),('006_translations_zh.sql'),('007_add_traffic_limit.sql'),('008_add_panel_imports.sql'),('009_add_server_metrics.sql'),('010_add_monitoring_translations.sql');" 2>>"$LOG_FILE" || true
+    # Consolidated baseline (000_baseline.sql) squashes the old 000-085 history.
+    # An install whose schema was built before migration tracking existed has no
+    # schema_migrations rows; mark the baseline as already applied so it is not
+    # re-run against the live schema. A truly fresh DB (no tables) falls through
+    # and applies the baseline normally below.
+    BASELINE_APPLIED=$($DOCKER_COMPOSE exec -T db mysql -uroot -p"$DB_ROOT_PASS" "$DB_NAME" -sN -e "SELECT COUNT(*) FROM schema_migrations WHERE filename = '000_baseline.sql';" 2>/dev/null || echo "0")
+    if [ "$BASELINE_APPLIED" = "0" ]; then
+        SCHEMA_EXISTS=$($DOCKER_COMPOSE exec -T db mysql -uroot -p"$DB_ROOT_PASS" "$DB_NAME" -sN -e "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'protocols';" 2>/dev/null || echo "0")
+        if [ "$SCHEMA_EXISTS" != "0" ]; then
+            log_warning "Existing schema without migration tracking — recording baseline as applied"
+            $DOCKER_COMPOSE exec -T db mysql -uroot -p"$DB_ROOT_PASS" "$DB_NAME" -e "INSERT IGNORE INTO schema_migrations (filename) VALUES ('000_baseline.sql');" 2>>"$LOG_FILE" || true
             $DOCKER_COMPOSE exec -T db mysql -uroot -p"$DB_ROOT_PASS" "$DB_NAME" -e "INSERT IGNORE INTO user_roles (name, display_name, description, permissions) VALUES \
             ('admin','Administrator','Full access to all features', JSON_ARRAY('*')),\
             ('manager','Manager','Can manage servers and clients', JSON_ARRAY('servers.view','servers.create','servers.edit','clients.view','clients.create','clients.edit','clients.delete')),\
@@ -574,7 +576,7 @@ EOF
             ('vpn-admins','admin','VPN administrators with full access'),\
             ('vpn-managers','manager','VPN managers who can create and manage clients'),\
             ('vpn-users','viewer','Regular VPN users with view-only access');" 2>>"$LOG_FILE" || true
-            log_success "Baseline migration entries seeded"
+            log_success "Baseline recorded for pre-tracking install"
         fi
     fi
 

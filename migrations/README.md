@@ -1,34 +1,46 @@
 # Database Migrations
 
-This directory contains SQL migration files that are automatically executed when the database container is first initialized.
+This directory contains SQL migration files applied by `update.sh` in
+alphabetical order. Each is recorded in the `schema_migrations` table by
+filename and applied only once.
 
-## Execution Order
+## Baseline
 
-Migration files are executed in **alphabetical order** by MySQL's Docker entrypoint. Files are numbered to ensure correct execution sequence:
+`000_baseline.sql` is a **consolidated squash** of the historical migrations
+(the old `000`–`085`), generated from the production schema. It is idempotent
+(`CREATE TABLE IF NOT EXISTS` + `INSERT IGNORE`): it builds the complete schema
+and seeds reference data (protocols with their install scripts, protocol
+variables/templates, translations, languages, roles) on a fresh database, and
+is a no-op on an existing one. Runtime and secret data (servers, clients,
+metrics, users, api keys, alerts) is **not** seeded.
 
-1. `001_init.sql` - Main database schema and tables
-2. `002_translations_ru.sql` - Russian translations
-3. `003_translations_es.sql` - Spanish translations
-4. `004_translations_de.sql` - German translations
-5. `005_translations_fr.sql` - French translations
-6. `006_translations_zh.sql` - Chinese translations
+An install whose schema predates migration tracking has no `schema_migrations`
+rows; `update.sh` detects the existing schema and records `000_baseline.sql` as
+already applied instead of re-running it.
+
+New migrations continue from `086_...` onward.
 
 ## Adding New Migrations
 
-When creating new migration files:
+1. Use a numerical prefix higher than the baseline (e.g. `086_add_feature.sql`).
+2. Use descriptive names.
+3. Make them idempotent — `CREATE TABLE IF NOT EXISTS`, `ALTER` guarded by an
+   `information_schema` check, `INSERT ... ON DUPLICATE KEY UPDATE` / `INSERT IGNORE`.
 
-1. Use numerical prefix (e.g., `007_add_feature.sql`)
-2. Ensure the number is higher than existing migrations
-3. Use descriptive names
-4. Always use `ON DUPLICATE KEY UPDATE` for INSERT statements to make migrations idempotent
+## Regenerating the baseline
+
+If the schema drifts far enough to warrant a new squash, regenerate from the
+authoritative DB (structure for all tables made `IF NOT EXISTS`, plus
+`--insert-ignore` data for the reference tables only) and re-validate that it
+reproduces the live schema on a throwaway database before replacing.
 
 ## Manual Execution
 
 To manually run migrations in an existing database:
 
 ```bash
-# Single migration
-docker compose exec db mysql -uroot -prootpassword amnezia_panel < migrations/001_init.sql
+# The baseline (or any single migration)
+docker compose exec -T db mysql -uroot -prootpassword amnezia_panel < migrations/000_baseline.sql
 
 # All migrations in order
 for file in migrations/*.sql; do
