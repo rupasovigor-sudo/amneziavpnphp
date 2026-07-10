@@ -366,6 +366,11 @@ SH;
      */
     public function collectClientMetrics(): array
     {
+        // Refresh last_handshake by public key first: in a failover pool a client
+        // is connected to whichever member is active, but its row is bound to the
+        // member it was created on — so match peers by pubkey, not server_id.
+        $this->refreshHandshakes();
+
         $clients = VpnClient::listByServer($this->serverData['id']);
         $results = [];
 
@@ -386,6 +391,45 @@ SH;
         }
 
         return $results;
+    }
+
+    /**
+     * Read this server's awg0 peers and advance last_handshake on any matching
+     * client row (by public key), only when the handshake is newer than stored.
+     * Pool-aware: a client connected to the active member updates its row even
+     * though that row's server_id is a different pool member.
+     */
+    private function refreshHandshakes(): void
+    {
+        $container = $this->resolveContainerForProtocol('awg2');
+        if ($container === '') {
+            $container = trim((string) ($this->serverData['container_name'] ?? 'amnezia-awg2')) ?: 'amnezia-awg2';
+        }
+        $dump = (string) $this->execSSH("docker exec {$container} awg show awg0 dump 2>/dev/null || docker exec {$container} wg show wg0 dump 2>/dev/null");
+        $lines = array_values(array_filter(explode("\n", trim($dump)), static fn($l) => trim($l) !== ''));
+        if (count($lines) < 2) {
+            return;
+        }
+        $db = DB::conn();
+        $upd = $db->prepare(
+            "UPDATE vpn_clients SET last_handshake = ?
+             WHERE public_key = ? AND (last_handshake IS NULL OR last_handshake < ?)"
+        );
+        foreach ($lines as $i => $line) {
+            if ($i === 0) {
+                continue; // interface line
+            }
+            $f = explode("\t", $line);
+            if (count($f) < 5) {
+                continue;
+            }
+            $pub = trim($f[0]);
+            $hs = (int) $f[4];
+            if ($pub !== '' && $hs > 0) {
+                $date = date('Y-m-d H:i:s', $hs);
+                $upd->execute([$date, $pub, $date]);
+            }
+        }
     }
 
     /**
@@ -434,8 +478,10 @@ SH;
                 $handshakeTs = (int) $peerStats['handshake_ts'];
                 if ($handshakeTs > 0) {
                     $handshakeDate = date('Y-m-d H:i:s', $handshakeTs);
-                    $stmtHs = $db->prepare("UPDATE vpn_clients SET last_handshake = ? WHERE id = ?");
-                    $stmtHs->execute([$handshakeDate, $client['id']]);
+                    // Only advance last_handshake, never overwrite a fresher value
+                    // reported by another pool member.
+                    $stmtHs = $db->prepare("UPDATE vpn_clients SET last_handshake = ? WHERE id = ? AND (last_handshake IS NULL OR last_handshake < ?)");
+                    $stmtHs->execute([$handshakeDate, $client['id'], $handshakeDate]);
                 }
             }
         }
