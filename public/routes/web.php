@@ -841,6 +841,25 @@ Router::post('/servers/{id}/pool/create', function ($params) {
     }
 });
 
+// Check whether this server actually receives inbound UDP on the VPN port
+// (probed from another active server). AJAX, admin. Takes ~10s.
+Router::post('/servers/{id}/net/udp-check', function ($params) {
+    requireAdmin();
+    @set_time_limit(60);
+    header('Content-Type: application/json');
+    $serverId = (int) $params['id'];
+    try {
+        $server = new VpnServer($serverId);
+        $serverData = $server->getData();
+        $port = (int) ($serverData['vpn_port'] ?? 443) ?: 443;
+        $res = ServerNetCheck::udpReachable($serverId, $port);
+        echo json_encode($res, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    } catch (Exception $e) {
+        http_response_code(500);
+        echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+    }
+});
+
 // Add this (standalone) server to an existing pool (AJAX, admin).
 // Redeploys the server with the pool's shared identity and syncs client peers —
 // a multi-minute operation (docker build); the request blocks until done.
