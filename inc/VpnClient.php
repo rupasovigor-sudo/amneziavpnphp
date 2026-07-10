@@ -1428,10 +1428,31 @@ BASH;
             SELECT c.*, p.name as protocol_name, p.show_text_content
             FROM vpn_clients c
             LEFT JOIN protocols p ON c.protocol_id = p.id
-            WHERE c.server_id = ? 
+            WHERE c.server_id = ?
             ORDER BY c.created_at DESC
         ');
         $stmt->execute([$serverId]);
+        return $stmt->fetchAll();
+    }
+
+    /**
+     * List clients across every member of a pool. In a failover pool clients
+     * are logically pool-wide (each peer is synced to all members), so every
+     * member's page shows the same client list regardless of which member the
+     * client row was created on.
+     */
+    public static function listByPool(int $poolId): array
+    {
+        $pdo = DB::conn();
+        $stmt = $pdo->prepare('
+            SELECT c.*, p.name as protocol_name, p.show_text_content
+            FROM vpn_clients c
+            LEFT JOIN protocols p ON c.protocol_id = p.id
+            JOIN vpn_servers s ON s.id = c.server_id
+            WHERE s.pool_id = ?
+            ORDER BY c.created_at DESC
+        ');
+        $stmt->execute([$poolId]);
         return $stmt->fetchAll();
     }
 

@@ -910,8 +910,12 @@ Router::get('/servers/{id}', function ($params) {
         }));
 
         $selectedProtocolId = isset($_GET['protocol_id']) ? (int) $_GET['protocol_id'] : 0;
+        $poolId = (int) ($serverData['pool_id'] ?? 0);
         if ($selectedProtocolId > 0) {
             $clients = VpnClient::listByServerAndProtocol($serverId, $selectedProtocolId);
+        } elseif ($poolId > 0) {
+            // Pool member: show the pool-wide client list (peers are synced to all).
+            $clients = VpnClient::listByPool($poolId);
         } else {
             $clients = VpnClient::listByServer($serverId);
         }
