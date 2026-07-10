@@ -807,7 +807,11 @@ Router::get('/servers/{id}/pool/status', function ($params) {
         }
         $poolId = (int) ($serverData['pool_id'] ?? 0);
         if ($poolId <= 0) {
-            echo json_encode(['success' => true, 'in_pool' => false, 'server_id' => $serverId]);
+            // Standalone: offer the pools this server could join.
+            $available = array_map(static function ($p) {
+                return ['id' => (int) $p['id'], 'name' => $p['name'], 'domain' => $p['domain']];
+            }, ServerPool::list());
+            echo json_encode(['success' => true, 'in_pool' => false, 'server_id' => $serverId, 'available_pools' => $available]);
             return;
         }
         $status = ServerPool::status($poolId);
@@ -830,6 +834,38 @@ Router::post('/servers/{id}/pool/create', function ($params) {
     }
     try {
         $res = ServerPool::createFromServer($serverId, $name);
+        echo json_encode($res, JSON_UNESCAPED_SLASHES);
+    } catch (Exception $e) {
+        http_response_code(500);
+        echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+    }
+});
+
+// Add this (standalone) server to an existing pool (AJAX, admin).
+// Redeploys the server with the pool's shared identity and syncs client peers —
+// a multi-minute operation (docker build); the request blocks until done.
+Router::post('/servers/{id}/pool/join', function ($params) {
+    requireAdmin();
+    @set_time_limit(600);
+    header('Content-Type: application/json');
+    $serverId = (int) $params['id'];
+    $input = json_decode(file_get_contents('php://input'), true) ?: [];
+    $poolId = (int) ($input['pool_id'] ?? 0);
+    if ($poolId <= 0) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'error' => 'pool_id required']);
+        return;
+    }
+    try {
+        $server = new VpnServer($serverId);
+        $serverData = $server->getData();
+        if (!empty($serverData['pool_id'])) {
+            http_response_code(400);
+            echo json_encode(['success' => false, 'error' => 'Server is already in a pool']);
+            return;
+        }
+        $priority = isset($input['priority']) ? (int) $input['priority'] : 100;
+        $res = ServerPool::addMember($poolId, $serverId, $priority);
         echo json_encode($res, JSON_UNESCAPED_SLASHES);
     } catch (Exception $e) {
         http_response_code(500);

@@ -85,11 +85,18 @@
             <button id="dnsSaveBtn" class="px-3 py-1 bg-purple-600 text-white rounded text-sm">Сохранить</button>
             <button id="dnsRepointBtn" class="px-3 py-1 bg-blue-600 text-white rounded text-sm" title="Создать/обновить A-запись через DNS API">A → сюда</button>
           </div>
-          <button id="poolCreateBtn" class="mt-2 px-3 py-1 bg-indigo-600 text-white rounded text-sm">
-            <i class="fas fa-layer-group mr-1"></i>Создать пул из этого сервера
-          </button>
-          <p class="mt-2 text-[11px] text-gray-500 leading-tight">
-            Пул объединяет несколько серверов под одним доменом с общей идентичностью awg2. Клиенты подключаются к <code>domain:443</code>; при недоступности активного сервера домен переключается на резервный без смены конфига.
+          <div class="mt-2 flex items-center gap-2 flex-wrap">
+            <button id="poolCreateBtn" class="px-3 py-1 bg-indigo-600 text-white rounded text-sm">
+              <i class="fas fa-layer-group mr-1"></i>Создать пул из этого сервера
+            </button>
+            <span id="poolJoinBox" class="inline-flex items-center gap-2" style="display:none">
+              <span class="text-xs text-gray-400">или</span>
+              <select id="poolJoinSelect" class="px-2 py-1 border rounded text-sm"></select>
+              <button id="poolJoinBtn" class="px-3 py-1 bg-teal-600 text-white rounded text-sm">Добавить в пул</button>
+            </span>
+          </div>
+          <p id="standaloneMsg" class="mt-2 text-[11px] text-gray-500 leading-tight">
+            Пул объединяет несколько серверов под одним доменом с общей идентичностью awg2. Клиенты подключаются к <code>domain:443</code>; при недоступности активного сервера домен переключается на резервный без смены конфига. При добавлении в существующий пул сервер передеплоится с общими ключами (~2 мин) и станет резервным (STANDBY).
           </p>
         </div>
 
@@ -143,6 +150,17 @@
           poolBox.style.display = 'none';
           standalone.style.display = 'block';
           setBadge('без пула', 'bg-gray-200 text-gray-600');
+          const box = document.getElementById('poolJoinBox');
+          const sel = document.getElementById('poolJoinSelect');
+          const pools = (d && d.available_pools) || [];
+          if (box && sel) {
+            if (pools.length) {
+              sel.innerHTML = pools.map(p => `<option value="${p.id}">${esc(p.name)}${p.domain ? ' (' + esc(p.domain) + ')' : ''}</option>`).join('');
+              box.style.display = 'inline-flex';
+            } else {
+              box.style.display = 'none';
+            }
+          }
         }
 
         function load() {
@@ -179,6 +197,20 @@
           fetch('/servers/' + SID + '/pool/create', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ name }) })
             .then(r => r.json()).then(d => { alert(d.message || (d.success ? 'Пул создан' : d.error)); load(); })
             .catch(e => { alert('Ошибка: ' + e); load(); });
+        });
+
+        const joinBtn = document.getElementById('poolJoinBtn');
+        if (joinBtn) joinBtn.addEventListener('click', () => {
+          const sel = document.getElementById('poolJoinSelect');
+          const poolId = sel && sel.value;
+          if (!poolId) return;
+          if (!confirm('Добавить сервер в пул? Он будет передеплоен с общими ключами пула (~2 мин) и станет резервным (STANDBY). Текущая awg2-идентичность и клиенты этого сервера будут заменены на общие.')) return;
+          joinBtn.disabled = true; joinBtn.textContent = '…';
+          document.getElementById('standaloneMsg').textContent = 'Добавление в пул (передеплой ~2 мин, не закрывайте страницу)…';
+          fetch('/servers/' + SID + '/pool/join', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ pool_id: Number(poolId) }) })
+            .then(r => r.json()).then(d => { alert(d.message || (d.success ? 'Добавлено в пул' : (d.error || 'Ошибка'))); load(); })
+            .catch(e => { alert('Ошибка/таймаут: ' + e + '\nОперация могла завершиться на сервере — обновите страницу.'); load(); })
+            .finally(() => { joinBtn.disabled = false; joinBtn.textContent = 'Добавить в пул'; });
         });
 
         load();
