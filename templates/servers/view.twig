@@ -253,6 +253,7 @@
         <span id="uninstallMsg" class="ml-3 text-sm text-gray-600"></span>
       </div>
 
+      {% if available_protocols %}
       <div class="mt-4">
         <label class="block text-sm text-gray-600 mb-1">Добавить протокол</label>
         <div class="flex items-center gap-2">
@@ -265,6 +266,7 @@
           <span id="activateMsg" class="ml-3 text-sm text-gray-600"></span>
         </div>
       </div>
+      {% endif %}
 
       <!-- Установка протоколов выполняется только через Настройки -->
 
@@ -386,14 +388,6 @@
         </div>
         <div>
           <input name="login" placeholder="Логин (уникально на сервере, пусто — из имени)" class="w-full px-3 py-2 border rounded" id="clientLogin">
-        </div>
-        <div>
-          <label class="block text-sm text-gray-600 mb-1">{{ t('ai.protocol_type') }}</label>
-          <select name="protocol_id" class="w-full px-3 py-2 border rounded">
-            {% for sp in server_protocols %}
-              <option value="{{ sp.protocol_id }}">{{ sp.name }}</option>
-            {% endfor %}
-          </select>
         </div>
         <div>
           <label class="block text-sm text-gray-600 mb-1">{{ t('clients.expiration') }}</label>

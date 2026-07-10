@@ -490,48 +490,6 @@ Router::get('/api/protocols/{id}/test-uninstall/stream', function ($params) {
     $controller->apiTestUninstallProtocolStream((int) $params['id']);
 });
 
-// AI ASSISTANT ROUTES
-Router::post('/api/ai/assist', function () {
-    requireAdmin();
-    require_once __DIR__ . '/../../controllers/AIController.php';
-    $controller = new AIController();
-    $controller->assist();
-});
-
-Router::get('/api/ai/models', function () {
-    requireAdmin();
-    require_once __DIR__ . '/../../controllers/AIController.php';
-    $controller = new AIController();
-    $controller->getModels();
-});
-
-Router::post('/api/ai/test-model', function () {
-    requireAdmin();
-    require_once __DIR__ . '/../../controllers/AIController.php';
-    $controller = new AIController();
-    $controller->testModel();
-});
-
-Router::get('/api/protocols/{id}/ai-history', function ($params) {
-    requireAdmin();
-    require_once __DIR__ . '/../../controllers/AIController.php';
-    $controller = new AIController();
-    $controller->getGenerationHistory((int) $params['id']);
-});
-
-Router::post('/api/ai/generations/{id}/apply', function ($params) {
-    requireAdmin();
-    require_once __DIR__ . '/../../controllers/AIController.php';
-    $controller = new AIController();
-    $controller->applyGeneration((int) $params['id']);
-});
-
-Router::get('/ai/preview/{id}', function ($params) {
-    requireAdmin();
-    require_once __DIR__ . '/../../controllers/AIController.php';
-    $controller = new AIController();
-    $controller->previewGeneration((int) $params['id']);
-});
 
 // Save API key
 Router::post('/settings/api-key', function () {
@@ -594,31 +552,6 @@ Router::post('/settings/delete-user/{id}', function ($params) {
     $controller->deleteUser($params['id']);
 });
 
-// LDAP settings page
-Router::get('/settings/ldap', function () {
-    requireAdmin();
-    redirect('/settings#ldap');
-});
-
-// Save LDAP settings
-Router::post('/settings/ldap/save', function () {
-    requireAdmin();
-
-    require_once __DIR__ . '/../../controllers/SettingsController.php';
-    require_once __DIR__ . '/../../inc/LdapSync.php';
-    $controller = new SettingsController();
-    $controller->saveLdapSettings();
-});
-
-// Test LDAP connection
-Router::post('/settings/ldap/test', function () {
-    requireAdmin();
-
-    require_once __DIR__ . '/../../controllers/SettingsController.php';
-    require_once __DIR__ . '/../../inc/LdapSync.php';
-    $controller = new SettingsController();
-    $controller->testLdapConnection();
-});
 
 /**
  * LANGUAGE ROUTES
@@ -642,68 +575,6 @@ Router::get('/language/change', function () {
     redirect('/dashboard');
 });
 
-// API: Get translation statistics
-Router::get('/api/translations/stats', function () {
-    header('Content-Type: application/json');
-
-    $user = JWT::requireAuth();
-    if (!$user)
-        return;
-
-    $stats = Translator::getStatistics();
-    echo json_encode(['stats' => $stats]);
-});
-
-// API: Auto-translate missing keys
-Router::post('/api/translations/auto-translate', function () {
-    header('Content-Type: application/json');
-
-    $user = JWT::requireAuth();
-    if (!$user)
-        return;
-
-    $raw = file_get_contents('php://input');
-    $data = json_decode($raw, true);
-
-    $targetLang = $data['language'] ?? '';
-
-    if (empty($targetLang)) {
-        http_response_code(400);
-        echo json_encode(['error' => 'Language is required']);
-        return;
-    }
-
-    try {
-        $stats = Translator::translateMissingKeys($targetLang);
-        echo json_encode([
-            'success' => true,
-            'stats' => $stats
-        ]);
-    } catch (Exception $e) {
-        http_response_code(500);
-        echo json_encode(['error' => $e->getMessage()]);
-    }
-});
-
-// API: Export translations
-Router::get('/api/translations/export/{lang}', function ($params) {
-    header('Content-Type: application/json');
-
-    $user = JWT::requireAuth();
-    if (!$user)
-        return;
-
-    $lang = $params['lang'];
-
-    try {
-        $json = Translator::exportToJson($lang);
-        header('Content-Disposition: attachment; filename="translations_' . $lang . '.json"');
-        echo $json;
-    } catch (Exception $e) {
-        http_response_code(500);
-        echo json_encode(['error' => $e->getMessage()]);
-    }
-});
 
 // ===== Scenario Management Routes (Admin Only) =====
 

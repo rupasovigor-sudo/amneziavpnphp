@@ -83,7 +83,6 @@ require_once __DIR__ . '/../inc/AlertManager.php';
 require_once __DIR__ . '/../inc/BackupLibrary.php';
 require_once __DIR__ . '/../inc/InstallProtocolManager.php';
 require_once __DIR__ . '/../inc/ProtocolService.php';
-require_once __DIR__ . '/../inc/OpenRouterService.php';
 require_once __DIR__ . '/../inc/TimewebDnsService.php';
 
 // Test database connection

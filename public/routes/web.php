@@ -131,11 +131,6 @@ Router::get('/dashboard', function () {
     ]);
 });
 
-Router::get('/tools/qr-decode', function () {
-    requireAuth();
-    View::render('tools/qr_decode.twig');
-});
-
 // Servers list
 Router::get('/servers', function () {
     requireAuth();

@@ -38,22 +38,10 @@
                class="tab-link border-transparent text-gray-500 hover:text-gray-700 py-4 px-1 border-b-2 font-medium text-sm">
                 <i class="fas fa-key mr-2"></i>{{ t('settings.api_keys') }}
             </a>
-            <a href="#" onclick="showTab('translations'); return false;" id="tab-translations"
-               class="tab-link border-transparent text-gray-500 hover:text-gray-700 py-4 px-1 border-b-2 font-medium text-sm">
-                <i class="fas fa-language mr-2"></i>{{ t('settings.translations') }}
-            </a>
-            <a href="/tools/qr-decode"
-               class="tab-link border-transparent text-gray-500 hover:text-gray-700 py-4 px-1 border-b-2 font-medium text-sm">
-                <i class="fas fa-qrcode mr-2"></i>QR Декодер
-            </a>
             {% if user.role == 'admin' %}
             <a href="#" onclick="showTab('users'); return false;" id="tab-users"
                class="tab-link border-transparent text-gray-500 hover:text-gray-700 py-4 px-1 border-b-2 font-medium text-sm">
                 <i class="fas fa-users mr-2"></i>{{ t('settings.users') }}
-            </a>
-            <a href="#" onclick="showTab('ldap'); return false;" id="tab-ldap"
-               class="tab-link border-transparent text-gray-500 hover:text-gray-700 py-4 px-1 border-b-2 font-medium text-sm">
-                <i class="fas fa-network-wired mr-2"></i>LDAP
             </a>
             <a href="#" onclick="showTab('alerts'); return false;" id="tab-alerts"
                class="tab-link border-transparent text-gray-500 hover:text-gray-700 py-4 px-1 border-b-2 font-medium text-sm">
@@ -137,51 +125,6 @@
                 </h2>
             </div>
             <div class="px-6 py-5">
-                {% if openrouter_key %}
-                <div class="mb-4 p-4 bg-green-50 border border-green-200 rounded-md">
-                    <div class="flex items-center justify-between">
-                        <div>
-                            <i class="fas fa-check-circle text-green-600 mr-2"></i>
-                            <span class="text-sm font-medium text-green-900">{{ t('settings.api_key_configured') }}</span>
-                        </div>
-                        <code class="text-xs text-green-700 bg-green-100 px-2 py-1 rounded">
-                            {{ openrouter_key[:15] }}...{{ openrouter_key[-4:] }}
-                        </code>
-                    </div>
-                </div>
-                {% else %}
-                <div class="mb-4 p-4 bg-yellow-50 border border-yellow-200 rounded-md">
-                    <i class="fas fa-exclamation-triangle text-yellow-600 mr-2"></i>
-                    <span class="text-sm text-yellow-800">{{ t('settings.no_api_key') }}</span>
-                </div>
-                {% endif %}
-                
-                <form method="POST" action="/settings/api-key">
-                    <div class="max-w-md">
-                        <label class="block text-sm font-medium text-gray-700 mb-2">
-                            OpenRouter API Key <span class="text-gray-500 font-normal">({{ t('settings.for_translation') }})</span>
-                        </label>
-                        <input type="text" name="api_key" placeholder="sk-or-v1-..." value="{{ openrouter_key }}" 
-                               class="block w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-purple-500 focus:border-purple-500">
-                        <p class="mt-2 text-xs text-gray-500">
-                            <i class="fas fa-info-circle"></i> {{ t('settings.get_key_at') }} 
-                            <a href="https://openrouter.ai/keys" target="_blank" class="text-purple-600">openrouter.ai/keys</a>
-                        </p>
-                        <div class="mt-3">
-                            <label class="inline-flex items-center">
-                                <input type="checkbox" name="skip_test" value="1" class="rounded border-gray-300 text-purple-600 focus:ring-purple-500">
-                                <span class="ml-2 text-sm text-gray-600">{{ t('settings.skip_validation') }}</span>
-                            </label>
-                        </div>
-                        <input type="hidden" name="service" value="openrouter">
-                        <button type="submit" class="mt-4 px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700">
-                            <i class="fas fa-save mr-2"></i>{{ openrouter_key ? t('form.update') : t('form.save') }}
-                        </button>
-                    </div>
-                </form>
-
-                <hr class="my-6 border-gray-200">
-
                 {% if timeweb_key %}
                 <div class="mb-4 p-4 bg-green-50 border border-green-200 rounded-md">
                     <div class="flex items-center justify-between">
@@ -220,58 +163,6 @@
                     </div>
                 </form>
             </div>
-        </div>
-    </div>
-
-    <!-- Translations Tab -->
-    <div id="content-translations" class="tab-content hidden">
-        <div class="bg-white shadow rounded-lg overflow-hidden">
-            <div class="px-6 py-5 border-b border-gray-200">
-                <h2 class="text-lg font-medium text-gray-900">
-                    <i class="fas fa-language mr-2 text-purple-600"></i>{{ t('settings.translation_status') }}
-                </h2>
-            </div>
-            <table class="min-w-full divide-y divide-gray-200">
-                <thead class="bg-gray-50">
-                    <tr>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('settings.language') }}</th>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('settings.progress') }}</th>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('settings.actions') }}</th>
-                    </tr>
-                </thead>
-                <tbody class="bg-white divide-y divide-gray-200">
-                    {% for stat in translation_stats %}
-                    <tr>
-                        <td class="px-6 py-4">
-                            <div class="flex items-center">
-                                <span class="text-2xl mr-3">{{ getFlag(stat.code) }}</span>
-                                <div>
-                                    <div class="text-sm font-medium">{{ stat.name }}</div>
-                                    <div class="text-xs text-gray-500">({{ stat.code }})</div>
-                                </div>
-                            </div>
-                        </td>
-                        <td class="px-6 py-4">
-                            {% set percent = (stat.translated_count / stat.total_count * 100)|round %}
-                            <div class="flex items-center">
-                                <div class="w-full bg-gray-200 rounded-full h-2 mr-2">
-                                    <div class="bg-purple-600 h-2 rounded-full" style="width: {{ percent }}%"></div>
-                                </div>
-                                <span class="text-sm">{{ percent }}%</span>
-                            </div>
-                            <div class="text-xs text-gray-500 mt-1">{{ stat.translated_count }} / {{ stat.total_count }}</div>
-                        </td>
-                        <td class="px-6 py-4 text-sm">
-                            {% if stat.code != 'en' and stat.translated_count < stat.total_count %}
-                            <button onclick="translateLanguage('{{ stat.code }}')" class="text-purple-600 hover:text-purple-900">
-                                <i class="fas fa-robot mr-1"></i>{{ t('settings.auto_translate') }}
-                            </button>
-                            {% endif %}
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
         </div>
     </div>
 
@@ -366,158 +257,6 @@
                     {% endfor %}
                 </tbody>
             </table>
-        </div>
-    </div>
-
-    <!-- LDAP Tab -->
-    <div id="content-ldap" class="tab-content hidden">
-        <div class="bg-white rounded-lg shadow-md p-6 mb-6 max-w-5xl">
-            <div class="flex items-center justify-between mb-6">
-                <h2 class="text-xl font-semibold text-gray-900">{{ t('ldap.settings') }}</h2>
-                <button id="testConnection" class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700">
-                    {{ t('ldap.test_connection') }}
-                </button>
-            </div>
-
-            <form id="ldapForm" method="POST" action="/settings/ldap/save">
-                <div class="mb-6 p-4 bg-gray-50 rounded-lg">
-                    <label class="flex items-center cursor-pointer">
-                        <input type="checkbox" name="enabled" value="1" 
-                               {% if config.enabled %}checked{% endif %}
-                               class="w-5 h-5 text-blue-600 rounded focus:ring-2 focus:ring-blue-500">
-                        <span class="ml-3 text-lg font-medium text-gray-900">{{ t('ldap.enable_ldap_auth') }}</span>
-                    </label>
-                    <p class="mt-2 ml-8 text-sm text-gray-600">{{ t('ldap.enable_description') }}</p>
-                </div>
-
-                <div class="space-y-4">
-                    <div class="grid grid-cols-2 gap-4">
-                        <div>
-                            <label class="block text-sm font-medium text-gray-700 mb-1">
-                                {{ t('ldap.host') }} <span class="text-red-500">*</span>
-                            </label>
-                            <input type="text" name="host" value="{{ config.host }}" required
-                                   placeholder="ldap.example.com"
-                                   class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
-                        </div>
-                        <div>
-                            <label class="block text-sm font-medium text-gray-700 mb-1">
-                                {{ t('ldap.port') }}
-                            </label>
-                            <input type="number" name="port" value="{{ config.port }}" 
-                                   placeholder="389"
-                                   class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
-                        </div>
-                    </div>
-
-                    <div>
-                        <label class="flex items-center cursor-pointer">
-                            <input type="checkbox" name="use_tls" value="1"
-                                   {% if config.use_tls %}checked{% endif %}
-                                   class="w-4 h-4 text-blue-600 rounded focus:ring-2 focus:ring-blue-500">
-                            <span class="ml-2 text-sm text-gray-700">{{ t('ldap.use_tls') }} (LDAPS)</span>
-                        </label>
-                    </div>
-
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">
-                            {{ t('ldap.base_dn') }} <span class="text-red-500">*</span>
-                        </label>
-                        <input type="text" name="base_dn" value="{{ config.base_dn }}" required
-                               placeholder="dc=example,dc=com"
-                               class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
-                        <p class="mt-1 text-xs text-gray-500">{{ t('ldap.base_dn_description') }}</p>
-                    </div>
-
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">
-                            {{ t('ldap.bind_dn') }} <span class="text-red-500">*</span>
-                        </label>
-                        <input type="text" name="bind_dn" value="{{ config.bind_dn }}" required
-                               placeholder="cn=admin,dc=example,dc=com"
-                               class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
-                        <p class="mt-1 text-xs text-gray-500">{{ t('ldap.bind_dn_description') }}</p>
-                    </div>
-
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">
-                            {{ t('ldap.bind_password') }} <span class="text-red-500">*</span>
-                        </label>
-                        <input type="password" name="bind_password" value="{{ config.bind_password }}" required
-                               placeholder="••••••••"
-                               class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
-                    </div>
-
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">
-                            {{ t('ldap.user_search_filter') }}
-                        </label>
-                        <input type="text" name="user_search_filter" value="{{ config.user_search_filter }}"
-                               placeholder="(uid=%s)"
-                               class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
-                        <p class="mt-1 text-xs text-gray-500">{{ t('ldap.user_search_filter_description') }}</p>
-                    </div>
-
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">
-                            {{ t('ldap.group_search_filter') }}
-                        </label>
-                        <input type="text" name="group_search_filter" value="{{ config.group_search_filter }}"
-                               placeholder="(memberUid=%s)"
-                               class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
-                    </div>
-
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">
-                            {{ t('ldap.sync_interval') }}
-                        </label>
-                        <input type="number" name="sync_interval" value="{{ config.sync_interval }}"
-                               placeholder="30"
-                               class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
-                        <p class="mt-1 text-xs text-gray-500">{{ t('ldap.sync_interval_description') }}</p>
-                    </div>
-                </div>
-
-                <div class="mt-6 flex gap-4">
-                    <button type="submit" class="px-6 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700">
-                        {{ t('common.save') }}
-                    </button>
-                    <a href="/settings" class="px-6 py-2 bg-gray-300 text-gray-700 rounded-lg hover:bg-gray-400">
-                        {{ t('common.cancel') }}
-                    </a>
-                </div>
-            </form>
-        </div>
-
-        <div class="bg-white rounded-lg shadow-md p-6 max-w-5xl">
-            <h3 class="text-xl font-bold text-gray-800 mb-4">{{ t('ldap.group_mappings') }}</h3>
-            <div class="overflow-x-auto">
-                <table class="min-w-full divide-y divide-gray-200">
-                    <thead class="bg-gray-50">
-                        <tr>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('ldap.group') }}</th>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('ldap.role') }}</th>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('ldap.description') }}</th>
-                        </tr>
-                    </thead>
-                    <tbody class="bg-white divide-y divide-gray-200">
-                        {% for mapping in mappings %}
-                        <tr>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{{ mapping.ldap_group }}</td>
-                            <td class="px-6 py-4 whitespace-nowrap">
-                                <span class="px-2 py-1 text-xs font-semibold rounded-full 
-                                    {% if mapping.role_name == 'admin' %}bg-red-100 text-red-800
-                                    {% elseif mapping.role_name == 'manager' %}bg-blue-100 text-blue-800
-                                    {% else %}bg-gray-100 text-gray-800{% endif %}">
-                                    {{ mapping.role_name }}
-                                </span>
-                            </td>
-                            <td class="px-6 py-4 text-sm text-gray-500">{{ mapping.description }}</td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            </div>
         </div>
     </div>
 
@@ -732,62 +471,7 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 });
 
-function translateLanguage(lang) {
-    if (!confirm('{{ t('settings.confirm_translate') }}')) return;
-    const button = event.target.closest('button');
-    const originalText = button.innerHTML;
-    button.disabled = true;
-    button.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i> {{ t('form.processing') }}';
-    
-    fetch('/api/auth/token', { method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: 'email=admin@amnez.ia&password=admin123' })
-    .then(r => r.json())
-    .then(auth => fetch('/api/translations/auto-translate', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer ' + auth.token},
-        body: JSON.stringify({language: lang})
-    }))
-    .then(r => r.json())
-    .then(data => {
-        if (data.success) {
-            alert('{{ t('settings.translation_complete') }}: ' + data.stats.translated + '/' + data.stats.total);
-            location.reload();
-        } else {
-            alert('{{ t('message.error') }}: ' + (data.error || 'Unknown error'));
-            button.disabled = false;
-            button.innerHTML = originalText;
-        }
-    })
-    .catch(err => {
-        alert('{{ t('message.error') }}: ' + err.message);
-        button.disabled = false;
-    button.innerHTML = originalText;
-    });
-}
-
-// LDAP test button inside settings page
 document.addEventListener('click', function(e) {
-    if (e.target && e.target.id === 'testConnection') {
-        const btn = e.target;
-        btn.disabled = true;
-        btn.textContent = '{{ t('ldap.testing') }}...';
-        fetch('/settings/ldap/test', { method: 'POST' })
-            .then(r => r.json())
-            .then(result => {
-                if (result.success) {
-                    alert('✓ ' + result.message);
-                } else {
-                    alert('✗ ' + result.message);
-                }
-            })
-            .catch(err => {
-                alert('{{ t('ldap.connection_test_failed') }}: ' + err.message);
-            })
-            .finally(() => {
-                btn.disabled = false;
-                btn.textContent = '{{ t('ldap.test_connection') }}';
-            });
-    }
-
     const alertButton = e.target.closest && e.target.closest('#testTelegramAlert, #testEmailAlert');
     if (alertButton) {
         const channel = alertButton.id === 'testTelegramAlert' ? 'telegram' : 'email';
