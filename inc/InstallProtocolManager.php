@@ -966,8 +966,8 @@ class InstallProtocolManager
     }
 
     /**
-     * Run detection script for a scenario on a server
-     * Used for testing scenarios before deployment
+     * Run a protocol's detection script on a server (probe existing state
+     * before install/reinstall).
      */
     public static function runDetection(VpnServer $server, array $protocol, array $options = []): array
     {

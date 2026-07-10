@@ -47,11 +47,6 @@
                     <h2 class="text-lg font-medium text-gray-900">{{ t('protocols.available_protocols') }}</h2>
                     <div class="flex space-x-2">
                         <input type="text" id="protocol-search" placeholder="{{ t('protocols.search_protocols') }}" class="px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
-                        <select id="protocol-filter" class="px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
-                            <option value="">{{ t('protocols.all_protocols') }}</option>
-                            <option value="active">{{ t('protocols.active_only') }}</option>
-                            <option value="ubuntu">{{ t('protocols.ubuntu_compatible') }}</option>
-                        </select>
                     </div>
                 </div>
 
@@ -131,36 +126,20 @@
 document.addEventListener('DOMContentLoaded', function() {
     // Protocol search and filter
     const searchInput = document.getElementById('protocol-search');
-    const filterSelect = document.getElementById('protocol-filter');
     const protocolCards = document.querySelectorAll('.protocol-card');
 
     function filterProtocols() {
         const searchTerm = searchInput.value.toLowerCase();
-        const filterValue = filterSelect.value;
 
         protocolCards.forEach(card => {
             const name = card.dataset.protocolName.toLowerCase();
             const slug = card.dataset.protocolSlug.toLowerCase();
-            const isActive = card.dataset.active === '1';
-            const isUbuntu = card.dataset.ubuntu === '1';
-
-            let show = true;
-
-            // Search filter
-            if (searchTerm && !name.includes(searchTerm) && !slug.includes(searchTerm)) {
-                show = false;
-            }
-
-            // Filter by type
-            if (filterValue === 'active' && !isActive) show = false;
-            if (filterValue === 'ubuntu' && !isUbuntu) show = false;
-
+            const show = !searchTerm || name.includes(searchTerm) || slug.includes(searchTerm);
             card.style.display = show ? 'block' : 'none';
         });
     }
 
     searchInput.addEventListener('input', filterProtocols);
-    filterSelect.addEventListener('change', filterProtocols);
 
     // Delete protocol
     document.querySelectorAll('.delete-protocol-btn').forEach(btn => {
