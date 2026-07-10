@@ -310,17 +310,7 @@ class InstallProtocolManager
             }
 
             if ($installMode === 'reinstall') {
-                $serverData = $server->getData();
                 Logger::appendInstall($serverId, 'Reinstall mode selected');
-                if (($serverData['status'] ?? '') === 'active' && empty($options['skip_backup'])) {
-                    try {
-                        $server->createBackup((int) $serverData['user_id'], 'automatic');
-                        Logger::appendInstall($serverId, 'Automatic backup created before reinstall');
-                    } catch (Throwable $e) {
-                        Logger::appendInstall($serverId, 'Backup before reinstall failed: ' . $e->getMessage());
-                        // backup errors do not abort reinstall
-                    }
-                }
             }
 
             return self::install($server, $protocol, $options);
