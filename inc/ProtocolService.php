@@ -11,17 +11,14 @@ class ProtocolService
         try {
             $pdo = DB::conn();
             $stmt = $pdo->query('
-                SELECT p.*, 
+                SELECT p.*,
                        COUNT(DISTINCT sp.server_id) as server_count,
                        COUNT(DISTINCT pt.id) as template_count,
-                       COUNT(DISTINCT pv.id) as variable_count,
-                       COUNT(DISTINCT ag.id) as ai_generation_count,
-                       MAX(ag.created_at) as last_ai_generation
+                       COUNT(DISTINCT pv.id) as variable_count
                 FROM protocols p
                 LEFT JOIN server_protocols sp ON p.id = sp.protocol_id
                 LEFT JOIN protocol_templates pt ON p.id = pt.protocol_id
                 LEFT JOIN protocol_variables pv ON p.id = pv.protocol_id
-                LEFT JOIN ai_generations ag ON p.id = ag.protocol_id
                 GROUP BY p.id
                 ORDER BY p.name ASC
             ');
@@ -61,17 +58,9 @@ class ProtocolService
             $stmt->execute([$protocolId]);
             $protocol['variables'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-            // Get AI generation history (last 10)
-            $stmt = $pdo->prepare('
-                SELECT ag.*, p.name as protocol_name
-                FROM ai_generations ag
-                LEFT JOIN protocols p ON ag.protocol_id = p.id
-                WHERE ag.protocol_id = ?
-                ORDER BY ag.created_at DESC
-                LIMIT 10
-            ');
-            $stmt->execute([$protocolId]);
-            $protocol['ai_history'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            // AI generation history removed with the AI assistant; keep the key
+            // empty for template backward-compatibility.
+            $protocol['ai_history'] = [];
 
             // Get server usage
             $stmt = $pdo->prepare('
