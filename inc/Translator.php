@@ -164,13 +164,13 @@ class Translator {
                 VALUES (?, ?, 1)
                 ON DUPLICATE KEY UPDATE api_key = VALUES(api_key), updated_at = NOW()
             ');
-            return $stmt->execute([$serviceName, $apiKey]);
+            return $stmt->execute([$serviceName, SecretBox::encryptNullable($apiKey)]);
         } catch (Exception $e) {
             error_log('Failed to save API key: ' . $e->getMessage());
             return false;
         }
     }
-    
+
     /**
      * Get API key for service
      */
@@ -179,7 +179,10 @@ class Translator {
             $pdo = DB::conn();
             $stmt = $pdo->prepare("SELECT api_key FROM api_keys WHERE service_name = ? AND is_active = 1 LIMIT 1");
             $stmt->execute([$serviceName]);
-            return $stmt->fetchColumn() ?: null;
+            $val = $stmt->fetchColumn();
+            // SecretBox::decryptNullable passes plaintext through unchanged, so
+            // this is backward-compatible with pre-encryption rows.
+            return $val === false ? null : (SecretBox::decryptNullable((string) $val) ?: null);
         } catch (Exception $e) {
             return null;
         }

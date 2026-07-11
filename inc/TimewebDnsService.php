@@ -26,7 +26,9 @@ class TimewebDnsService
             $stmt = DB::conn()->prepare("SELECT api_key FROM api_keys WHERE service_name = ? AND is_active = 1 LIMIT 1");
             $stmt->execute([self::SERVICE]);
             $token = $stmt->fetchColumn();
-            $token = is_string($token) ? trim($token) : '';
+            // Stored encrypted (SecretBox); decryptNullable passes plaintext
+            // through unchanged for backward compatibility.
+            $token = is_string($token) ? trim((string) SecretBox::decryptNullable($token)) : '';
             return $token !== '' ? $token : null;
         } catch (Throwable $e) {
             error_log('TimewebDnsService::getToken failed: ' . $e->getMessage());

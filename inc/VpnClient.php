@@ -28,10 +28,31 @@ class VpnClient
         $pdo = DB::conn();
         $stmt = $pdo->prepare('SELECT * FROM vpn_clients WHERE id = ?');
         $stmt->execute([$this->clientId]);
-        $this->data = $stmt->fetch();
+        $this->data = self::decryptClientSecrets($stmt->fetch() ?: null);
         if (!$this->data) {
             throw new Exception('Client not found');
         }
+    }
+
+    /**
+     * Client secrets (private key / PSK / config / QR) are stored encrypted at
+     * rest (SecretBox). Decrypt them when a single client is loaded. public_key
+     * stays plaintext (indexed + matched by the collector). Backward-compatible:
+     * decryptNullable passes pre-encryption plaintext through unchanged.
+     */
+    private const CLIENT_SECRET_FIELDS = ['private_key', 'preshared_key', 'config', 'qr_code'];
+
+    private static function decryptClientSecrets(?array $row): ?array
+    {
+        if (!$row) {
+            return $row;
+        }
+        foreach (self::CLIENT_SECRET_FIELDS as $f) {
+            if (isset($row[$f]) && $row[$f] !== null && $row[$f] !== '') {
+                $row[$f] = SecretBox::decryptNullable((string) $row[$f]);
+            }
+        }
+        return $row;
     }
 
     private static function timingThresholdMs(): int
@@ -617,11 +638,11 @@ class VpnClient
             $protocolId ?: null,
             $loginFinal,
             $clientIP,
-            $pub,
-            $priv,
-            $psk,
-            $config,
-            $qrCode,
+            $pub, // public_key stays plaintext (indexed + matched by the collector)
+            SecretBox::encryptNullable($priv),
+            SecretBox::encryptNullable($psk),
+            SecretBox::encryptNullable($config),
+            SecretBox::encryptNullable($qrCode),
             'active',
             $expiresAt
         ]));
@@ -1954,7 +1975,12 @@ BASH;
             'server_id' => $this->data['server_id'] ?? null,
             'client_id' => $this->clientId,
             'protocol' => $slug,
-        ], fn() => $stmt->execute([$config, $qrCode, $presharedKeyForConfig, (int) $this->clientId]));
+        ], fn() => $stmt->execute([
+            SecretBox::encryptNullable($config),
+            SecretBox::encryptNullable($qrCode),
+            SecretBox::encryptNullable($presharedKeyForConfig),
+            (int) $this->clientId,
+        ]));
 
         // Refresh cached data
         $this->load();
