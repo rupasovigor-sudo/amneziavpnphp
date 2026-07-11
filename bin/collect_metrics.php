@@ -325,6 +325,8 @@ while (true) {
                         echo "[" . date('Y-m-d H:i:s') . "] POOL FAILOVER: pool {$fo['pool']} #{$fo['from']} -> #{$fo['to']} ({$fo['reason']})\n";
                     } elseif ($act === 'repair_attempt') {
                         echo "[" . date('Y-m-d H:i:s') . "] POOL SELF-HEAL: pool {$fo['pool']} server #{$fo['server']} restart issued (attempt {$fo['attempt']}/{$fo['max']})\n";
+                    } elseif ($act === 'failover_failed') {
+                        echo "[" . date('Y-m-d H:i:s') . "] POOL FAILOVER FAILED (DNS): pool {$fo['pool']} #{$fo['from']} -> #{$fo['to']} ({$fo['reason']}) — active unchanged, will retry\n";
                     } elseif ($act === 'no_candidate') {
                         echo "[" . date('Y-m-d H:i:s') . "] POOL: active #{$fo['from']} down, no healthy standby\n";
                     }

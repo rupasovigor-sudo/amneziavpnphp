@@ -287,6 +287,17 @@ class VpnClient
             }
         }
 
+        // Serialize IP allocation across the pool (or the standalone server):
+        // getNextClientIP reads the used-IP set and the INSERT happens further
+        // below, so two concurrent creates on different pool members could pick
+        // the same IP. A named lock on the shared DB connection closes that
+        // window; it auto-releases at request end if we don't reach the explicit
+        // release (e.g. on exception).
+        $ipLockKey = 'amnezia_ip_' . ((int) ($serverData['pool_id'] ?? 0) > 0
+            ? 'pool_' . (int) $serverData['pool_id']
+            : 'srv_' . $serverId);
+        DB::conn()->prepare('SELECT GET_LOCK(?, 10)')->execute([$ipLockKey]);
+
         $strictIpSync = in_array(strtolower((string) getenv('AMNEZIA_STRICT_IP_SYNC')), ['1', 'true', 'yes'], true);
         $clientIP = self::timed('create.get_next_client_ip', [
             'server_id' => $serverId,
@@ -616,6 +627,7 @@ class VpnClient
         ]));
 
         $clientId = (int) $pdo->lastInsertId();
+        DB::conn()->prepare('SELECT RELEASE_LOCK(?)')->execute([$ipLockKey]);
         self::logTiming('create.total', (microtime(true) - $createStartedAt) * 1000, [
             'server_id' => $serverId,
             'client_id' => $clientId,
@@ -1524,9 +1536,11 @@ BASH;
     }
 
     /**
-     * Remove client from server WireGuard configuration
+     * Remove client from server WireGuard configuration.
+     * Public so pool/server maintenance (e.g. deleting a pool member) can strip
+     * a peer from other members.
      */
-    private static function removeClientFromServer(array $serverData, string $publicKey): void
+    public static function removeClientFromServer(array $serverData, string $publicKey): void
     {
         $containerName = $serverData['container_name'];
         $protocolSlug = (string) ($serverData['install_protocol'] ?? '');

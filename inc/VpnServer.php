@@ -611,7 +611,64 @@ BASH;
      */
     public function delete(): bool
     {
-        // Stop and remove container
+        $pdo = DB::conn();
+        $serverId = (int) $this->serverId;
+        $poolId = (int) ($this->data['pool_id'] ?? 0);
+
+        // Pool cleanup BEFORE removing the row (the DELETE cascades this server's
+        // vpn_clients rows). Two things must happen or the pool is left broken:
+        if ($poolId > 0) {
+            // 1) This member's client peers were synced to every other member.
+            //    Strip them from the survivors, otherwise they linger as orphans
+            //    (counted as live clients, holding pool IPs).
+            try {
+                $stmtC = $pdo->prepare('SELECT public_key FROM vpn_clients WHERE server_id = ?');
+                $stmtC->execute([$serverId]);
+                $pubKeys = array_filter($stmtC->fetchAll(PDO::FETCH_COLUMN));
+                if ($pubKeys) {
+                    $stmtM = $pdo->prepare('SELECT id FROM vpn_servers WHERE pool_id = ? AND id <> ?');
+                    $stmtM->execute([$poolId, $serverId]);
+                    foreach ($stmtM->fetchAll(PDO::FETCH_COLUMN) as $mid) {
+                        try {
+                            $md = (new VpnServer((int) $mid))->getData();
+                            if ($md && ($md['status'] ?? '') === 'active') {
+                                foreach ($pubKeys as $pk) {
+                                    try {
+                                        VpnClient::removeClientFromServer($md, (string) $pk);
+                                    } catch (Throwable $e) {
+                                        error_log("delete: strip peer from server {$mid} failed: " . $e->getMessage());
+                                    }
+                                }
+                            }
+                        } catch (Throwable $e) {
+                            error_log("delete: load member {$mid} failed: " . $e->getMessage());
+                        }
+                    }
+                }
+            } catch (Throwable $e) {
+                error_log('delete: pool peer cleanup failed: ' . $e->getMessage());
+            }
+
+            // 2) If this was the active member, fail over to a healthy standby
+            //    (repoints DNS) BEFORE dropping it — otherwise the domain keeps
+            //    resolving to the deleted host. If no standby / DNS fails, at
+            //    least clear the pointer so the pool doesn't reference a dead id.
+            try {
+                $stmtA = $pdo->prepare('SELECT active_server_id FROM server_pools WHERE id = ?');
+                $stmtA->execute([$poolId]);
+                if ((int) $stmtA->fetchColumn() === $serverId) {
+                    $fo = ServerPool::failover($poolId, $serverId);
+                    if (empty($fo['success'])) {
+                        error_log("delete: active member {$serverId} — no failover ({$fo['message']}); clearing pointer");
+                        $pdo->prepare('UPDATE server_pools SET active_server_id = NULL WHERE id = ?')->execute([$poolId]);
+                    }
+                }
+            } catch (Throwable $e) {
+                error_log('delete: pool failover-on-delete failed: ' . $e->getMessage());
+            }
+        }
+
+        // Stop and remove the container (best effort).
         try {
             $containerName = $this->data['container_name'];
             $this->executeCommand("docker stop {$containerName} 2>/dev/null || true", true);
@@ -621,20 +678,17 @@ BASH;
             // Ignore errors during cleanup
         }
 
-        // Pool cleanup: if this server was a pool's active member, clear the
-        // pointer so the pool doesn't reference a deleted server. Membership is
-        // dropped automatically with the row.
-        $pdo = DB::conn();
+        // Belt-and-suspenders: clear any pool still pointing here (non-pool path
+        // or a race), then delete the row (cascades this server's clients).
         try {
             $pdo->prepare('UPDATE server_pools SET active_server_id = NULL WHERE active_server_id = ?')
-                ->execute([$this->serverId]);
+                ->execute([$serverId]);
         } catch (Throwable $e) {
             // server_pools may not exist on older schemas; ignore.
         }
 
-        // Delete from database
         $stmt = $pdo->prepare('DELETE FROM vpn_servers WHERE id = ?');
-        return $stmt->execute([$this->serverId]);
+        return $stmt->execute([$serverId]);
     }
 
     /**

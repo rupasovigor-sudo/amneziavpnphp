@@ -198,19 +198,27 @@ class ServerPool
         $domain = trim((string) ($pool['domain'] ?? ''));
         $response = ['success' => true, 'message' => "Active server set to {$target['name']} (#{$serverId})"];
 
+        // A domain is the whole point of the pool: if we can't repoint it, the
+        // clients still resolve to the OLD active member. Do NOT flip
+        // active_server_id in that case — leave it so the next failover cycle
+        // (or a manual retry after fixing the token) tries the repoint again.
+        $dnsOk = true;
         if ($domain !== '') {
             if (!DnsManager::isConfigured()) {
                 $response['dns'] = ['success' => false, 'message' => 'DNS provider token not configured — A-record not updated'];
-                $response['success'] = false;
-                $response['message'] = 'Active server recorded, but DNS repoint failed (no token)';
+                $dnsOk = false;
             } else {
                 $dns = DnsManager::upsertARecord($domain, $host);
                 $response['dns'] = $dns;
-                if (empty($dns['success'])) {
-                    $response['success'] = false;
-                    $response['message'] = 'DNS repoint failed: ' . ($dns['message'] ?? 'unknown');
-                }
+                $dnsOk = !empty($dns['success']);
             }
+        }
+
+        if (!$dnsOk) {
+            $response['success'] = false;
+            $response['message'] = 'DNS repoint failed; active member left unchanged: ' . ($response['dns']['message'] ?? 'unknown');
+            error_log("ServerPool: pool {$poolId} DNS repoint to #{$serverId} ({$host}) FAILED — active unchanged");
+            return $response;
         }
 
         DB::conn()->prepare('UPDATE server_pools SET active_server_id = ? WHERE id = ?')
@@ -356,7 +364,15 @@ class ServerPool
             }
             $reason = $sshDown ? 'auto_failover (ssh down, self-heal impossible)' : 'auto_failover (self-heal exhausted)';
             error_log("ServerPool: pool {$poolId} {$reason} #{$activeId} -> #{$candidate}");
-            self::setActive($poolId, $candidate, $reason);
+            $res = self::setActive($poolId, $candidate, $reason);
+            if (empty($res['success'])) {
+                // DNS repoint failed — active stayed on the dead member. Keep the
+                // repair state and retry next cycle instead of pretending we
+                // failed over.
+                error_log("ServerPool: pool {$poolId} failover #{$activeId} -> #{$candidate} did NOT take (DNS): " . ($res['message'] ?? ''));
+                $results[] = ['pool' => $poolId, 'action' => 'failover_failed', 'from' => $activeId, 'to' => $candidate, 'reason' => $res['message'] ?? 'dns'];
+                continue;
+            }
             self::clearRepairState($poolId, $activeId);
             $results[] = ['pool' => $poolId, 'action' => 'failover', 'from' => $activeId, 'to' => $candidate, 'reason' => $reason];
         }
@@ -534,6 +550,16 @@ class ServerPool
             return ['success' => false, 'message' => 'Server already belongs to another pool'];
         }
 
+        // Snapshot the exact stored (encrypted) column values we're about to
+        // overwrite, so a failed deploy can roll the DB back instead of leaving a
+        // half-joined, bricked "member".
+        $snap = DB::conn()->prepare(
+            'SELECT pool_id, pool_priority, server_public_key, preshared_key, awg_params, vpn_subnet, vpn_port, domain
+             FROM vpn_servers WHERE id = ?'
+        );
+        $snap->execute([$serverId]);
+        $prev = $snap->fetch();
+
         // 1. Adopt the pool identity in the DB so client-config building and
         //    peer-add use the shared keys, and record membership.
         DB::conn()->prepare(
@@ -570,11 +596,44 @@ class ServerPool
             'server_port' => (int) ($pool['vpn_port'] ?? 443) ?: 443,
         ]);
         if (empty($deploy['success'])) {
-            return ['success' => false, 'message' => 'Member deploy failed', 'deploy' => $deploy];
+            // Roll the DB membership/identity back to its pre-join state. The
+            // remote awg2 identity was already wiped in step 2, so the server now
+            // needs a standalone redeploy — but at least it isn't recorded as a
+            // (broken) pool member.
+            if ($prev) {
+                DB::conn()->prepare(
+                    'UPDATE vpn_servers
+                     SET pool_id = ?, pool_priority = ?, server_public_key = ?, preshared_key = ?,
+                         awg_params = ?, vpn_subnet = ?, vpn_port = ?, domain = ?
+                     WHERE id = ?'
+                )->execute([
+                    $prev['pool_id'], $prev['pool_priority'], $prev['server_public_key'], $prev['preshared_key'],
+                    $prev['awg_params'], $prev['vpn_subnet'], $prev['vpn_port'], $prev['domain'], $serverId,
+                ]);
+            }
+            return [
+                'success' => false,
+                'message' => 'Member deploy failed; membership rolled back. The server\'s awg2 identity was reset — redeploy it standalone before retrying.',
+                'deploy' => $deploy,
+            ];
         }
 
         // 4. Sync every existing pool client peer onto the new member.
-        $synced = self::syncClientsToServer($poolId, $serverId);
+        $synced = self::syncClientsToServer($poolId, $serverId, $failed);
+
+        // A member that is missing some peers must NOT silently become a valid
+        // failover target — those clients would be unable to connect after a
+        // failover to it. Report partial success so the caller/UI can react.
+        if ($failed > 0) {
+            return [
+                'success' => true,
+                'partial' => true,
+                'message' => "Server {$serverId} joined pool but {$failed} of " . ($synced + $failed) . " client peers failed to sync — re-sync before relying on it for failover.",
+                'deploy' => $deploy,
+                'synced' => $synced,
+                'failed' => $failed,
+            ];
+        }
 
         return [
             'success' => true,
@@ -586,10 +645,12 @@ class ServerPool
 
     /**
      * Push every active client peer in the pool onto one member's awg0.
-     * Returns the number of peers synced.
+     * Returns the number of peers synced; sets $failed to the number that
+     * could not be pushed (so the caller can refuse to trust an incomplete member).
      */
-    public static function syncClientsToServer(int $poolId, int $serverId): int
+    public static function syncClientsToServer(int $poolId, int $serverId, int &$failed = 0): int
     {
+        $failed = 0;
         $memberIds = array_map(static fn($m) => (int) $m['id'], self::members($poolId));
         if (empty($memberIds)) {
             return 0;
@@ -610,6 +671,7 @@ class ServerPool
                 VpnClient::addClientToServer($serverData, (string) $client['public_key'], (string) $client['client_ip']);
                 $count++;
             } catch (Throwable $e) {
+                $failed++;
                 error_log("ServerPool::syncClientsToServer: failed peer {$client['public_key']} on server {$serverId}: " . $e->getMessage());
             }
         }
