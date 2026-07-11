@@ -159,6 +159,7 @@
   }
 
   function updateAllMetrics() {
+    if (document.hidden) return;
     collectActiveServerIds().forEach(serverId => {
       updateServerMetrics(serverId);
     });

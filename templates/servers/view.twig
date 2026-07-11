@@ -941,6 +941,7 @@ function initSparklines() {
 }
 
 async function updateServerMetrics() {
+  if (document.hidden) return;
   try {
     const response = await fetch(`/api/servers/${serverId}/metrics?hours=1`, {
       credentials: 'same-origin'
@@ -1008,6 +1009,7 @@ if (document.getElementById('cpuSparkline')) {
 
 // Update client speeds
 async function updateClientSpeeds() {
+  if (document.hidden) return;
   const clientRows = document.querySelectorAll('[id^="client-speed-"]');
 
   let metricsByClient = {};
@@ -1083,6 +1085,7 @@ function fmtHsAge(sec) {
   return Math.floor(sec / 86400) + 'д назад';
 }
 async function refreshLiveStatus() {
+  if (document.hidden) return; // don't drive SSH polls for a backgrounded tab
   try {
     const r = await fetch(`/servers/{{ server.id }}/clients/live-status`, { credentials: 'same-origin' });
     const d = await r.json();

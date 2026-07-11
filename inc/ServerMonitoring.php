@@ -418,29 +418,24 @@ SH;
         if ($container === '') {
             $container = trim((string) ($this->serverData['container_name'] ?? 'amnezia-awg2')) ?: 'amnezia-awg2';
         }
-        $dump = (string) $this->execSSH("docker exec {$container} awg show awg0 dump 2>/dev/null || docker exec {$container} wg show wg0 dump 2>/dev/null");
-        $lines = array_values(array_filter(explode("\n", trim($dump)), static fn($l) => trim($l) !== ''));
-        if (count($lines) < 2) {
+        // Reuse the same interface dump getClientStats reads (populate the shared
+        // per-container cache once) instead of a second SSH round-trip.
+        if (!array_key_exists($container, $this->wireguardDumpCache)) {
+            $this->wireguardDumpCache[$container] = $this->fetchWireguardDump($container);
+        }
+        $peers = $this->wireguardDumpCache[$container];
+        if (empty($peers)) {
             return;
         }
-        $db = DB::conn();
-        $upd = $db->prepare(
+        $upd = DB::conn()->prepare(
             "UPDATE vpn_clients SET last_handshake = ?
              WHERE public_key = ? AND (last_handshake IS NULL OR last_handshake < ?)"
         );
-        foreach ($lines as $i => $line) {
-            if ($i === 0) {
-                continue; // interface line
-            }
-            $f = explode("\t", $line);
-            if (count($f) < 5) {
-                continue;
-            }
-            $pub = trim($f[0]);
-            $hs = (int) $f[4];
-            if ($pub !== '' && $hs > 0) {
+        foreach ($peers as $pub => $info) {
+            $hs = (int) ($info['handshake_ts'] ?? 0);
+            if ((string) $pub !== '' && $hs > 0) {
                 $date = date('Y-m-d H:i:s', $hs);
-                $upd->execute([$date, $pub, $date]);
+                $upd->execute([$date, (string) $pub, $date]);
             }
         }
     }

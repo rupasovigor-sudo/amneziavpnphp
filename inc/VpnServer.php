@@ -564,22 +564,26 @@ BASH;
     /**
      * Get all servers for a user
      */
-    public static function listByUser(int $userId): array
+    public static function listByUser(int $userId, bool $decryptSecrets = true): array
     {
         $pdo = DB::conn();
         $stmt = $pdo->prepare('SELECT * FROM vpn_servers WHERE user_id = ? ORDER BY created_at DESC');
         $stmt->execute([$userId]);
-        return array_map([self::class, 'decryptServerSecrets'], $stmt->fetchAll());
+        $rows = $stmt->fetchAll();
+        // Display/list contexts redact secrets anyway — skip the per-row SecretBox
+        // decrypt (pass $decryptSecrets=false) to avoid N wasted sodium ops.
+        return $decryptSecrets ? array_map([self::class, 'decryptServerSecrets'], $rows) : $rows;
     }
 
     /**
      * Get all servers (admin only)
      */
-    public static function listAll(): array
+    public static function listAll(bool $decryptSecrets = true): array
     {
         $pdo = DB::conn();
         $stmt = $pdo->query('SELECT s.*, u.email as user_email FROM vpn_servers s LEFT JOIN users u ON s.user_id = u.id ORDER BY s.created_at DESC');
-        return array_map([self::class, 'decryptServerSecrets'], $stmt->fetchAll());
+        $rows = $stmt->fetchAll();
+        return $decryptSecrets ? array_map([self::class, 'decryptServerSecrets'], $rows) : $rows;
     }
 
     /**
@@ -752,8 +756,20 @@ BASH;
      * Used to drive a live online indicator that doesn't wait for the
      * metrics-collector cycle.
      */
-    public function liveClientPeers(): array
+    public function liveClientPeers(int $cacheSeconds = 30): array
     {
+        // This is polled by every open server-view tab; cache the SSH dump
+        // briefly so N tabs don't each drive an exec to the VPN box.
+        $sid = (int) ($this->data['id'] ?? 0);
+        $cacheFile = sys_get_temp_dir() . '/amnezia_live_peers_' . $sid . '.json';
+        clearstatcache(true, $cacheFile);
+        if ($cacheSeconds > 0 && $sid > 0 && is_file($cacheFile) && (time() - (int) @filemtime($cacheFile)) < $cacheSeconds) {
+            $cached = json_decode((string) @file_get_contents($cacheFile), true);
+            if (is_array($cached)) {
+                return $cached;
+            }
+        }
+
         $container = trim((string) ($this->data['container_name'] ?? 'amnezia-awg2')) ?: 'amnezia-awg2';
         $dump = (string) $this->executeCommand(
             'docker exec ' . escapeshellarg($container) . ' awg show awg0 dump 2>/dev/null '
@@ -781,6 +797,9 @@ BASH;
                 'rx' => (int) $f[5],
                 'tx' => (int) $f[6],
             ];
+        }
+        if ($sid > 0) {
+            @file_put_contents($cacheFile, json_encode($peers));
         }
         return $peers;
     }

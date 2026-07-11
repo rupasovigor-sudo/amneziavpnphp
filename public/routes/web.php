@@ -108,7 +108,7 @@ Router::get('/dashboard', function () {
     $user = Auth::user();
 
     // Get user's servers
-    $servers = VpnServer::attachPoolInfo(VpnServer::redactServerList(VpnServer::listByUser($user['id'])));
+    $servers = VpnServer::attachPoolInfo(VpnServer::redactServerList(VpnServer::listByUser($user['id'], false)));
 
     // Get user's clients
     $clients = VpnClient::listByUser($user['id']);
@@ -137,8 +137,8 @@ Router::get('/servers', function () {
     $user = Auth::user();
 
     $servers = Auth::isAdmin()
-        ? VpnServer::listAll()
-        : VpnServer::listByUser($user['id']);
+        ? VpnServer::listAll(false)
+        : VpnServer::listByUser($user['id'], false);
     $servers = VpnServer::attachPoolInfo(VpnServer::redactServerList($servers));
 
     View::render('servers/index.twig', ['servers' => $servers]);
