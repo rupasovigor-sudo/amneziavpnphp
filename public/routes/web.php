@@ -823,6 +823,38 @@ Router::post('/servers/{id}/pool/activate', function ($params) {
     }
 });
 
+// Re-sync a pool member's client peers (clears the pool_sync_pending flag so the
+// member can serve as a failover target again).
+Router::post('/servers/{id}/pool/resync', function ($params) {
+    requireAdmin();
+    @set_time_limit(300);
+    header('Content-Type: application/json');
+    $serverId = (int) $params['id'];
+    try {
+        $server = new VpnServer($serverId);
+        $serverData = $server->getData();
+        $poolId = (int) ($serverData['pool_id'] ?? 0);
+        if ($poolId <= 0) {
+            http_response_code(400);
+            echo json_encode(['success' => false, 'error' => 'Server is not in a pool']);
+            return;
+        }
+        $failed = 0;
+        $synced = ServerPool::syncClientsToServer($poolId, $serverId, $failed);
+        echo json_encode([
+            'success' => $failed === 0,
+            'synced' => $synced,
+            'failed' => $failed,
+            'message' => $failed === 0
+                ? "Re-synced {$synced} client peers"
+                : "{$failed} of " . ($synced + $failed) . " peers still failed — member kept out of failover",
+        ], JSON_UNESCAPED_SLASHES);
+    } catch (Exception $e) {
+        http_response_code(500);
+        echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+    }
+});
+
 // View server
 Router::get('/servers/{id}', function ($params) {
     requireAuth();

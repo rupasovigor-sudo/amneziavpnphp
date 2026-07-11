@@ -132,16 +132,21 @@
               : '<span class="px-1.5 py-0.5 rounded text-[10px] bg-gray-200 text-gray-600">STANDBY</span>';
             const dnsMark = m.dns_points_here ? '<span title="домен указывает сюда" class="text-green-600">◉</span>' : '<span class="text-gray-300">◯</span>';
             const here = m.id === SID ? ' <span class="text-[10px] text-purple-600">(этот)</span>' : '';
-            const act = m.role !== 'active'
-              ? `<button data-activate="${m.id}" class="px-2 py-0.5 rounded text-[10px] bg-blue-600 text-white">Сделать активным</button>`
+            const syncBadge = m.sync_pending
+              ? '<span title="часть клиентских пиров не синхронизирована — исключён из failover" class="px-1.5 py-0.5 rounded text-[10px] bg-yellow-100 text-yellow-800"><i class="fas fa-triangle-exclamation"></i> рассинхрон</span>'
               : '';
+            const act = [
+              m.role !== 'active' ? `<button data-activate="${m.id}" class="px-2 py-0.5 rounded text-[10px] bg-blue-600 text-white">Сделать активным</button>` : '',
+              m.sync_pending ? `<button data-resync="${m.id}" class="px-2 py-0.5 rounded text-[10px] bg-yellow-600 text-white">Ре-синк</button>` : '',
+            ].join(' ');
             return `<div class="flex items-center justify-between border rounded px-2 py-1 bg-white">
-              <div class="text-xs">${dnsMark} <b>${esc(m.name)}</b>${here} <span class="text-gray-400 font-mono">${esc(m.host)}</span> ${roleBadge} <span class="text-[10px] text-gray-400">pri ${m.priority}·${esc(m.status)}</span></div>
-              <div>${act}</div>
+              <div class="text-xs">${dnsMark} <b>${esc(m.name)}</b>${here} <span class="text-gray-400 font-mono">${esc(m.host)}</span> ${roleBadge} ${syncBadge} <span class="text-[10px] text-gray-400">pri ${m.priority}·${esc(m.status)}</span></div>
+              <div class="flex gap-1">${act}</div>
             </div>`;
           }).join('');
           document.getElementById('poolMembers').innerHTML = rows;
           poolBox.querySelectorAll('[data-activate]').forEach(b => b.addEventListener('click', () => activate(b.getAttribute('data-activate'), b)));
+          poolBox.querySelectorAll('[data-resync]').forEach(b => b.addEventListener('click', () => resyncMember(b.getAttribute('data-resync'), b)));
         }
 
         function renderStandalone(d) {
@@ -175,6 +180,14 @@
               document.getElementById('poolMsg').textContent = d.message || (d.dns && d.dns.message) || (d.success ? 'Переключено' : (d.error || 'Ошибка'));
               load();
             }).catch(e => { document.getElementById('poolMsg').textContent = 'Ошибка: ' + e; load(); });
+        }
+
+        function resyncMember(memberId, btn) {
+          if (btn) { btn.disabled = true; btn.textContent = '…'; }
+          document.getElementById('poolMsg').textContent = 'Ре-синк клиентских пиров (может занять до минуты)…';
+          fetch('/servers/' + memberId + '/pool/resync', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' })
+            .then(r => r.json()).then(d => { showToast(d.message || (d.success ? 'Синхронизировано' : (d.error || 'Ошибка')), d.success ? 'success' : 'error'); load(); })
+            .catch(e => { showToast('Ошибка: ' + e, 'error'); load(); });
         }
 
         // Standalone domain actions

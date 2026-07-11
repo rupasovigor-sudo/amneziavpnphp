@@ -115,36 +115,18 @@
   if (window.__serverMetricsInit) { return; }
   window.__serverMetricsInit = true;
 
-  async function updateServerMetrics(serverId) {
-    try {
-      const response = await fetch(`/api/servers/${serverId}/metrics?hours=1`, {
-        credentials: 'same-origin'
-      });
-
-      const data = await response.json();
-
-      if (data.success && data.metrics.length > 0) {
-        const latest = data.metrics[data.metrics.length - 1];
-        const metricsDiv = document.getElementById(`metrics-${serverId}`);
-
-        if (metricsDiv) {
-          const cpuVal = parseFloat(latest.cpu_percent).toFixed(0);
-          metricsDiv.querySelector('[data-metric="cpu"]').textContent = `${cpuVal}%`;
-
-          const ramPercent = (latest.ram_total_mb > 0 ? latest.ram_used_mb / latest.ram_total_mb * 100 : 0).toFixed(0);
-          metricsDiv.querySelector('[data-metric="ram"]').textContent = `${ramPercent}%`;
-
-          const diskPercent = (latest.disk_total_gb > 0 ? latest.disk_used_gb / latest.disk_total_gb * 100 : 0).toFixed(0);
-          metricsDiv.querySelector('[data-metric="disk"]').textContent = `${diskPercent}%`;
-
-          const netRx = parseFloat(latest.network_rx_mbps).toFixed(1);
-          const netTx = parseFloat(latest.network_tx_mbps).toFixed(1);
-          metricsDiv.querySelector('[data-metric="network"]').textContent = `↓${netRx}↑${netTx}`;
-        }
-      }
-    } catch (error) {
-      console.error(`Failed to fetch metrics for server ${serverId}:`, error);
-    }
+  function fillMetrics(serverId, latest) {
+    const metricsDiv = document.getElementById(`metrics-${serverId}`);
+    if (!metricsDiv || !latest) return;
+    const cpuVal = parseFloat(latest.cpu_percent).toFixed(0);
+    metricsDiv.querySelector('[data-metric="cpu"]').textContent = `${cpuVal}%`;
+    const ramPercent = (latest.ram_total_mb > 0 ? latest.ram_used_mb / latest.ram_total_mb * 100 : 0).toFixed(0);
+    metricsDiv.querySelector('[data-metric="ram"]').textContent = `${ramPercent}%`;
+    const diskPercent = (latest.disk_total_gb > 0 ? latest.disk_used_gb / latest.disk_total_gb * 100 : 0).toFixed(0);
+    metricsDiv.querySelector('[data-metric="disk"]').textContent = `${diskPercent}%`;
+    const netRx = parseFloat(latest.network_rx_mbps).toFixed(1);
+    const netTx = parseFloat(latest.network_tx_mbps).toFixed(1);
+    metricsDiv.querySelector('[data-metric="network"]').textContent = `↓${netRx}↑${netTx}`;
   }
 
   function collectActiveServerIds() {
@@ -158,11 +140,18 @@
     return ids;
   }
 
-  function updateAllMetrics() {
+  // One bulk request fills every row's badges (was one request per server row).
+  async function updateAllMetrics() {
     if (document.hidden) return;
-    collectActiveServerIds().forEach(serverId => {
-      updateServerMetrics(serverId);
-    });
+    try {
+      const response = await fetch('/api/servers/metrics/latest', { credentials: 'same-origin' });
+      const data = await response.json();
+      if (data.success && data.metrics) {
+        collectActiveServerIds().forEach(id => fillMetrics(id, data.metrics[id]));
+      }
+    } catch (error) {
+      console.error('Failed to fetch server metrics:', error);
+    }
   }
 
   function start() {

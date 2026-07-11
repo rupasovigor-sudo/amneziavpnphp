@@ -34,7 +34,7 @@ class ServerPool
     public static function members(int $poolId): array
     {
         $stmt = DB::conn()->prepare(
-            'SELECT id, name, host, domain, status, pool_priority, last_check_at
+            'SELECT id, name, host, domain, status, pool_priority, pool_sync_pending, last_check_at
              FROM vpn_servers WHERE pool_id = ? ORDER BY pool_priority ASC, id ASC'
         );
         $stmt->execute([$poolId]);
@@ -84,6 +84,7 @@ class ServerPool
                 'status' => $m['status'],
                 'role' => ((int) $m['id'] === $activeId) ? 'active' : 'standby',
                 'dns_points_here' => in_array($m['host'], $resolved, true),
+                'sync_pending' => (int) ($m['pool_sync_pending'] ?? 0) === 1,
             ];
         }
 
@@ -492,6 +493,9 @@ class ServerPool
             if (($m['status'] ?? '') !== 'active') {
                 continue;
             }
+            if ((int) ($m['pool_sync_pending'] ?? 0) === 1) {
+                continue; // client peers incomplete — those clients couldn't connect here
+            }
             if (self::memberCriticalDown($id, $threshold)) {
                 continue;
             }
@@ -675,6 +679,10 @@ class ServerPool
                 error_log("ServerPool::syncClientsToServer: failed peer {$client['public_key']} on server {$serverId}: " . $e->getMessage());
             }
         }
+        // Flag the member as incomplete when any peer failed to sync so it is
+        // excluded from failover candidates; clear it on a fully-successful sync.
+        DB::conn()->prepare('UPDATE vpn_servers SET pool_sync_pending = ? WHERE id = ?')
+            ->execute([$failed > 0 ? 1 : 0, $serverId]);
         return $count;
     }
 
@@ -693,6 +701,13 @@ class ServerPool
                 VpnClient::addClientToServer($memberData, $publicKey, $clientIp);
             } catch (Throwable $e) {
                 error_log("ServerPool::pushPeerToMembers: failed on server {$m['id']}: " . $e->getMessage());
+                // Member is now missing this client's peer — mark it incomplete so
+                // it isn't chosen for failover until re-synced.
+                try {
+                    DB::conn()->prepare('UPDATE vpn_servers SET pool_sync_pending = 1 WHERE id = ?')->execute([(int) $m['id']]);
+                } catch (Throwable $e2) {
+                    // best effort
+                }
             }
         }
     }

@@ -523,6 +523,52 @@ Router::get('/api/servers/{id}/metrics', function ($params) {
     }
 });
 
+// API: latest metric sample per server (bulk). Lets the servers-list / dashboard
+// fill every row's CPU/RAM/Disk/Net badges with ONE request instead of one per
+// server row. Returns { server_id: {cpu_percent, ram_used_mb, ...} }.
+Router::get('/api/servers/metrics/latest', function () {
+    header('Content-Type: application/json');
+    $user = authenticateRequest();
+    if (!$user) {
+        http_response_code(401);
+        echo json_encode(['error' => 'Unauthorized']);
+        return;
+    }
+    try {
+        $pdo = DB::conn();
+        // Restrict to the servers the caller may see.
+        if (($user['role'] ?? '') === 'admin') {
+            $idStmt = $pdo->query('SELECT id FROM vpn_servers');
+        } else {
+            $idStmt = $pdo->prepare('SELECT id FROM vpn_servers WHERE user_id = ?');
+            $idStmt->execute([(int) $user['id']]);
+        }
+        $ids = array_map('intval', $idStmt->fetchAll(PDO::FETCH_COLUMN));
+        if (empty($ids)) {
+            echo json_encode(['success' => true, 'metrics' => (object) []]);
+            return;
+        }
+        $in = implode(',', array_fill(0, count($ids), '?'));
+        // Latest row per server via a join on (server_id, MAX(collected_at)).
+        $sql = "SELECT m.server_id, m.cpu_percent, m.ram_used_mb, m.ram_total_mb,
+                       m.disk_used_gb, m.disk_total_gb, m.network_rx_mbps, m.network_tx_mbps
+                FROM server_metrics m
+                JOIN (SELECT server_id, MAX(collected_at) AS mx FROM server_metrics
+                      WHERE server_id IN ($in) GROUP BY server_id) l
+                  ON m.server_id = l.server_id AND m.collected_at = l.mx";
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute($ids);
+        $out = [];
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $out[(string) $row['server_id']] = $row;
+        }
+        echo json_encode(['success' => true, 'metrics' => (object) $out], JSON_UNESCAPED_SLASHES);
+    } catch (Exception $e) {
+        http_response_code(500);
+        echo json_encode(['error' => $e->getMessage()]);
+    }
+});
+
 // API: Get live server health checks for the monitoring dashboard
 Router::get('/api/servers/{id}/health', function ($params) {
     header('Content-Type: application/json');
