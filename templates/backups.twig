@@ -1,0 +1,180 @@
+{% extends "layout.twig" %}
+
+{% block title %}Бэкапы - {{ app_name }}{% endblock %}
+
+{% block content %}
+<div class="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+  <h1 class="text-3xl font-bold mb-6"><i class="fas fa-database mr-2 text-purple-600"></i>Бэкапы панели</h1>
+
+  {# ---- Settings ---- #}
+  <div class="bg-white rounded shadow p-6 mb-6">
+    <h2 class="font-bold mb-4">Настройки бэкапа (S3)</h2>
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+      <label class="block">Endpoint
+        <input id="b_endpoint" class="mt-1 w-full px-2 py-1 border rounded" value="{{ cfg.s3_endpoint }}" placeholder="s3.ru-7.storage.selcloud.ru"></label>
+      <label class="block">Region
+        <input id="b_region" class="mt-1 w-full px-2 py-1 border rounded" value="{{ cfg.s3_region }}" placeholder="ru-7"></label>
+      <label class="block">Bucket
+        <input id="b_bucket" class="mt-1 w-full px-2 py-1 border rounded" value="{{ cfg.s3_bucket }}" placeholder="vpn-panel-backup"></label>
+      <label class="block">Access Key
+        <input id="b_key" class="mt-1 w-full px-2 py-1 border rounded" value="{{ cfg.s3_key }}"></label>
+      <label class="block">Secret Key
+        <input id="b_secret" type="password" class="mt-1 w-full px-2 py-1 border rounded" placeholder="{{ cfg.s3_secret_set ? '•••••• (задан, пусто = не менять)' : 'secret key' }}"></label>
+      <label class="block">Passphrase шифрования
+        <input id="b_pass" type="password" class="mt-1 w-full px-2 py-1 border rounded" placeholder="{{ cfg.passphrase_set ? '•••••• (задан, пусто = не менять)' : 'парольная фраза' }}"></label>
+      <label class="block">Хранить копий (ротация)
+        <input id="b_retention" type="number" min="1" class="mt-1 w-full px-2 py-1 border rounded" value="{{ cfg.retention }}"></label>
+      <label class="block">Расписание
+        <select id="b_schedule" class="mt-1 w-full px-2 py-1 border rounded">
+          <option value="off"{{ cfg.schedule == 'off' ? ' selected' : '' }}>выключено</option>
+          <option value="daily"{{ cfg.schedule == 'daily' ? ' selected' : '' }}>раз в сутки</option>
+          <option value="12h"{{ cfg.schedule == '12h' ? ' selected' : '' }}>каждые 12ч</option>
+          <option value="6h"{{ cfg.schedule == '6h' ? ' selected' : '' }}>каждые 6ч</option>
+        </select></label>
+    </div>
+    <p class="mt-3 text-[11px] text-amber-700">⚠ Passphrase шифрует все бэкапы — <b>сохрани его отдельно</b> (менеджер паролей). Потеряешь — бэкапы в S3 не расшифруешь.</p>
+    <div class="mt-4 flex gap-2">
+      <button id="b_test" class="px-3 py-1.5 bg-gray-600 text-white rounded text-sm">Проверить подключение</button>
+      <button id="b_save" class="px-3 py-1.5 bg-purple-600 text-white rounded text-sm">Сохранить</button>
+      <span id="b_settingsMsg" class="text-sm text-gray-600 self-center"></span>
+    </div>
+  </div>
+
+  {# ---- Backups list ---- #}
+  <div class="bg-white rounded shadow p-6">
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="font-bold">Копии в S3</h2>
+      <button id="b_create" class="px-3 py-1.5 bg-green-600 text-white rounded text-sm"><i class="fas fa-plus mr-1"></i>Создать бэкап сейчас</button>
+    </div>
+    <div id="b_createMsg" class="text-sm text-gray-600 mb-2"></div>
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead class="bg-gray-50 text-gray-500 text-xs uppercase">
+          <tr><th class="px-3 py-2 text-left">Файл</th><th class="px-3 py-2 text-left">Дата</th><th class="px-3 py-2 text-right">Размер</th><th class="px-3 py-2 text-right">Действия</th></tr>
+        </thead>
+        <tbody id="b_list">
+          {% for b in backups %}
+          <tr class="border-t" data-key="{{ b.key }}">
+            <td class="px-3 py-2 font-mono text-xs">{{ b.name }}</td>
+            <td class="px-3 py-2 text-gray-500">{{ b.modified }}</td>
+            <td class="px-3 py-2 text-right">{{ b.size_h }}</td>
+            <td class="px-3 py-2 text-right whitespace-nowrap">
+              <button data-act="info" class="px-2 py-0.5 bg-gray-500 text-white rounded text-xs" title="Дата и APP_ENCRYPTION_KEY">Инфо</button>
+              <button data-act="restore" class="px-2 py-0.5 bg-blue-600 text-white rounded text-xs">Восстановить</button>
+              <button data-act="delete" class="px-2 py-0.5 bg-red-600 text-white rounded text-xs">Удалить</button>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <p id="b_empty" class="text-gray-400 text-sm py-4{{ backups|length > 0 ? ' hidden' : '' }}">Бэкапов пока нет.</p>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  function val(id) { return document.getElementById(id).value.trim(); }
+  function collectSettings() {
+    return {
+      s3_endpoint: val('b_endpoint'), s3_region: val('b_region'), s3_bucket: val('b_bucket'),
+      s3_key: val('b_key'), s3_secret: val('b_secret'), passphrase: val('b_pass'),
+      retention: Number(val('b_retention')) || 14, schedule: document.getElementById('b_schedule').value
+    };
+  }
+  function post(url, body) {
+    return fetch(url, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body || {}) }).then(r => r.json());
+  }
+
+  document.getElementById('b_test').addEventListener('click', function () {
+    var m = document.getElementById('b_settingsMsg'); m.textContent = 'Проверка…';
+    post('/backups/test', collectSettings()).then(function (d) {
+      m.textContent = d.message || (d.success ? 'OK' : 'ошибка');
+      m.className = 'text-sm self-center ' + (d.success ? 'text-green-600' : 'text-red-600');
+    }).catch(function (e) { m.textContent = 'Ошибка: ' + e; });
+  });
+
+  document.getElementById('b_save').addEventListener('click', function () {
+    var m = document.getElementById('b_settingsMsg'); m.textContent = 'Сохранение…';
+    post('/backups/settings', collectSettings()).then(function (d) {
+      m.textContent = d.message || (d.success ? 'Сохранено — загружаю список…' : (d.error || 'ошибка'));
+      m.className = 'text-sm self-center ' + (d.success ? 'text-green-600' : 'text-red-600');
+      if (d.success) {
+        document.getElementById('b_secret').value = ''; document.getElementById('b_pass').value = '';
+        refresh(); // S3 connected → show available backups immediately
+      }
+    }).catch(function (e) { m.textContent = 'Ошибка: ' + e; });
+  });
+
+  function renderList(items) {
+    var tb = document.getElementById('b_list');
+    tb.innerHTML = (items || []).map(function (b) {
+      return '<tr class="border-t" data-key="' + b.key + '">' +
+        '<td class="px-3 py-2 font-mono text-xs">' + b.name + '</td>' +
+        '<td class="px-3 py-2 text-gray-500">' + (b.modified || '') + '</td>' +
+        '<td class="px-3 py-2 text-right">' + (b.size_h || '') + '</td>' +
+        '<td class="px-3 py-2 text-right whitespace-nowrap">' +
+          '<button data-act="info" class="px-2 py-0.5 bg-gray-500 text-white rounded text-xs">Инфо</button> ' +
+          '<button data-act="restore" class="px-2 py-0.5 bg-blue-600 text-white rounded text-xs">Восстановить</button> ' +
+          '<button data-act="delete" class="px-2 py-0.5 bg-red-600 text-white rounded text-xs">Удалить</button>' +
+        '</td></tr>';
+    }).join('');
+    document.getElementById('b_empty').classList.toggle('hidden', (items || []).length > 0);
+    bindRows();
+  }
+  function refresh() { post('/backups/list').then(function (d) { if (d.success) renderList(d.backups); }); }
+
+  document.getElementById('b_create').addEventListener('click', function () {
+    var m = document.getElementById('b_createMsg'); m.textContent = 'Создание бэкапа (дамп + шифрование + загрузка в S3)…';
+    post('/backups/create').then(function (d) {
+      m.textContent = d.message || (d.success ? 'Готово' : (d.error || 'ошибка'));
+      showToast(d.message || (d.success ? 'Бэкап создан' : (d.error || 'Ошибка')), d.success ? 'success' : 'error');
+      refresh();
+    }).catch(function (e) { m.textContent = 'Ошибка: ' + e; });
+  });
+
+  function bindRows() {
+    document.querySelectorAll('#b_list [data-act]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var tr = btn.closest('tr'); var key = tr.getAttribute('data-key'); var act = btn.getAttribute('data-act');
+        if (act === 'info') {
+          btn.disabled = true;
+          post('/backups/inspect', { key: key }).then(function (i) {
+            btn.disabled = false;
+            if (!i.success) { showToast(i.message || 'Не удалось прочитать бэкап', 'error'); return; }
+            showToast('Бэкап от ' + (i.created || '?') + ' · APP_ENCRYPTION_KEY ' + (i.app_key_matches ? 'совпадает с текущим' : 'ОТЛИЧАЕТСЯ (для DR пропиши в .env)'), i.app_key_matches ? 'success' : 'info');
+            window.prompt('APP_ENCRYPTION_KEY из этого бэкапа (скопируй):', i.app_key || '');
+          }).catch(function (e) { btn.disabled = false; showToast('Ошибка: ' + e, 'error'); });
+          return;
+        }
+        if (act === 'delete') {
+          showConfirmModal('Удалить бэкап ' + tr.querySelector('td').textContent + ' из S3?', 'Удалить бэкап?', 'Удалить').then(function (ok) {
+            if (!ok) return;
+            post('/backups/delete', { key: key }).then(function (d) { showToast(d.message || (d.success ? 'Удалён' : d.error), d.success ? 'success' : 'error'); refresh(); });
+          });
+        } else if (act === 'restore') {
+          btn.disabled = true; btn.textContent = '…';
+          post('/backups/inspect', { key: key }).then(function (info) {
+            btn.disabled = false; btn.textContent = 'Восстановить';
+            if (!info.success) { showToast(info.message || 'Не удалось прочитать бэкап', 'error'); return; }
+            var warn = '';
+            if (!info.app_key_matches) {
+              warn = '\n\n⚠ APP_ENCRYPTION_KEY в этом бэкапе ОТЛИЧАЕТСЯ от текущего. Для корректной расшифровки секретов после восстановления нужен ключ из бэкапа:\n' + (info.app_key || '(не найден)') + '\nПропиши его в .env этого хоста ПЕРЕД использованием восстановленных данных.';
+            }
+            showConfirmModal('Восстановить БД из бэкапа от ' + (info.created || '?') + '?\nТекущая БД будет ПЕРЕЗАПИСАНА.' + warn, 'Восстановить из бэкапа?', 'Восстановить').then(function (ok) {
+              if (!ok) return;
+              var m = document.getElementById('b_createMsg'); m.textContent = 'Восстановление БД…';
+              post('/backups/restore', { key: key }).then(function (d) {
+                m.textContent = d.message || (d.success ? 'Восстановлено' : d.error);
+                showToast(d.message || (d.success ? 'Восстановлено' : d.error), d.success ? 'success' : 'error');
+              });
+            });
+          }).catch(function (e) { btn.disabled = false; btn.textContent = 'Восстановить'; showToast('Ошибка: ' + e, 'error'); });
+        }
+      });
+    });
+  }
+  bindRows();
+})();
+</script>
+{% endblock %}
