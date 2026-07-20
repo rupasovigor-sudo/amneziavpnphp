@@ -575,7 +575,9 @@ function requireApiAuth(): ?array
         http_response_code(401);
         header('Content-Type: application/json');
         echo json_encode(['error' => 'Authentication required']);
-        return null;
+        // Returning alone would let a caller that ignores the null keep running
+        // the protected handler after the 401 was already sent.
+        exit;
     }
 
     return $user;

@@ -531,6 +531,15 @@ class VpnClient
                         }
                     }
                 } catch (Exception $e) {
+                    // Falling through leaves server_host/server_port at the row
+                    // defaults, so the client silently gets a config pointing at
+                    // the wrong endpoint. Make it visible.
+                    error_log(sprintf(
+                        'VpnClient: could not read server_protocols.config_data for server %d / protocol %d: %s — using server row defaults',
+                        $serverId,
+                        $protocolId,
+                        $e->getMessage()
+                    ));
                 }
             }
             if (is_array($extras)) {
@@ -564,6 +573,11 @@ class VpnClient
                     if ($passTrim !== '')
                         $pass = $passTrim;
                 } catch (Exception $e) {
+                    // Swallowing this meant the client silently fell back to the
+                    // hardcoded 'amnezia' password below — a predictable
+                    // credential nobody would notice was in use.
+                    error_log('VpnClient: protocol password_command failed: ' . $e->getMessage()
+                        . ' — falling back to the default password');
                 }
             }
             if ($pass === null) {

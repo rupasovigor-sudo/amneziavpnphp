@@ -38,6 +38,14 @@ RUN git config --global --add safe.directory /var/www/html \
 # Configure Apache
 COPY apache.conf /etc/apache2/sites-available/000-default.conf
 
+# Don't advertise exact Apache/PHP versions: it hands an attacker a ready-made
+# list of version-specific exploits to try. The zz- prefix matters: Debian's
+# stock security.conf sets ServerTokens OS and conf-enabled loads alphabetically,
+# so anything sorting earlier is simply overridden.
+RUN printf '%s\n' 'ServerTokens Prod' 'ServerSignature Off' > /etc/apache2/conf-available/zz-security-tokens.conf \
+    && a2enconf zz-security-tokens \
+    && printf '%s\n' 'expose_php = Off' > /usr/local/etc/php/conf.d/zz-hide-version.ini
+
 # Set permissions and create writable directories
 RUN mkdir -p /var/www/html/backups /var/www/html/logs /var/www/html/storage/ssh \
     && chown -R www-data:www-data /var/www/html \

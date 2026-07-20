@@ -52,6 +52,26 @@ class VpnServer
             throw new Exception('Server not found');
         }
         $this->data = self::decryptServerSecrets($this->data);
+        // Single choke point for the container name. It is interpolated into
+        // ~50 shell commands across the codebase; sanitising it here means none
+        // of those can be turned into command injection, instead of trusting
+        // every one of them to remember escapeshellarg. Docker names are
+        // [a-zA-Z0-9][a-zA-Z0-9_.-]* anyway, so nothing legitimate is lost.
+        if (isset($this->data['container_name'])) {
+            $this->data['container_name'] = self::sanitizeContainerName((string) $this->data['container_name']);
+        }
+    }
+
+    /** Strip anything a Docker container name may not contain. */
+    public static function sanitizeContainerName(string $name): string
+    {
+        $clean = preg_replace('/[^a-zA-Z0-9_.-]/', '', trim($name)) ?? '';
+        // A leading separator is illegal for Docker too.
+        $clean = ltrim($clean, '_.-');
+        if ($clean !== '' && $clean !== trim($name)) {
+            error_log('VpnServer: container name sanitised: ' . json_encode(trim($name)) . ' -> ' . json_encode($clean));
+        }
+        return $clean;
     }
 
     /**

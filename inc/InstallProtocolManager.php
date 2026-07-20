@@ -8,7 +8,7 @@ class InstallProtocolManager
 
     private static function persistServerContainerName(int $serverId, string $containerName): void
     {
-        $containerName = trim($containerName);
+        $containerName = VpnServer::sanitizeContainerName($containerName);
         if ($serverId <= 0 || $containerName === '') {
             return;
         }

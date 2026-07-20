@@ -22,6 +22,12 @@ class Auth {
     $user = $stmt->fetch();
     if (!$user) return false;
     if (!password_verify($password, $user['password_hash'])) return false;
+    // A deactivated account must not be able to log in. There is no UI to
+    // deactivate users yet (they get deleted), so this never fired — which is
+    // exactly why it would be missed the day such a UI appears.
+    if (array_key_exists('status', $user) && $user['status'] !== null && $user['status'] !== 'active') {
+      return false;
+    }
     session_regenerate_id(true);
     $_SESSION['user_id'] = (int)$user['id'];
     $pdo->prepare('UPDATE users SET last_login_at = NOW() WHERE id = ?')->execute([$user['id']]);
