@@ -1027,8 +1027,39 @@ class VpnClient
 
                 $awgParamsJson = !empty($awgParams) ? json_encode($awgParams) : null;
 
-                // Update vpn_servers with all extracted values including DNS
-                if (!empty($psk)) {
+                // POOL MEMBERS: the authoritative identity lives in server_pools,
+                // not in the container. Adopting whatever the container happens to
+                // hold would silently replace the shared keys with server-local
+                // ones — client configs built afterwards would work on this member
+                // only and break on failover, while reconcilePeers kept pushing the
+                // pool PSK (mismatch). server_pools stays intact, so nothing would
+                // ever flag the divergence. Surface it instead of absorbing it.
+                if (!empty($serverData['pool_id'])) {
+                    $poolPub = trim((string) ($serverData['server_public_key'] ?? ''));
+                    if ($poolPub !== '' && $pubKey !== '' && $pubKey !== $poolPub) {
+                        error_log(sprintf(
+                            'VpnClient::syncServerKeysFromContainer: server #%d is a pool member but its container identity differs from the pool (container=%s..., pool=%s...); refusing to overwrite and flagging for re-sync.',
+                            (int) $serverData['id'],
+                            substr($pubKey, 0, 12),
+                            substr($poolPub, 0, 12)
+                        ));
+                        $pdo->prepare(
+                            'UPDATE vpn_servers SET pool_sync_pending = 1, validated_clean = NULL, validation_note = ?
+                             WHERE id = ?'
+                        )->execute([
+                            'идентичность awg2 на сервере разошлась с пулом — требуется пересборка awg2',
+                            $serverData['id'],
+                        ]);
+                    }
+                    // Only the non-identity field is safe to refresh here.
+                    if (self::hasLastKeySyncColumn()) {
+                        $pdo->prepare('UPDATE vpn_servers SET dns_servers = ?, last_key_sync_at = NOW() WHERE id = ?')
+                            ->execute([$dns, $serverData['id']]);
+                    } else {
+                        $pdo->prepare('UPDATE vpn_servers SET dns_servers = ? WHERE id = ?')
+                            ->execute([$dns, $serverData['id']]);
+                    }
+                } elseif (!empty($psk)) {
                     if (self::hasLastKeySyncColumn()) {
                         $stmt = $pdo->prepare('UPDATE vpn_servers SET server_public_key = ?, preshared_key = ?, vpn_port = ?, awg_params = ?, dns_servers = ?, last_key_sync_at = NOW() WHERE id = ?');
                         $stmt->execute([$pubKey, $psk, (int) $port, $awgParamsJson, $dns, $serverData['id']]);

@@ -745,9 +745,15 @@ class ServerPool
         // 1. Adopt the pool identity in the DB so client-config building and
         //    peer-add use the shared keys, and record membership.
         DB::conn()->prepare(
+            // pool_sync_pending=1 / validated_clean=NULL from the very first write:
+            // between here and a successful sync the member has NO working awg2
+            // (step 2 wipes it). Leaving stale flags from a previous membership
+            // let pickHealthyStandby route every client onto a server with no VPN
+            // at all if the deploy then failed.
             'UPDATE vpn_servers
              SET pool_id = ?, pool_priority = ?, server_public_key = ?, preshared_key = ?,
-                 awg_params = ?, vpn_subnet = ?, vpn_port = ?, domain = ?
+                 awg_params = ?, vpn_subnet = ?, vpn_port = ?, domain = ?,
+                 pool_sync_pending = 1, validated_clean = NULL
              WHERE id = ?'
         )->execute([
             $poolId,
@@ -772,11 +778,19 @@ class ServerPool
         );
 
         // 3. Deploy awg2 with the shared identity.
+        // activate() can THROW rather than return success=false; without this
+        // catch the rollback below was skipped entirely, leaving the server
+        // recorded as a pool member with its awg2 wiped.
         $protocol = InstallProtocolManager::getBySlug('awg2');
-        $deploy = InstallProtocolManager::activate($server, $protocol, [
-            'pool_identity' => self::identityOptions($pool),
-            'server_port' => (int) ($pool['vpn_port'] ?? 443) ?: 443,
-        ]);
+        try {
+            $deploy = InstallProtocolManager::activate($server, $protocol, [
+                'pool_identity' => self::identityOptions($pool),
+                'server_port' => (int) ($pool['vpn_port'] ?? 443) ?: 443,
+            ]);
+        } catch (Throwable $e) {
+            error_log("ServerPool::addMember: deploy threw on {$serverId}: " . $e->getMessage());
+            $deploy = ['success' => false, 'error' => $e->getMessage()];
+        }
         if (empty($deploy['success'])) {
             // Roll the DB membership/identity back to its pre-join state. The
             // remote awg2 identity was already wiped in step 2, so the server now
