@@ -282,8 +282,12 @@ class ServerPool
         if (!empty($memberIds)) {
             $in = implode(',', array_fill(0, count($memberIds), '?'));
             $stmtC = DB::conn()->prepare(
+                // Must mirror reconcilePeers() exactly: it skips rows with an
+                // empty client_ip, so counting them here would make expectedPeers
+                // permanently exceed the live peer count and silently block both
+                // manual switching and auto-failover.
                 "SELECT COUNT(DISTINCT public_key) FROM vpn_clients
-                 WHERE server_id IN ($in) AND status = 'active' AND public_key <> ''"
+                 WHERE server_id IN ($in) AND status = 'active' AND public_key <> '' AND client_ip <> ''"
             );
             $stmtC->execute($memberIds);
             $expectedPeers = (int) $stmtC->fetchColumn();

@@ -148,6 +148,10 @@ function collectForServer(array $server, AlertManager $alertManager, array $cfg)
  * (`php collect_metrics.php --server-id=N`), at most $limit at a time.
  * Child output is echoed as each child finishes.
  */
+// Upper bound for a single server's collection. Above the SSH timeout used
+// inside VpnServer::executeCommand so a normal slow host still finishes.
+const CHILD_TIMEOUT_SECONDS = 300;
+
 function runCollectorPool(array $servers, int $limit): void
 {
     $queue = array_values($servers);
@@ -166,7 +170,7 @@ function runCollectorPool(array $servers, int $limit): void
                 continue;
             }
             stream_set_blocking($pipes[1], false);
-            $running[] = ['proc' => $proc, 'pipe' => $pipes[1], 'server' => $server, 'buf' => ''];
+            $running[] = ['proc' => $proc, 'pipe' => $pipes[1], 'server' => $server, 'buf' => '', 'started' => time()];
         }
 
         $read = array_column($running, 'pipe');
@@ -179,6 +183,18 @@ function runCollectorPool(array $servers, int $limit): void
         foreach ($running as $i => $r) {
             $running[$i]['buf'] .= (string) stream_get_contents($r['pipe']);
             $status = proc_get_status($r['proc']);
+
+            // A child stuck on SSH to a half-dead host used to hold the whole
+            // pool open forever: no rollup, no cleanup and — worst — no
+            // ServerPool::checkAndFailover(), so auto-failover was dead exactly
+            // when it was needed. Kill the straggler and move on.
+            if ($status['running'] && (time() - (int) ($r['started'] ?? 0)) > CHILD_TIMEOUT_SECONDS) {
+                echo "  ERROR: collector child for server #{$r['server']['id']} exceeded "
+                    . CHILD_TIMEOUT_SECONDS . "s — terminating\n";
+                @proc_terminate($r['proc'], SIGKILL);
+                $status['running'] = false;
+            }
+
             if (!$status['running']) {
                 $running[$i]['buf'] .= (string) stream_get_contents($r['pipe']);
                 fclose($r['pipe']);
@@ -222,6 +238,17 @@ foreach (array_slice($argv ?? [], 1) as $arg) {
         }
         try {
             collectForServer($server, new AlertManager(), $collectorCfg);
+            // collector_exception was only ever OPENED, never closed, so one
+            // transient failure left a critical alert hanging forever. A clean
+            // run resolves it.
+            (new AlertManager())->recordCheck(
+                $childServerId,
+                (string) ($server['name'] ?? ''),
+                'collector_exception',
+                true,
+                'Сбор метрик отработал без ошибок',
+                'critical'
+            );
         } catch (Throwable $e) {
             echo "  ERROR: " . $e->getMessage() . "\n";
             try {
@@ -284,6 +311,14 @@ while (true) {
             foreach ($servers as $server) {
                 try {
                     collectForServer($server, $alertManager, $collectorCfg);
+                    $alertManager->recordCheck(
+                        (int) $server['id'],
+                        (string) $server['name'],
+                        'collector_exception',
+                        true,
+                        'Сбор метрик отработал без ошибок',
+                        'critical'
+                    );
                 } catch (Exception $e) {
                     echo "  ERROR: " . $e->getMessage() . "\n";
                     try {

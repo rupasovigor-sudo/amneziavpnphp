@@ -317,7 +317,15 @@ class VpnClient
         $ipLockKey = 'amnezia_ip_' . ((int) ($serverData['pool_id'] ?? 0) > 0
             ? 'pool_' . (int) $serverData['pool_id']
             : 'srv_' . $serverId);
-        DB::conn()->prepare('SELECT GET_LOCK(?, 10)')->execute([$ipLockKey]);
+        // The lock exists to stop two concurrent creates handing out the same
+        // client_ip. GET_LOCK returns 0 on timeout — ignoring that meant we
+        // carried on WITHOUT the lock and produced the very duplicate the lock
+        // was added to prevent. Creating under contention is worth failing.
+        $lockStmt = DB::conn()->prepare('SELECT GET_LOCK(?, 10)');
+        $lockStmt->execute([$ipLockKey]);
+        if ((int) $lockStmt->fetchColumn() !== 1) {
+            throw new Exception('Не удалось получить блокировку выдачи IP — другая операция создания клиента ещё идёт. Повторите через несколько секунд.');
+        }
 
         $strictIpSync = in_array(strtolower((string) getenv('AMNEZIA_STRICT_IP_SYNC')), ['1', 'true', 'yes'], true);
         $clientIP = self::timed('create.get_next_client_ip', [
@@ -2060,19 +2068,34 @@ BASH;
                 }
             }
 
-            $stmt = $pdo->prepare('
-                UPDATE vpn_clients
-                SET bytes_sent = ?, bytes_received = ?, last_handshake = ?, current_speed = ?, speed_up = ?, speed_down = ?, last_sync_at = NOW()
-                WHERE id = ?
-            ');
-
+            // bytes_* are pool-wide MONOTONIC totals maintained by the collector
+            // (ServerMonitoring::accumulateTraffic). The figures read here are the
+            // RAW per-server counters of the client's HOME server — in a pool the
+            // session usually lives on a different member, so those are near zero.
+            // Writing them straight in wiped the accumulated total and reset the
+            // traffic limits that read these columns. Speeds are instantaneous and
+            // safe to refresh; the totals stay owned by the collector.
+            //
+            // last_handshake is likewise the max across all pool members, so it may
+            // only ever move FORWARD — never back, and never to NULL.
             $lastHandshake = $stats['last_handshake'] > 0
                 ? date('Y-m-d H:i:s', $stats['last_handshake'])
                 : null;
 
+            $stmt = $pdo->prepare('
+                UPDATE vpn_clients
+                SET last_handshake = CASE
+                        WHEN ? IS NULL THEN last_handshake
+                        WHEN last_handshake IS NULL OR last_handshake < ? THEN ?
+                        ELSE last_handshake
+                    END,
+                    current_speed = ?, speed_up = ?, speed_down = ?, last_sync_at = NOW()
+                WHERE id = ?
+            ');
+
             return $stmt->execute([
-                $stats['bytes_sent'],
-                $stats['bytes_received'],
+                $lastHandshake,
+                $lastHandshake,
                 $lastHandshake,
                 $currentSpeed,
                 $speedUp,
