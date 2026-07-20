@@ -85,12 +85,27 @@ function deploy(mode) {
   hideActions();
   setButtonState(true, mode ? '{{ t('form.processing') }}' : '{{ t('deploy.in_progress') }}');
 
+  // A config-conflict ("requires_action") reply comes back fast (detection); the
+  // actual install is the slow ~2 min part. If no reply arrives within the window,
+  // it's a long install: redirect to the servers list (the request finishes via
+  // keepalive + server-side ignore_user_abort, and the list auto-refreshes the
+  // "разворачивается" badge to active). Fast replies are handled as before.
+  var deployRedirected = false;
+  var deployRedirectTimer = setTimeout(function () {
+    deployRedirected = true;
+    appendLog('⏳ Установка продолжается в фоне (~2 мин). Открываю список серверов — статус обновится там сам.', 'text-blue-300');
+    window.location.href = '/servers';
+  }, 12000);
+
   fetch('/servers/{{ server.id }}/deploy', {
     method: 'POST',
+    keepalive: true,
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload)
   })
     .then(async response => {
+      clearTimeout(deployRedirectTimer);
+      if (deployRedirected) return null;
       const data = await response.json().catch(() => ({ success: false, error: '{{ t('deploy.invalid_response') }}' }));
       if (!response.ok && !data.requires_action) {
         throw new Error(data.error || ('HTTP ' + response.status));
@@ -98,6 +113,7 @@ function deploy(mode) {
       return data;
     })
     .then(data => {
+      if (deployRedirected || data === null) return;
       if (data.requires_action) {
         pendingDecisionToken = data.decision_token || null;
         const details = data.details || {};
@@ -130,6 +146,8 @@ function deploy(mode) {
       }
     })
     .catch(error => {
+      clearTimeout(deployRedirectTimer);
+      if (deployRedirected) return;
       appendLog('❌ {{ t('deploy.network_error') }}: ' + error.message, 'text-red-500 font-bold');
       setButtonState(false, '{{ t('deploy.retry') }}');
     });

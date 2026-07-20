@@ -594,6 +594,7 @@ function requireApiAuth(): ?array
 require __DIR__ . '/routes/web.php';
 require __DIR__ . '/routes/api.php';
 require __DIR__ . '/routes/admin_settings.php';
+require __DIR__ . '/routes/backups.php';
 // Dispatch router
 if (csrfProtectedRequest($_SERVER['REQUEST_METHOD'], $_SERVER['REQUEST_URI']) && !verifyCsrfRequest()) {
     rejectInvalidCsrf();

@@ -13,6 +13,7 @@ RUN apt-get update && apt-get install -y \
     openssh-client \
     qrencode \
     cron \
+    logrotate \
     libldap2-dev \
     docker.io \
     && docker-php-ext-configure ldap --with-libdir=lib/x86_64-linux-gnu/ \
@@ -43,14 +44,27 @@ RUN mkdir -p /var/www/html/backups /var/www/html/logs \
     && chmod -R 755 /var/www/html/public \
     && chmod 775 /var/www/html/backups /var/www/html/logs
 
-# Setup cron jobs
+# Setup cron jobs.
+# NB: the www-data jobs redirect into /var/log/cron.log. If that file is not
+# group-writable the shell REDIRECT fails before the command runs, so every
+# www-data job dies silently — hence the explicit chown/chmod below.
 RUN echo "0 * * * * www-data cd /var/www/html && /usr/local/bin/php bin/check_expired_clients.php >> /var/log/cron.log 2>&1" > /etc/cron.d/amnezia-cron \
     && echo "0 * * * * www-data cd /var/www/html && /usr/local/bin/php bin/check_traffic_limits.php >> /var/log/cron.log 2>&1" >> /etc/cron.d/amnezia-cron \
-    && echo "*/30 * * * * www-data cd /var/www/html && /usr/local/bin/php bin/sync_ldap_users.php >> /var/log/ldap_sync.log 2>&1" >> /etc/cron.d/amnezia-cron \
     && echo "*/3 * * * * root /bin/bash /var/www/html/bin/monitor_metrics.sh >> /var/log/metrics_monitor.log 2>&1" >> /etc/cron.d/amnezia-cron \
+    && echo "0 * * * * www-data cd /var/www/html && /usr/local/bin/php bin/backup_cron.php >> /var/log/cron.log 2>&1" >> /etc/cron.d/amnezia-cron \
+    && echo "17 5 * * * www-data cd /var/www/html && /usr/local/bin/php bin/update_audit_cron.php >> /var/log/cron.log 2>&1" >> /etc/cron.d/amnezia-cron \
+    && printf '%s\n' \
+       '/var/log/cron.log /var/log/metrics_collector.log /var/log/metrics_collector_errors.log /var/log/metrics_monitor.log /var/log/logrotate.log {' \
+       '    daily' '    rotate 7' '    maxsize 20M' '    compress' '    delaycompress' '    missingok' '    notifempty' '    copytruncate' '}' \
+       '/var/www/html/logs/*.log {' \
+       '    su www-data www-data' '    weekly' '    rotate 4' '    maxsize 10M' '    compress' '    missingok' '    notifempty' '    copytruncate' '}' \
+       > /etc/logrotate.d/amnezia \
+    && echo "30 2 * * * root /usr/sbin/logrotate /etc/logrotate.d/amnezia >> /var/log/logrotate.log 2>&1" >> /etc/cron.d/amnezia-cron \
     && chmod 0644 /etc/cron.d/amnezia-cron \
     && crontab /etc/cron.d/amnezia-cron \
     && touch /var/log/cron.log \
+    && chown root:www-data /var/log/cron.log \
+    && chmod 664 /var/log/cron.log \
     && touch /var/log/metrics_monitor.log \
     && touch /var/log/metrics_collector.log \
     && touch /var/log/ldap_sync.log
@@ -62,7 +76,7 @@ RUN chmod +x /var/www/html/bin/monitor_metrics.sh
 RUN echo '#!/bin/bash\n\
 service cron start\n\
 # Ensure writable directories exist with correct ownership\n\
-mkdir -p /var/www/html/backups /var/www/html/logs\n\
+mkdir -p /var/www/html/backups /var/www/html/logs\n# Keep the cron log writable by www-data (see note above).\ntouch /var/log/cron.log\nchown root:www-data /var/log/cron.log 2>/dev/null || true\nchmod 664 /var/log/cron.log 2>/dev/null || true\n\
 chown www-data:www-data /var/www/html/backups /var/www/html/logs\n\
 chmod 775 /var/www/html/backups /var/www/html/logs\n\
 if [ -f /var/www/html/.env ]; then\n\

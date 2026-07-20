@@ -43,36 +43,59 @@
 <div class="max-w-7xl mx-auto px-4 py-8">
   <div class="mb-6 flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
     <div>
-      <h1 class="text-3xl font-bold">{{ server.name }}</h1>
+      <h1 class="text-3xl font-bold flex items-center gap-2">
+        <span id="serverNameText">{{ server.name }}</span>
+        <button type="button" id="renameServerBtn" class="text-gray-400 hover:text-purple-600 text-base" title="Переименовать"><i class="fas fa-pen"></i></button>
+      </h1>
+      <div id="renameServerBox" class="mt-1 items-center gap-2" style="display:none">
+        <input id="renameServerInput" type="text" maxlength="100" class="px-2 py-1 border rounded text-lg" value="{{ server.name }}">
+        <button type="button" id="renameServerSave" class="px-2 py-1 bg-purple-600 text-white rounded text-sm">Сохранить</button>
+        <button type="button" id="renameServerCancel" class="px-2 py-1 bg-gray-300 rounded text-sm">Отмена</button>
+      </div>
       <p class="text-gray-600">{{ server.host }}</p>
     </div>
+    <script>
+    (function() {
+      var SID_R = {{ server.id }};
+      var btn = document.getElementById('renameServerBtn'),
+          box = document.getElementById('renameServerBox'),
+          txt = document.getElementById('serverNameText'),
+          inp = document.getElementById('renameServerInput'),
+          save = document.getElementById('renameServerSave'),
+          cancel = document.getElementById('renameServerCancel');
+      if (!btn) return;
+      function show(on) { box.style.display = on ? 'flex' : 'none'; if (on) { inp.value = txt.textContent.trim(); inp.focus(); } }
+      btn.addEventListener('click', function() { show(true); });
+      cancel.addEventListener('click', function() { show(false); });
+      save.addEventListener('click', function() {
+        var name = inp.value.trim();
+        if (!name) return;
+        save.disabled = true;
+        fetch('/servers/' + SID_R + '/rename', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ name: name }) })
+          .then(function(r){ return r.json(); }).then(function(d){
+            if (d.success) { txt.textContent = d.name; show(false); if (window.showToast) showToast('Сервер переименован', 'success'); }
+            else if (window.showToast) showToast(d.error || 'Ошибка', 'error');
+          }).catch(function(e){ if (window.showToast) showToast('Ошибка: ' + e, 'error'); })
+          .finally(function(){ save.disabled = false; });
+      });
+      inp.addEventListener('keydown', function(e){ if (e.key === 'Enter') save.click(); if (e.key === 'Escape') show(false); });
+    })();
+    </script>
     <a href="/servers/{{ server.id }}/monitoring" class="inline-flex items-center justify-center px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700 text-sm font-medium">
       <i class="fas fa-chart-line mr-2"></i>Мониторинг
     </a>
   </div>
 
-  <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
-    <div class="bg-white rounded shadow p-6">
-      <h3 class="font-bold mb-4">{{ t('servers.server_info') }}</h3>
-      <dl class="space-y-2">
-        <div><dt class="text-sm text-gray-600">{{ t('common.status') }}</dt><dd><span class="px-2 py-1 bg-green-100 text-green-800 rounded text-sm">{{ server.status }}</span></dd></div>
-        {% if server_protocols|length <= 1 %}
-        <div><dt class="text-sm text-gray-600">VPN Port</dt><dd>{{ server.vpn_port }}</dd></div>
-        <div><dt class="text-sm text-gray-600">Subnet</dt><dd>{{ server.vpn_subnet }}</dd></div>
-        {% endif %}
-
-      </dl>
-
-      {# ── Endpoint domain / failover pool ── #}
-      <div class="mt-4 p-3 border rounded-lg bg-gray-50">
+      <div class="bg-white rounded shadow p-6 mb-8">
+      <div class="p-3 border rounded-lg bg-gray-50">
         <div class="flex items-center justify-between mb-2">
           <span class="text-sm font-semibold text-gray-700"><i class="fas fa-globe mr-1 text-purple-600"></i>Домен и пул серверов</span>
-          <span id="poolBadge" class="px-2 py-0.5 rounded text-xs bg-gray-200 text-gray-600">…</span>
+          <span id="poolBadge" class="px-2 py-0.5 rounded text-sm bg-gray-200 text-gray-600">…</span>
         </div>
         <div class="mb-2 flex items-center gap-2">
-          <span class="text-[11px] text-gray-600"><i class="fas fa-signal mr-1 text-purple-600"></i>Живые клиенты:</span>
-          <span id="liveClientsVal" class="text-[11px] text-gray-500">…</span>
-          <button id="liveRefreshBtn" class="px-2 py-0.5 rounded text-[10px] bg-slate-500 text-white" title="Обновить — показывает пиров с недавним рукопожатием (реальный трафик, доказывает, что сервер принимает клиентов)"><i class="fas fa-rotate"></i></button>
+          <span class="text-sm text-gray-600"><i class="fas fa-signal mr-1 text-purple-600"></i>Живые клиенты:</span>
+          <span id="liveClientsVal" class="text-sm text-gray-500">…</span>
+          <button id="liveRefreshBtn" class="px-2 py-0.5 rounded text-sm bg-slate-500 text-white" title="Обновить — показывает пиров с недавним рукопожатием (реальный трафик, доказывает, что сервер принимает клиентов)"><i class="fas fa-rotate"></i></button>
         </div>
 
         {# Standalone (not in a pool): manage the domain + optionally create a pool #}
@@ -88,26 +111,61 @@
               <i class="fas fa-layer-group mr-1"></i>Создать пул из этого сервера
             </button>
             <span id="poolJoinBox" class="inline-flex items-center gap-2" style="display:none">
-              <span class="text-xs text-gray-400">или</span>
+              <span class="text-sm text-gray-400">или</span>
               <select id="poolJoinSelect" class="px-2 py-1 border rounded text-sm"></select>
               <button id="poolJoinBtn" class="px-3 py-1 bg-teal-600 text-white rounded text-sm">Добавить в пул</button>
             </span>
           </div>
-          <p id="standaloneMsg" class="mt-2 text-[11px] text-gray-500 leading-tight">
+          <p id="standaloneMsg" class="mt-2 text-sm text-gray-500 leading-tight">
             Пул объединяет несколько серверов под одним доменом с общей идентичностью awg2. Клиенты подключаются к <code>domain:443</code>; при недоступности активного сервера домен переключается на резервный без смены конфига. При добавлении в существующий пул сервер передеплоится с общими ключами (~2 мин) и станет резервным (STANDBY).
           </p>
         </div>
 
         {# In a pool: show members, roles, and controls #}
         <div id="poolBox" style="display:none">
-          <div class="text-xs text-gray-600 mb-2">
+          <div class="text-sm text-gray-600 mb-2">
             Пул <b id="poolName"></b> · домен <code id="poolDomain"></code> · клиенты → <code id="poolEndpoint"></code>
+            <button type="button" id="poolEditBtn" class="ml-1 text-gray-400 hover:text-purple-600" title="Изменить имя/домен пула"><i class="fas fa-pen text-sm"></i></button>
+          </div>
+          <div id="poolEditBox" class="mb-2 p-2 bg-gray-50 rounded text-sm" style="display:none">
+            <div class="flex flex-wrap items-center gap-2">
+              <label>Имя: <input id="poolNameInput" type="text" maxlength="100" class="px-2 py-0.5 border rounded"></label>
+              <label>Домен: <input id="poolDomainInput" type="text" maxlength="253" class="px-2 py-0.5 border rounded" placeholder="awg.example.com"></label>
+              <label class="inline-flex items-center gap-1"><input id="poolRepointChk" type="checkbox" checked> репойнт нового домена на активный</label>
+              <button type="button" id="poolEditSave" class="px-2 py-0.5 bg-purple-600 text-white rounded">Сохранить</button>
+              <button type="button" id="poolEditCancel" class="px-2 py-0.5 bg-gray-300 rounded">Отмена</button>
+            </div>
+            <p class="mt-1 text-sm text-amber-700">⚠ Смена домена: клиентские конфиги ведут на старый домен — их нужно перевыпустить. Пустое поле не меняется.</p>
           </div>
           <div id="poolMembers" class="space-y-1"></div>
-          <p id="poolMsg" class="mt-2 text-[11px] text-gray-500 leading-tight">
+          <p id="poolMsg" class="mt-2 text-sm text-gray-500 leading-tight">
             Конфиг клиента <b>единый для всего пула</b> (домен + общие ключи) и синхронизируется на все серверы автоматически — неважно, на каком сервере создавать клиента. <b>ACTIVE</b> — сюда указывает домен и идут клиенты; <b>STANDBY</b> — синхронизирован и готов к переключению.
           </p>
+          <div class="mt-2 pt-2 border-t">
+            <details>
+              <summary class="text-sm text-gray-700 cursor-pointer"><i class="fas fa-route mr-1"></i>AllowedIPs для роутера (full-tunnel, исключает все IP пула)</summary>
+              <div class="mt-2 space-y-2">
+                <p class="text-sm text-gray-500 leading-tight">Для full-tunnel конфига (напр. MikroTik), который не должен заворачивать endpoint обратно в туннель. Вычитает из <code>0.0.0.0/0</code> <b>все ingress-IP пула</b> + локальные исключения ниже — конфиг переживает failover без правок. <b>Перегенерируй при добавлении нового сервера в пул.</b></p>
+                <label class="block text-sm text-gray-600">Локальные исключения — по одному CIDR в строке (свой адрес, LAN, docker-сети):</label>
+                <textarea id="aipExtra" rows="3" class="w-full border rounded px-2 py-1 text-sm font-mono" placeholder="10.8.1.8/32&#10;172.18.20.0/30"></textarea>
+                <button type="button" id="aipGenBtn" class="px-2 py-1 bg-slate-700 text-white rounded text-sm"><i class="fas fa-gears mr-1"></i>Сгенерировать</button>
+                <div id="aipOut" style="display:none">
+                  <div class="flex items-center justify-between mb-1">
+                    <span class="text-sm text-gray-500">Замени строку <code>AllowedIPs = …</code> в секции <code>[Peer]</code> конфига роутера:</span>
+                    <button type="button" id="aipCopy" class="px-2 py-0.5 bg-gray-200 rounded text-sm">Копировать</button>
+                  </div>
+                  <textarea id="aipResult" rows="4" readonly class="w-full border rounded px-2 py-1 text-sm font-mono bg-gray-50"></textarea>
+                  <p id="aipMeta" class="text-sm text-gray-400 mt-1"></p>
+                </div>
+              </div>
+            </details>
+          </div>
+          <div class="mt-2 pt-2 border-t">
+            <button type="button" id="poolDeleteBtn" class="px-2 py-1 bg-red-600 text-white rounded text-sm"><i class="fas fa-trash mr-1"></i>Удалить пул</button>
+            <span class="text-sm text-gray-400 ml-1">распустит членов (станут standalone) и удалит DNS-запись домена</span>
+          </div>
         </div>
+      </div>
       </div>
       <script>
       (function () {
@@ -115,7 +173,7 @@
         const badge = document.getElementById('poolBadge');
         const standalone = document.getElementById('standaloneBox');
         const poolBox = document.getElementById('poolBox');
-        const setBadge = (t, c) => { badge.textContent = t; badge.className = 'px-2 py-0.5 rounded text-xs ' + c; };
+        const setBadge = (t, c) => { badge.textContent = t; badge.className = 'px-2 py-0.5 rounded text-sm ' + c; };
         const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m]));
 
         function renderPool(d) {
@@ -128,25 +186,44 @@
           setBadge(activeUp ? 'домен → активный' : 'домен ≠ активный', activeUp ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700');
           const rows = d.members.map(m => {
             const roleBadge = m.role === 'active'
-              ? '<span class="px-1.5 py-0.5 rounded text-[10px] bg-green-100 text-green-700">ACTIVE</span>'
-              : '<span class="px-1.5 py-0.5 rounded text-[10px] bg-gray-200 text-gray-600">STANDBY</span>';
+              ? '<span class="px-1.5 py-0.5 rounded text-sm bg-green-100 text-green-700">ACTIVE</span>'
+              : '<span class="px-1.5 py-0.5 rounded text-sm bg-gray-200 text-gray-600">STANDBY</span>';
             const dnsMark = m.dns_points_here ? '<span title="домен указывает сюда" class="text-green-600">◉</span>' : '<span class="text-gray-300">◯</span>';
-            const here = m.id === SID ? ' <span class="text-[10px] text-purple-600">(этот)</span>' : '';
+            const here = m.id === SID ? ' <span class="text-sm text-purple-600">(этот)</span>' : '';
             const syncBadge = m.sync_pending
-              ? '<span title="часть клиентских пиров не синхронизирована — исключён из failover" class="px-1.5 py-0.5 rounded text-[10px] bg-yellow-100 text-yellow-800"><i class="fas fa-triangle-exclamation"></i> рассинхрон</span>'
+              ? '<span title="часть клиентских пиров не синхронизирована — исключён из failover" class="px-1.5 py-0.5 rounded text-sm bg-yellow-100 text-yellow-800"><i class="fas fa-triangle-exclamation"></i> рассинхрон</span>'
               : '';
+            const probedOk = m.validated_clean === null && m.validation_note && m.validation_note.indexOf('reachable') !== -1;
+            const valBadge = m.validated_clean === 0
+              ? `<span title="${esc(m.validation_note || 'пробник: недоступен')}" class="px-1.5 py-0.5 rounded text-sm bg-red-100 text-red-700"><i class="fas fa-xmark"></i> тест не пройден</span>`
+              : (m.validated_clean === 1
+                  ? `<span title="${esc(m.validation_note || 'проверен канарейкой (чистый)')}" class="px-1.5 py-0.5 rounded text-sm bg-green-100 text-green-700"><i class="fas fa-check"></i> чистый</span>`
+                  : (probedOk
+                      ? `<span title="${esc(m.validation_note)} — инфра доступна; чистоту для цензурируемых сетей подтвердит канарейка" class="px-1.5 py-0.5 rounded text-sm bg-sky-100 text-sky-700"><i class="fas fa-plug"></i> инфра ок</span>`
+                      : `<span title="ещё не проверялся handshake-пробником" class="px-1.5 py-0.5 rounded text-sm bg-gray-100 text-gray-500">не проверен</span>`));
+            const dnsMismatch = (m.dns_points_here && m.role !== 'active')
+              ? `<span title="домен резолвится сюда, но активным в пуле числится другой сервер — рассинхрон DNS↔пул" class="px-1.5 py-0.5 rounded text-sm bg-orange-100 text-orange-800"><i class="fas fa-triangle-exclamation"></i> домен ведёт сюда (не активный)</span>`
+              : ((!m.dns_points_here && m.role === 'active')
+                  ? `<span title="числится активным, но домен резолвится не сюда" class="px-1.5 py-0.5 rounded text-sm bg-orange-100 text-orange-800"><i class="fas fa-triangle-exclamation"></i> активный, но домен не здесь</span>`
+                  : '');
             const act = [
-              m.role !== 'active' ? `<button data-activate="${m.id}" class="px-2 py-0.5 rounded text-[10px] bg-blue-600 text-white">Сделать активным</button>` : '',
-              m.sync_pending ? `<button data-resync="${m.id}" class="px-2 py-0.5 rounded text-[10px] bg-yellow-600 text-white">Ре-синк</button>` : '',
+              m.role !== 'active' ? `<button data-probe="${m.id}" class="px-2 py-0.5 rounded text-sm bg-indigo-600 text-white" title="Handshake-пробник с активного сервера: проверяет, что ingress жив/проброшен (не проверяет прожиг)">Проверить</button>` : '',
+              m.role !== 'active' ? `<button data-activate="${m.id}" class="px-2 py-0.5 rounded text-sm bg-blue-600 text-white">Сделать активным</button>` : '',
+              m.sync_pending ? `<button data-resync="${m.id}" class="px-2 py-0.5 rounded text-sm bg-yellow-600 text-white">Ре-синк</button>` : '',
+              (m.validated_clean === 1
+                ? `<button data-markclean="0" data-mid="${m.id}" class="px-2 py-0.5 rounded text-sm bg-gray-400 text-white" title="Снять пометку годности">Снять годность</button>`
+                : `<button data-markclean="1" data-mid="${m.id}" class="px-2 py-0.5 rounded text-sm bg-green-600 text-white" title="Пометить проверенным — станет доступен для авто-failover">Пометить годным</button>`),
             ].join(' ');
             return `<div class="flex items-center justify-between border rounded px-2 py-1 bg-white">
-              <div class="text-xs">${dnsMark} <b>${esc(m.name)}</b>${here} <span class="text-gray-400 font-mono">${esc(m.host)}</span> ${roleBadge} ${syncBadge} <span class="text-[10px] text-gray-400">pri ${m.priority}·${esc(m.status)}</span></div>
+              <div class="text-sm">${dnsMark} <b>${esc(m.name)}</b>${here} <span class="text-gray-400 font-mono">${esc(m.host)}</span> ${roleBadge} ${syncBadge} ${valBadge} <span class="text-sm text-gray-400">pri ${m.priority}·${esc(m.status)}</span></div>
               <div class="flex gap-1">${act}</div>
             </div>`;
           }).join('');
           document.getElementById('poolMembers').innerHTML = rows;
           poolBox.querySelectorAll('[data-activate]').forEach(b => b.addEventListener('click', () => activate(b.getAttribute('data-activate'), b)));
           poolBox.querySelectorAll('[data-resync]').forEach(b => b.addEventListener('click', () => resyncMember(b.getAttribute('data-resync'), b)));
+          poolBox.querySelectorAll('[data-markclean]').forEach(b => b.addEventListener('click', () => markClean(b.getAttribute('data-mid'), b.getAttribute('data-markclean') === '1', b)));
+          poolBox.querySelectorAll('[data-probe]').forEach(b => b.addEventListener('click', () => probeMember(b.getAttribute('data-probe'), b)));
         }
 
         function renderStandalone(d) {
@@ -180,6 +257,24 @@
               document.getElementById('poolMsg').textContent = d.message || (d.dns && d.dns.message) || (d.success ? 'Переключено' : (d.error || 'Ошибка'));
               load();
             }).catch(e => { document.getElementById('poolMsg').textContent = 'Ошибка: ' + e; load(); });
+        }
+
+        function probeMember(memberId, btn) {
+          if (btn) { btn.disabled = true; btn.textContent = '…'; }
+          document.getElementById('poolMsg').textContent = 'Пробник доступности (handshake с активного сервера, до ~30с)…';
+          fetch('/servers/' + memberId + '/pool/probe', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' })
+            .then(r => r.json()).then(d => {
+              const ok = d.success && d.reachable;
+              showToast(d.message || (d.success ? (d.reachable ? 'Доступен' : 'Недоступен') : (d.error || 'Ошибка')), ok ? 'success' : 'error');
+              load();
+            }).catch(e => { showToast('Ошибка: ' + e, 'error'); load(); });
+        }
+
+        function markClean(memberId, clean, btn) {
+          if (btn) { btn.disabled = true; btn.textContent = '…'; }
+          fetch('/servers/' + memberId + '/pool/mark-clean', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ clean: clean }) })
+            .then(r => r.json()).then(d => { showToast(d.message || (d.success ? 'Готово' : (d.error || 'Ошибка')), d.success ? 'success' : 'error'); load(); })
+            .catch(e => { showToast('Ошибка: ' + e, 'error'); load(); });
         }
 
         function resyncMember(memberId, btn) {
@@ -219,32 +314,367 @@
         function loadLiveClients() {
           const val = document.getElementById('liveClientsVal');
           if (!val) return;
-          val.textContent = '…'; val.className = 'text-[11px] text-gray-500';
+          val.textContent = '…'; val.className = 'text-sm text-gray-500';
           fetch('/servers/' + SID + '/net/live-clients').then(r => r.json()).then(d => {
-            if (!d.success) { val.textContent = d.error || 'ошибка'; val.className = 'text-[11px] text-red-600'; return; }
+            if (!d.success) { val.textContent = d.error || 'ошибка'; val.className = 'text-sm text-red-600'; return; }
             val.textContent = d.active_peers + ' активных / ' + d.total_peers + ' всего · рукопожатие ' + fmtAge(d.last_handshake_age);
-            val.className = 'text-[11px] ' + (d.active_peers > 0 ? 'text-green-600' : (d.total_peers > 0 ? 'text-amber-600' : 'text-gray-500'));
-          }).catch(e => { val.textContent = 'ошибка: ' + e; val.className = 'text-[11px] text-red-600'; });
+            val.className = 'text-sm ' + (d.active_peers > 0 ? 'text-green-600' : (d.total_peers > 0 ? 'text-amber-600' : 'text-gray-500'));
+          }).catch(e => { val.textContent = 'ошибка: ' + e; val.className = 'text-sm text-red-600'; });
         }
         const liveBtn = document.getElementById('liveRefreshBtn');
         if (liveBtn) liveBtn.addEventListener('click', loadLiveClients);
         loadLiveClients();
+
+        function resetJoinBtn() {
+          const jb = document.getElementById('poolJoinBtn');
+          if (jb) { jb.disabled = false; jb.textContent = 'Добавить в пул'; }
+        }
+        function setJoinDeploying(msg) {
+          const jb = document.getElementById('poolJoinBtn');
+          if (jb) { jb.disabled = true; jb.textContent = 'Разворачивается…'; }
+          const m = document.getElementById('standaloneMsg');
+          if (m) m.textContent = (msg || 'Добавление в пул идёт в фоне') + ' — можно закрыть страницу, прогресс сохранится.';
+        }
+        let joinPollTimer = null;
+        // Poll the background join worker; resumes automatically on page load if a
+        // join is still in flight (state lives in the DB, survives a reload).
+        function pollJoinStatus(resume) {
+          fetch('/servers/' + SID + '/join-status').then(r => r.json()).then(d => {
+            if (!d.success) return;
+            if (d.state === 'deploying') {
+              setJoinDeploying(d.message);
+              clearTimeout(joinPollTimer);
+              joinPollTimer = setTimeout(() => pollJoinStatus(true), 5000);
+            } else if (d.state === 'done') {
+              showToast(d.message || 'Сервер добавлен в пул', 'success');
+              resetJoinBtn(); load();
+            } else if (d.state === 'failed') {
+              showToast(d.message || 'Не удалось добавить в пул', 'error');
+              resetJoinBtn();
+              const m = document.getElementById('standaloneMsg');
+              if (m) m.textContent = 'Ошибка добавления: ' + (d.message || '') + '. Можно повторить.';
+            } else if (resume && d.in_pool) {
+              load();
+            }
+          }).catch(() => {});
+        }
 
         const joinBtn = document.getElementById('poolJoinBtn');
         if (joinBtn) joinBtn.addEventListener('click', async () => {
           const sel = document.getElementById('poolJoinSelect');
           const poolId = sel && sel.value;
           if (!poolId) return;
-          if (!(await showConfirmModal('Сервер будет передеплоен с общими ключами пула (~2 мин) и станет резервным (STANDBY). Текущая awg2-идентичность и клиенты этого сервера будут заменены на общие.', 'Добавить сервер в пул?', 'Добавить'))) return;
-          joinBtn.disabled = true; joinBtn.textContent = '…';
-          document.getElementById('standaloneMsg').textContent = 'Добавление в пул (передеплой ~2 мин, не закрывайте страницу)…';
+          if (!(await showConfirmModal('Сервер будет передеплоен с общими ключами пула и WARP-egress (в фоне, ~5-7 мин) и станет резервным (STANDBY). Текущая awg2-идентичность и клиенты этого сервера будут заменены на общие. Можно закрыть страницу — добавление продолжится.', 'Добавить сервер в пул?', 'Добавить'))) return;
+          setJoinDeploying('Запуск добавления в пул…');
           fetch('/servers/' + SID + '/pool/join', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ pool_id: Number(poolId) }) })
-            .then(r => r.json()).then(d => { showToast(d.message || (d.success ? 'Добавлено в пул' : (d.error || 'Ошибка')), d.success ? 'success' : 'error'); load(); })
-            .catch(e => { showToast('Ошибка/таймаут: ' + e + '. Операция могла завершиться на сервере — обновите страницу.', 'error'); load(); })
-            .finally(() => { joinBtn.disabled = false; joinBtn.textContent = 'Добавить в пул'; });
+            .then(r => r.json()).then(d => {
+              if (d.success) { showToast(d.message || 'Запущено в фоне', 'success'); window.location.href = '/servers'; }
+              else { showToast(d.error || 'Ошибка', 'error'); resetJoinBtn(); }
+            })
+            .catch(e => { showToast('Ошибка: ' + e, 'error'); resetJoinBtn(); });
+        });
+
+        // Pool edit: name + shared domain.
+        const poolEditBtn = document.getElementById('poolEditBtn');
+        if (poolEditBtn) poolEditBtn.addEventListener('click', function () {
+          document.getElementById('poolNameInput').value = (document.getElementById('poolName').textContent || '').trim();
+          const dom = (document.getElementById('poolDomain').textContent || '').trim();
+          document.getElementById('poolDomainInput').value = (dom === '(не задан)') ? '' : dom;
+          document.getElementById('poolEditBox').style.display = 'block';
+        });
+        const poolEditCancel = document.getElementById('poolEditCancel');
+        if (poolEditCancel) poolEditCancel.addEventListener('click', function () {
+          document.getElementById('poolEditBox').style.display = 'none';
+        });
+        const poolEditSave = document.getElementById('poolEditSave');
+        if (poolEditSave) poolEditSave.addEventListener('click', function () {
+          const body = {};
+          const nm = document.getElementById('poolNameInput').value.trim();
+          const dm = document.getElementById('poolDomainInput').value.trim();
+          if (nm) body.name = nm;
+          if (dm) { body.domain = dm; body.repoint = document.getElementById('poolRepointChk').checked; }
+          if (!body.name && !body.domain) { showToast('Нечего сохранять (пустые поля не меняются)', 'error'); return; }
+          poolEditSave.disabled = true;
+          fetch('/servers/' + SID + '/pool/update', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) })
+            .then(r => r.json()).then(d => {
+              if (d.success) {
+                showToast(d.warning || 'Пул обновлён', d.warning ? 'info' : 'success');
+                document.getElementById('poolEditBox').style.display = 'none';
+                load();
+              } else { showToast(d.error || 'Ошибка', 'error'); }
+            }).catch(e => showToast('Ошибка: ' + e, 'error'))
+            .finally(() => { poolEditSave.disabled = false; });
+        });
+
+        const poolDeleteBtn = document.getElementById('poolDeleteBtn');
+        if (poolDeleteBtn) poolDeleteBtn.addEventListener('click', async function () {
+          const dom = (document.getElementById('poolDomain').textContent || '').trim();
+          const domTxt = (dom && dom !== '(не задан)') ? (' и удалит DNS-запись ' + dom) : '';
+          const ok = await showConfirmModal(
+            'Пул будет распущен и удалён. Серверы станут standalone (awg2-контейнеры и клиенты сохранятся)' + domTxt + '. Продолжить?',
+            'Удалить пул?', 'Удалить');
+          if (!ok) return;
+          poolDeleteBtn.disabled = true;
+          fetch('/servers/' + SID + '/pool/delete', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ remove_dns: true }) })
+            .then(r => r.json()).then(d => {
+              showToast(d.message || (d.success ? 'Пул удалён' : (d.error || 'Ошибка')), d.success ? 'success' : 'error');
+              load();
+            }).catch(e => showToast('Ошибка: ' + e, 'error'))
+            .finally(() => { poolDeleteBtn.disabled = false; });
+        });
+
+        const aipGenBtn = document.getElementById('aipGenBtn');
+        if (aipGenBtn) aipGenBtn.addEventListener('click', function () {
+          const extra = (document.getElementById('aipExtra').value || '').trim();
+          aipGenBtn.disabled = true;
+          fetch('/servers/' + SID + '/pool/allowed-ips?exclude=' + encodeURIComponent(extra))
+            .then(r => r.json()).then(d => {
+              if (!d.success) { showToast(d.error || 'Ошибка', 'error'); return; }
+              document.getElementById('aipResult').value = 'AllowedIPs = ' + d.allowed_ips;
+              document.getElementById('aipMeta').textContent =
+                'IP пула исключено: ' + (d.member_ips || []).length +
+                ' (' + (d.member_ips || []).join(', ') + '); всего исключений: ' + (d.excluded || []).length;
+              document.getElementById('aipOut').style.display = 'block';
+            }).catch(e => showToast('Ошибка: ' + e, 'error'))
+            .finally(() => { aipGenBtn.disabled = false; });
+        });
+        const aipCopy = document.getElementById('aipCopy');
+        if (aipCopy) aipCopy.addEventListener('click', function () {
+          const ta = document.getElementById('aipResult');
+          ta.select();
+          navigator.clipboard.writeText(ta.value).then(() => showToast('Скопировано', 'success'))
+            .catch(() => { document.execCommand('copy'); showToast('Скопировано', 'success'); });
         });
 
         load();
+        pollJoinStatus(true);
+      })();
+      </script>
+
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+    <div class="bg-white rounded shadow p-6">
+      <h3 class="font-bold mb-4">{{ t('servers.server_info') }}</h3>
+      <dl class="space-y-2">
+        <div><dt class="text-sm text-gray-600">{{ t('common.status') }}</dt><dd><span class="px-2 py-1 bg-green-100 text-green-800 rounded text-sm">{{ server.status }}</span></dd></div>
+        {% if server_protocols|length <= 1 %}
+        <div><dt class="text-sm text-gray-600">VPN Port</dt><dd>{{ server.vpn_port }}</dd></div>
+        <div><dt class="text-sm text-gray-600">Subnet</dt><dd>{{ server.vpn_subnet }}</dd></div>
+        {% endif %}
+
+      </dl>
+
+      {# ── Package updates ── #}
+      <div class="mt-4 p-3 border rounded-lg bg-gray-50" id="updBox">
+        <div class="flex items-center justify-between mb-2">
+          <span class="text-sm font-semibold text-gray-700"><i class="fas fa-box mr-1 text-purple-600"></i>Обновления пакетов</span>
+          <span id="updBadge" class="px-2 py-0.5 rounded text-sm bg-gray-200 text-gray-600">…</span>
+        </div>
+        <dl id="updInfo" class="text-sm text-gray-600 space-y-1"></dl>
+        <p id="updStamp" class="mt-1 text-sm text-gray-400"></p>
+        <p id="updMsg" class="mt-2 text-sm text-gray-500 leading-tight"></p>
+        <div class="mt-2 flex items-center gap-2 flex-wrap">
+          <button type="button" id="updRefreshBtn" class="px-3 py-1 bg-slate-600 text-white rounded text-sm"><i class="fas fa-rotate mr-1"></i>Проверить</button>
+          <button type="button" class="js-upd-act px-3 py-1 bg-purple-600 text-white rounded text-sm" data-action="os"><i class="fas fa-download mr-1"></i>Пакеты ОС</button>
+          <button type="button" class="js-upd-act px-3 py-1 bg-orange-600 text-white rounded text-sm" data-action="kernel" title="full-upgrade: ставит пакеты, требующие новых зависимостей (ядро)"><i class="fas fa-microchip mr-1"></i>Ядро</button>
+          <button type="button" class="js-upd-act px-3 py-1 bg-amber-600 text-white rounded text-sm" data-action="docker" title="Перезапускает docker-демон — туннели на этом сервере кратко порвутся"><i class="fab fa-docker mr-1"></i>Docker</button>
+          <button type="button" class="js-upd-act px-3 py-1 bg-teal-700 text-white rounded text-sm" data-action="awg2" title="Пересборка из upstream с сохранением идентичности пула"><i class="fas fa-hammer mr-1"></i>awg2</button>
+          <button type="button" class="js-upd-act px-3 py-1 bg-sky-700 text-white rounded text-sm" data-action="warp"><i class="fas fa-cloud mr-1"></i>WARP</button>
+          <button type="button" class="js-upd-act px-3 py-1 bg-red-700 text-white rounded text-sm" data-action="reboot"><i class="fas fa-power-off mr-1"></i>Перезагрузить</button>
+        </div>
+        <p class="mt-2 text-sm text-gray-400 leading-tight">Docker и containerd на время обновления <b>удерживаются</b> — их апгрейд перезапускает демон и рвёт туннели, это отдельная операция. Перезагрузка автоматически не делается.</p>
+        <details id="updHistBox" class="mt-2" style="display:none">
+          <summary class="text-sm text-gray-600 cursor-pointer">История операций</summary>
+          <div id="updHist" class="mt-1 space-y-1 text-sm"></div>
+        </details>
+      </div>
+      <script>
+      (function () {
+        const SID = {{ server.id }};
+        const badge = document.getElementById('updBadge');
+        const info = document.getElementById('updInfo');
+        const msg = document.getElementById('updMsg');
+        const refreshBtn = document.getElementById('updRefreshBtn');
+        const actBtns = () => document.querySelectorAll('.js-upd-act');
+        const stamp = document.getElementById('updStamp');
+        let poll = null;
+
+        const setBadge = (t, c) => { badge.textContent = t; badge.className = 'px-2 py-0.5 rounded text-sm ' + c; };
+        const row = (k, v) => `<div class="flex justify-between gap-2"><dt>${k}</dt><dd class="font-medium text-gray-800">${v}</dd></div>`;
+
+        function render(d) {
+          const a = d.audit || {};
+          if (!a || a.ok === false) { setBadge('нет данных', 'bg-gray-200 text-gray-600'); return; }
+          const up = (a.actionable != null ? a.actionable : (a.upgradable || 0));
+          const phased = a.phased || 0;
+          const stale = [];
+          if (a.awg2_update_available === true) stale.push('awg2');
+          if (a.warp_update_available === true) stale.push('WARP');
+          if (up === 0 && !stale.length) setBadge('всё актуально', 'bg-green-100 text-green-700');
+          else if (a.security > 0) setBadge(up + ' обновлений · ' + a.security + ' security', 'bg-red-100 text-red-700');
+          else if (up > 0) setBadge(up + ' обновлений' + (stale.length ? ' · ' + stale.join('/') : ''), 'bg-yellow-100 text-yellow-800');
+          else setBadge('обновить: ' + stale.join('/'), 'bg-yellow-100 text-yellow-800');
+
+          let html = row('Пакетов к обновлению', up + (a.security ? ` <span class="text-red-600">(security: ${a.security})</span>` : ''));
+          if (phased) html += row('Отложены Ubuntu', `<span class="text-gray-500">${phased} (phased rollout — придут сами)</span>`);
+          if (a.kernel_upgradable) html += row('Ядро', `<span class="text-amber-700">${a.kernel_upgradable} — нужен full-upgrade («Ядро»)</span>`);
+          if (a.docker_upgradable) html += row('Из них Docker/containerd', `<span class="text-amber-700">${a.docker_upgradable} (удерживаются)</span>`);
+          if (a.reboot_required) html += row('Перезагрузка', '<span class="text-red-600">требуется</span>');
+          html += row('Ядро', a.kernel || '—');
+          html += row('Docker', a.docker_version || '—');
+          html += row('Образ awg2', (a.awg2_image_created || '—').replace('T', ' '));
+          html += row('awg2 / WARP', (a.awg2_running ? '✅' : '❌') + ' / ' + (a.warp_active ? '✅' : '❌'));
+          // Version freshness (null = could not determine, e.g. no GitHub access)
+          const verdict = (flag, okTxt, oldTxt) => flag == null
+            ? '<span class="text-gray-400">не определено</span>'
+            : (flag ? `<span class="text-yellow-700">${oldTxt}</span>` : `<span class="text-green-700">${okTxt}</span>`);
+          html += row('Версия awg2', verdict(a.awg2_update_available, 'актуальна', 'есть обновление')
+            + (a.awg2_src_date ? ` <span class="text-gray-400">(${a.awg2_src_date})</span>` : ''));
+          html += row('Скрипты WARP', verdict(a.warp_update_available, 'актуальны', 'отличаются от репозитория'));
+          if (a.lists_age_h != null) html += row('Списки пакетов', a.lists_age_h + ' ч назад');
+          info.innerHTML = html;
+
+          // The active member carries live clients — updating it is gated.
+          if (d.is_active) {
+            // Active member: keep the buttons clickable but flag the risk —
+            // the server confirms with a 409 + explicit force prompt anyway.
+            actBtns().forEach(b => {
+              b.classList.add('ring-2', 'ring-red-400');
+              b.title = 'Активный член пула — потребуется явное подтверждение';
+            });
+          }
+        }
+
+        const ACT_NAMES = { os: 'Пакеты ОС', kernel: 'Ядро', docker: 'Docker', awg2: 'awg2', warp: 'WARP', reboot: 'Перезагрузка' };
+        function renderHistory(rows) {
+          const box = document.getElementById('updHistBox');
+          const list = document.getElementById('updHist');
+          if (!rows || !rows.length) { box.style.display = 'none'; return; }
+          box.style.display = 'block';
+          list.innerHTML = rows.map(r => {
+            const ok = r.state === 'done';
+            const icon = ok ? '<span class="text-green-700">✅</span>' : '<span class="text-red-700">❌</span>';
+            const forced = Number(r.forced) ? ' <span class="text-red-600" title="выполнено принудительно на активном сервере">⚠force</span>' : '';
+            const when = (r.finished_at || '').replace('T', ' ');
+            return `<div class="border-l-2 ${ok ? 'border-green-300' : 'border-red-300'} pl-2">
+              ${icon} <b>${ACT_NAMES[r.action] || r.action}</b>${forced}
+              <span class="text-gray-400">${when}</span>
+              <div class="text-gray-600">${(r.message || '').replace(/</g, '&lt;')}</div>
+            </div>`;
+          }).join('');
+        }
+
+        function showState(st) {
+          if (!st || !st.state) return;
+          if (st.state === 'running') {
+            msg.innerHTML = '<i class="fas fa-circle-notch fa-spin mr-1"></i>' + (st.message || 'Обновление идёт…');
+            actBtns().forEach(b => b.disabled = true);
+            startPoll();
+          } else if (st.state === 'done') {
+            msg.innerHTML = '<span class="text-green-700">✅ ' + (st.message || 'Готово') + '</span>';
+          } else if (st.state === 'failed') {
+            msg.innerHTML = '<span class="text-red-700">❌ ' + (st.message || 'Ошибка') + '</span>';
+          }
+        }
+
+        function load(refresh) {
+          const orig = refreshBtn.innerHTML;
+          refreshBtn.disabled = true;
+          if (refresh) refreshBtn.innerHTML = '<i class="fas fa-circle-notch fa-spin mr-1"></i>Проверяю…';
+          fetch('/servers/' + SID + '/updates/audit' + (refresh ? '?refresh=1' : ''), { credentials: 'same-origin' })
+            .then(async r => {
+              // Never swallow failures silently: a dead-looking button is worse
+              // than an error message.
+              const text = await r.text();
+              if (!r.ok) throw new Error('HTTP ' + r.status);
+              try { return JSON.parse(text); }
+              catch (e) { throw new Error('некорректный ответ сервера'); }
+            })
+            .then(d => {
+              if (d.success === false) throw new Error(d.error || 'аудит не удался');
+              render(d);
+              showState(d.state);
+              renderHistory(d.history);
+              // Always give visible proof the click did something, even when the
+              // numbers are unchanged.
+              stamp.textContent = 'проверено в ' + new Date().toLocaleTimeString();
+              if (refresh && window.showToast) showToast('Данные обновлены', 'success');
+            })
+            .catch(e => {
+              stamp.textContent = 'ошибка проверки: ' + e.message;
+              if (window.showToast) showToast('Проверка обновлений: ' + e.message, 'error');
+            })
+            .finally(() => { refreshBtn.disabled = false; refreshBtn.innerHTML = orig; });
+        }
+
+        function startPoll() {
+          if (poll) return;
+          poll = setInterval(() => {
+            fetch('/servers/' + SID + '/updates/status').then(r => r.json()).then(d => {
+              if (!d.success) return;
+              const st = d.state || {};
+              if (st.state !== 'running') {
+                clearInterval(poll); poll = null;
+                actBtns().forEach(b => b.disabled = false);
+                showState(st);
+                renderHistory(d.history);
+                load(false);
+                if (window.showToast) showToast(st.message || 'Обновление завершено', st.state === 'done' ? 'success' : 'error');
+              } else {
+                msg.innerHTML = '<i class="fas fa-circle-notch fa-spin mr-1"></i>' + (st.message || 'Обновление идёт…');
+              }
+            }).catch(() => {});
+          }, 5000);
+        }
+
+        // Each action states plainly what it costs, so nobody clicks "awg2" on a
+        // production member expecting it to be free.
+        const ACTIONS = {
+          os:     { title: 'Обновить пакеты ОС?',   warn: 'Docker удерживается, простоя быть не должно. Если обновится ядро — потребуется перезагрузка.' },
+          kernel: { title: 'Обновить ядро (full-upgrade)?', warn: 'Ставит пакеты, требующие новых зависимостей — обычно ядро. Docker остаётся удержанным. Новое ядро заработает только после перезагрузки, сама операция клиентов не рвёт.' },
+          docker: { title: 'Обновить Docker?',      warn: 'Перезапустит docker-демон: контейнер awg2 уйдёт в ребут, туннели на этом сервере порвутся на несколько секунд.' },
+          awg2:   { title: 'Пересобрать awg2?',     warn: 'Пересборка из upstream. Идентичность пула сохраняется (клиентские конфиги не сломаются), пиры восстанавливаются из БД. На время сборки сервер клиентов не обслуживает (несколько минут). Только для членов пула.' },
+          warp:   { title: 'Переустановить WARP?',  warn: 'Egress через Cloudflare прервётся на время переустановки.' },
+          reboot: { title: 'Перезагрузить сервер?', warn: 'Сервер уйдёт в перезагрузку. Контейнер и WARP подняты как autostart, ожидание возврата — до 5 минут.' },
+        };
+
+        function runAction(action, force) {
+          const btns = document.querySelectorAll('.js-upd-act');
+          btns.forEach(b => b.disabled = true);
+          fetch('/servers/' + SID + '/updates/os', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ action: action, force: !!force })
+          }).then(async r => ({ code: r.status, d: await r.json() })).then(({ code, d }) => {
+            if (code === 409 && d.needs_force) {
+              btns.forEach(b => b.disabled = false);
+              showConfirmModal(
+                d.error + '\n\n' + (ACTIONS[action] || {}).warn + '\n\nВыполнить принудительно?',
+                'Активный сервер пула!', 'Выполнить'
+              ).then(ok => { if (ok) runAction(action, true); });
+              return;
+            }
+            if (!d.success) {
+              btns.forEach(b => b.disabled = false);
+              if (window.showToast) showToast(d.error || 'Ошибка', 'error');
+              return;
+            }
+            msg.innerHTML = '<i class="fas fa-circle-notch fa-spin mr-1"></i>' + (d.message || 'Запущено…');
+            startPoll();
+          }).catch(e => {
+            btns.forEach(b => b.disabled = false);
+            if (window.showToast) showToast('Ошибка: ' + e, 'error');
+          });
+        }
+
+        refreshBtn.addEventListener('click', () => load(true));
+        document.querySelectorAll('.js-upd-act').forEach(btn => {
+          btn.addEventListener('click', () => {
+            const action = btn.getAttribute('data-action');
+            const a = ACTIONS[action] || { title: 'Выполнить?', warn: '' };
+            showConfirmModal(a.warn, a.title, 'Выполнить').then(ok => { if (ok) runAction(action, false); });
+          });
+        });
+        load(false);
       })();
       </script>
 
@@ -461,7 +891,8 @@
       </thead>
       <tbody id="clientsTableBody">
         {% for client in clients %}
-        {% set is_online_by_handshake = client.last_handshake and (("now"|date('U') - client.last_handshake|date('U')) < 300) %}
+        {# last_handshake is the newest seen across all pool members, i.e. "online somewhere in the pool". #}
+        {% set is_online_by_handshake = client.last_handshake and (("now"|date('U') - client.last_handshake|date('U')) < (online_window|default(600))) %}
         {% set is_online = client.name in online_logins or is_online_by_handshake %}
         <tr class="border-t client-row" data-search="{{ (client.name ~ ' ' ~ client.client_ip)|lower }}" data-public-key="{{ client.public_key }}">
           <td class="px-4 py-3">
@@ -1109,7 +1540,7 @@ async function refreshLiveStatus() {
       const cell = row.querySelector('[data-status-cell]');
       if (cell) {
         const dbStatus = cell.getAttribute('data-client-status');
-        const online = peer && peer.handshake_age != null && peer.handshake_age < 300;
+        const online = peer && peer.handshake_age != null && peer.handshake_age < (d.online_window || {{ online_window|default(600) }});
         let html;
         if (online) {
           html = '<span class="online-badge inline-flex items-center gap-1 px-2 py-1 bg-green-100 text-green-800 rounded text-xs"><i class="fas fa-wifi"></i>Online</span>';

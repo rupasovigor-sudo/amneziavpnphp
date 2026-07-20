@@ -72,8 +72,22 @@ need_awg2_container() {
 
 install_packages() {
   command -v wg >/dev/null 2>&1 && command -v curl >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1 && return 0
-  apt-get update -qq
-  apt-get install -y -qq curl ca-certificates iproute2 iptables wireguard-tools python3 >/dev/null 2>&1
+  # Fresh servers run unattended-upgrades on first boot, which holds the dpkg
+  # lock; installing wireguard-tools would fail and abort the whole egress
+  # install (leaving 0 WARP profiles). Wait for the lock to clear (up to ~4 min).
+  local i
+  for i in $(seq 1 40); do
+    if fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || fuser /var/lib/apt/lists/lock >/dev/null 2>&1; then
+      log "waiting for apt/dpkg lock (unattended-upgrades?)... ${i}"
+      sleep 6
+    else
+      break
+    fi
+  done
+  apt-get update -qq || true
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq curl ca-certificates iproute2 iptables wireguard-tools python3 >/dev/null 2>&1 || true
+  # Hard requirement: wg must exist now, else register cannot build profiles.
+  command -v wg >/dev/null 2>&1 || { log "ERROR: wireguard-tools (wg) still missing after install"; return 1; }
 }
 
 container_ips() {

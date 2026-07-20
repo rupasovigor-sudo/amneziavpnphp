@@ -292,8 +292,18 @@ Router::get('/servers/{id}/deploy', function ($params) {
 // Deploy server action (AJAX)
 Router::post('/servers/{id}/deploy', function ($params) {
     requireAuth();
+    // Release the PHP session file lock immediately: this request holds it for the
+    // whole ~2 min deploy (with ignore_user_abort), which would otherwise block
+    // EVERY other request from the same browser session (e.g. navigating to
+    // /servers) until the deploy finishes — the "redirect just hangs" symptom.
+    // $_SESSION stays readable for Auth::user()/isAdmin() below.
+    @session_write_close();
     @set_time_limit(900);
     @ini_set('max_execution_time', '900');
+    // The deploy rebuilds a docker image (~2 min). Finish it server-side even if
+    // the browser fetch times out and disconnects, so the server isn't left stuck
+    // in status='deploying' (the deploy sets status active/error at the end).
+    @ignore_user_abort(true);
     header('Content-Type: application/json');
 
     $serverId = (int) $params['id'];
@@ -338,9 +348,18 @@ Router::post('/servers/{id}/deploy', function ($params) {
         $domain = trim((string) ($serverData['domain'] ?? ''));
         $memberPoolId = (int) ($serverData['pool_id'] ?? 0);
         $mayRepoint = true;
-        if ($memberPoolId > 0) {
-            $poolRow = ServerPool::get($memberPoolId);
-            $mayRepoint = $poolRow && (int) ($poolRow['active_server_id'] ?? 0) === $serverId;
+        if ($domain !== '') {
+            // Never let a non-active node hijack a pool's shared domain. This must
+            // catch a STANDALONE server that merely carries the same domain (e.g.
+            // a freshly provisioned server before it is deliberately made active),
+            // not only servers already recorded as pool members.
+            $owningPool = ServerPool::findByDomain($domain);
+            if ($owningPool) {
+                $mayRepoint = (int) ($owningPool['active_server_id'] ?? 0) === $serverId;
+            } elseif ($memberPoolId > 0) {
+                $poolRow = ServerPool::get($memberPoolId);
+                $mayRepoint = $poolRow && (int) ($poolRow['active_server_id'] ?? 0) === $serverId;
+            }
         }
         if (!empty($result['success']) && $domain !== '' && $mayRepoint && DnsManager::isConfigured()) {
             try {
@@ -621,6 +640,35 @@ Router::get('/servers/{id}/dns/status', function ($params) {
     }
 });
 
+// Rename a server (AJAX, admin/owner).
+Router::post('/servers/{id}/rename', function ($params) {
+    requireAuth();
+    header('Content-Type: application/json');
+    $serverId = (int) $params['id'];
+    $input = json_decode(file_get_contents('php://input'), true) ?: [];
+    $name = trim((string) ($input['name'] ?? ''));
+    if ($name === '' || mb_strlen($name) > 100) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'error' => 'Имя обязательно (до 100 символов)']);
+        return;
+    }
+    try {
+        $server = new VpnServer($serverId);
+        $serverData = $server->getData();
+        $user = Auth::user();
+        if (($serverData['user_id'] ?? null) != $user['id'] && !Auth::isAdmin()) {
+            http_response_code(403);
+            echo json_encode(['success' => false, 'error' => 'Forbidden']);
+            return;
+        }
+        DB::conn()->prepare('UPDATE vpn_servers SET name = ? WHERE id = ?')->execute([$name, $serverId]);
+        echo json_encode(['success' => true, 'name' => $name], JSON_UNESCAPED_UNICODE);
+    } catch (Exception $e) {
+        http_response_code(500);
+        echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+    }
+});
+
 // Save the endpoint domain and/or repoint its A-record at this server (AJAX)
 Router::post('/servers/{id}/dns/update', function ($params) {
     requireAdmin();
@@ -752,17 +800,248 @@ Router::get('/servers/{id}/clients/live-status', function ($params) {
             echo json_encode(['error' => 'Forbidden']);
             return;
         }
-        $readServer = $server;
         $poolId = (int) ($serverData['pool_id'] ?? 0);
-        if ($poolId > 0) {
-            $stmt = DB::conn()->prepare('SELECT active_server_id FROM server_pools WHERE id = ?');
-            $stmt->execute([$poolId]);
-            $activeId = (int) $stmt->fetchColumn();
-            if ($activeId > 0 && $activeId !== $serverId) {
-                $readServer = new VpnServer($activeId);
+        // One SSH round-trip per pool member per poll, multiplied by every open
+        // tab, adds up fast. The data only needs to be a few seconds fresh, so
+        // serve a short-lived shared cache instead.
+        $cacheTtl = max(0, (int) Config::get('LIVE_STATUS_CACHE_SECONDS', '20'));
+        $cacheFile = sys_get_temp_dir() . '/live_status_' . ($poolId > 0 ? 'pool' . $poolId : 'srv' . $serverId) . '.json';
+        if ($cacheTtl > 0 && is_readable($cacheFile)) {
+            $cached = json_decode((string) @file_get_contents($cacheFile), true);
+            if (is_array($cached) && (time() - (int) ($cached['at'] ?? 0)) < $cacheTtl && isset($cached['peers'])) {
+                echo json_encode([
+                    'success' => true,
+                    'peers' => $cached['peers'],
+                    'online_window' => ServerMonitoring::onlineWindow(),
+                    'cached' => true,
+                ], JSON_UNESCAPED_SLASHES);
+                return;
             }
         }
-        echo json_encode(['success' => true, 'peers' => $readServer->liveClientPeers()], JSON_UNESCAPED_SLASHES);
+
+        if ($poolId > 0) {
+            // A client sits on whichever member it last resolved — after a switch
+            // it lingers on the OLD one until it re-resolves the domain. Reading
+            // only the active member would report every client that still lives
+            // elsewhere as offline and reset its badge to "active". Merge all
+            // members and keep the freshest handshake per peer.
+            $peers = [];
+            foreach (ServerPool::members($poolId) as $member) {
+                try {
+                    $memberPeers = (new VpnServer((int) $member['id']))->liveClientPeers();
+                } catch (Exception $e) {
+                    continue; // a single unreachable member must not blank the list
+                }
+                foreach ($memberPeers as $pub => $info) {
+                    $age = $info['handshake_age'] ?? null;
+                    $seen = $peers[$pub]['handshake_age'] ?? null;
+                    if (!isset($peers[$pub]) || ($age !== null && ($seen === null || $age < $seen))) {
+                        $peers[$pub] = $info;
+                    }
+                }
+            }
+        } else {
+            $peers = $server->liveClientPeers();
+        }
+        if ($cacheTtl > 0) {
+            @file_put_contents($cacheFile, json_encode(['peers' => $peers, 'at' => time()]));
+        }
+        echo json_encode([
+            'success' => true,
+            'peers' => $peers,
+            'online_window' => ServerMonitoring::onlineWindow(),
+            'cached' => false,
+        ], JSON_UNESCAPED_SLASHES);
+    } catch (Exception $e) {
+        http_response_code(500);
+        echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+    }
+});
+
+// ── Package updates ──────────────────────────────────────────────────────
+// Fleet-wide update overview (page + data).
+Router::get('/updates', function () {
+    requireAdmin();
+    View::render('updates.twig', []);
+});
+
+// Rolling update of a whole pool in a detached worker (AJAX, admin).
+Router::post('/updates/pool/{id}', function ($params) {
+    requireAdmin();
+    header('Content-Type: application/json');
+    $poolId = (int) $params['id'];
+    $input = json_decode(file_get_contents('php://input'), true) ?: [];
+    $actions = array_values(array_intersect(
+        (array) ($input['actions'] ?? ['os']),
+        ['os', 'kernel', 'docker', 'awg2', 'warp', 'reboot']
+    ));
+    if (!$actions) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'error' => 'Не выбрано ни одного действия']);
+        return;
+    }
+    try {
+        $members = ServerPool::members($poolId);
+        if (count($members) < 2) {
+            http_response_code(409);
+            echo json_encode([
+                'success' => false,
+                'error' => 'В пуле меньше двух серверов — обновление без простоя невозможно.',
+            ], JSON_UNESCAPED_UNICODE);
+            return;
+        }
+        foreach ($members as $m) {
+            $st = ServerUpdateManager::getState((int) $m['id']);
+            if (($st['state'] ?? '') === 'running') {
+                http_response_code(409);
+                echo json_encode(['success' => false, 'error' => 'На сервере ' . $m['name'] . ' уже идёт задача'], JSON_UNESCAPED_UNICODE);
+                return;
+            }
+        }
+
+        $php = is_file('/usr/local/bin/php') ? '/usr/local/bin/php' : PHP_BINARY;
+        $worker = dirname(__DIR__, 2) . '/bin/server_update_worker.php';
+        $log = dirname(__DIR__, 2) . '/logs/pool_update_' . $poolId . '.log';
+        exec(sprintf(
+            'nohup %s %s --pool-id=%d --actions=%s >> %s 2>&1 &',
+            escapeshellarg($php), escapeshellarg($worker), $poolId,
+            escapeshellarg(implode(',', $actions)), escapeshellarg($log)
+        ));
+
+        echo json_encode([
+            'success' => true,
+            'message' => 'Rolling-обновление пула запущено: сначала резервные, затем переключение и бывший активный.',
+        ], JSON_UNESCAPED_UNICODE);
+    } catch (Exception $e) {
+        http_response_code(500);
+        echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+    }
+});
+
+Router::get('/updates/fleet', function () {
+    requireAdmin();
+    header('Content-Type: application/json');
+    try {
+        ServerUpdateManager::reapStuck();
+        $refresh = !empty($_GET['refresh']);
+        $rows = DB::conn()->query(
+            "SELECT id, name, host, pool_id FROM vpn_servers WHERE status != 'deleted' ORDER BY id"
+        )->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+        $out = [];
+        foreach ($rows as $r) {
+            $id = (int) $r['id'];
+            // A refresh SSHes into every server, so it is opt-in; the default
+            // view serves the stored audit (also kept current by the daily cron).
+            $audit = $refresh ? ServerUpdateManager::audit($id) : ServerUpdateManager::lastAudit($id);
+            $out[] = [
+                'id'        => $id,
+                'name'      => $r['name'],
+                'host'      => $r['host'],
+                'pool_id'   => (int) ($r['pool_id'] ?? 0),
+                'is_active' => ServerUpdateManager::isActivePoolMember($id),
+                'audit'     => $audit,
+                'state'     => ServerUpdateManager::getState($id),
+            ];
+        }
+        echo json_encode(['success' => true, 'servers' => $out], JSON_UNESCAPED_UNICODE);
+    } catch (Exception $e) {
+        http_response_code(500);
+        echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+    }
+});
+
+// Read-only audit of what is out of date on the server (AJAX, admin).
+Router::get('/servers/{id}/updates/audit', function ($params) {
+    requireAdmin();
+    header('Content-Type: application/json');
+    $serverId = (int) $params['id'];
+    try {
+        $fresh = !empty($_GET['refresh']);
+        $audit = $fresh ? ServerUpdateManager::audit($serverId) : (ServerUpdateManager::lastAudit($serverId) ?? ServerUpdateManager::audit($serverId));
+        echo json_encode([
+            'success'   => !empty($audit['ok']),
+            'audit'     => $audit,
+            'is_active' => ServerUpdateManager::isActivePoolMember($serverId),
+            'state'     => ServerUpdateManager::getState($serverId),
+            'history'   => ServerUpdateManager::history($serverId, 8),
+        ], JSON_UNESCAPED_UNICODE);
+    } catch (Exception $e) {
+        http_response_code(500);
+        echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+    }
+});
+
+// Start a maintenance action in a detached worker (AJAX, admin).
+// action: os | docker | awg2 | warp | reboot
+Router::post('/servers/{id}/updates/os', function ($params) {
+    requireAdmin();
+    header('Content-Type: application/json');
+    $serverId = (int) $params['id'];
+    $input = json_decode(file_get_contents('php://input'), true) ?: [];
+    $force = !empty($input['force']);
+    $action = (string) ($input['action'] ?? 'os');
+    if (!in_array($action, ['os', 'kernel', 'docker', 'awg2', 'warp', 'reboot'], true)) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'error' => 'Неизвестное действие']);
+        return;
+    }
+    try {
+        // Guardrail: the active member is carrying live clients. Refuse unless
+        // the operator explicitly forces it after switching the pool.
+        if (!$force && ServerUpdateManager::isActivePoolMember($serverId)) {
+            http_response_code(409);
+            echo json_encode([
+                'success' => false,
+                'needs_force' => true,
+                'error' => 'Это активный член пула — на нём висят клиенты. Переключите пул на другой сервер или подтвердите принудительно.',
+            ], JSON_UNESCAPED_UNICODE);
+            return;
+        }
+        $state = ServerUpdateManager::getState($serverId);
+        if (($state['state'] ?? '') === 'running') {
+            echo json_encode(['success' => true, 'async' => true, 'state' => 'running', 'message' => 'Обновление уже идёт'], JSON_UNESCAPED_UNICODE);
+            return;
+        }
+
+        ServerUpdateManager::setState($serverId, 'running', 'Запуск задачи…');
+
+        $php = is_file('/usr/local/bin/php') ? '/usr/local/bin/php' : PHP_BINARY;
+        $worker = dirname(__DIR__, 2) . '/bin/server_update_worker.php';
+        $log = dirname(__DIR__, 2) . '/logs/server_update_' . $serverId . '.log';
+        $cmd = sprintf(
+            'nohup %s %s --server-id=%d --action=%s%s >> %s 2>&1 &',
+            escapeshellarg($php), escapeshellarg($worker), $serverId, escapeshellarg($action),
+            $force ? ' --force=1' : '', escapeshellarg($log)
+        );
+        exec($cmd);
+
+        echo json_encode([
+            'success' => true,
+            'async'   => true,
+            'state'   => 'running',
+            'message' => 'Обновление запущено в фоне — можно закрыть страницу.',
+        ], JSON_UNESCAPED_UNICODE);
+    } catch (Exception $e) {
+        http_response_code(500);
+        echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+    }
+});
+
+// Poll the background update worker (AJAX, admin).
+Router::get('/servers/{id}/updates/status', function ($params) {
+    requireAdmin();
+    header('Content-Type: application/json');
+    $serverId = (int) $params['id'];
+    try {
+        // Release jobs whose worker died, so the UI does not poll forever.
+        ServerUpdateManager::reapStuck();
+        echo json_encode([
+            'success' => true,
+            'state'   => ServerUpdateManager::getState($serverId),
+            'audit'   => ServerUpdateManager::lastAudit($serverId),
+            'history' => ServerUpdateManager::history($serverId, 8),
+        ], JSON_UNESCAPED_UNICODE);
     } catch (Exception $e) {
         http_response_code(500);
         echo json_encode(['success' => false, 'error' => $e->getMessage()]);
@@ -775,6 +1054,10 @@ Router::get('/servers/{id}/clients/live-status', function ($params) {
 Router::post('/servers/{id}/pool/join', function ($params) {
     requireAdmin();
     @set_time_limit(600);
+    // The join runs several multi-minute deploys (awg2 image build + WARP install).
+    // Keep going even if the browser fetch times out and disconnects, so the member
+    // finishes joining/syncing/WARP server-side instead of being left half-joined.
+    @ignore_user_abort(true);
     header('Content-Type: application/json');
     $serverId = (int) $params['id'];
     $input = json_decode(file_get_contents('php://input'), true) ?: [];
@@ -792,9 +1075,231 @@ Router::post('/servers/{id}/pool/join', function ($params) {
             echo json_encode(['success' => false, 'error' => 'Server is already in a pool']);
             return;
         }
+        if (($serverData['pool_join_state'] ?? '') === 'deploying') {
+            echo json_encode(['success' => true, 'async' => true, 'state' => 'deploying', 'message' => 'Добавление уже выполняется…']);
+            return;
+        }
         $priority = isset($input['priority']) ? (int) $input['priority'] : 100;
-        $res = ServerPool::addMember($poolId, $serverId, $priority);
-        echo json_encode($res, JSON_UNESCAPED_SLASHES);
+
+        // Mark deploying immediately (so a page reload already shows progress),
+        // then run the join in a DETACHED worker: the browser doesn't block on the
+        // multi-minute deploy/peer-sync/WARP and the job survives a disconnect.
+        DB::conn()->prepare('UPDATE vpn_servers SET pool_join_state = ?, pool_join_message = ?, pool_join_started_at = NOW() WHERE id = ?')
+            ->execute(['deploying', 'Запуск добавления в пул…', $serverId]);
+
+        $php = is_file('/usr/local/bin/php') ? '/usr/local/bin/php' : PHP_BINARY;
+        $worker = dirname(__DIR__, 2) . '/bin/pool_join_worker.php';
+        $log = dirname(__DIR__, 2) . '/logs/pool_join_' . $serverId . '.log';
+        $cmd = sprintf(
+            'nohup %s %s --server-id=%d --pool-id=%d --priority=%d >> %s 2>&1 &',
+            escapeshellarg($php), escapeshellarg($worker), $serverId, $poolId, $priority, escapeshellarg($log)
+        );
+        exec($cmd);
+
+        echo json_encode([
+            'success' => true,
+            'async' => true,
+            'state' => 'deploying',
+            'message' => 'Добавление в пул запущено в фоне — можно закрыть страницу.',
+        ], JSON_UNESCAPED_SLASHES);
+    } catch (Exception $e) {
+        http_response_code(500);
+        echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+    }
+});
+
+// Poll the background pool-join worker's progress (AJAX, admin).
+Router::get('/servers/{id}/join-status', function ($params) {
+    requireAdmin();
+    header('Content-Type: application/json');
+    $serverId = (int) $params['id'];
+    try {
+        $stmt = DB::conn()->prepare('SELECT pool_join_state, pool_join_message, pool_id, status FROM vpn_servers WHERE id = ?');
+        $stmt->execute([$serverId]);
+        $r = $stmt->fetch(PDO::FETCH_ASSOC) ?: [];
+        echo json_encode([
+            'success' => true,
+            'state' => $r['pool_join_state'] ?? null,
+            'message' => $r['pool_join_message'] ?? null,
+            'in_pool' => !empty($r['pool_id']),
+            'status' => $r['status'] ?? null,
+        ], JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+    } catch (Exception $e) {
+        http_response_code(500);
+        echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+    }
+});
+
+// Edit the pool this server belongs to: name and/or shared domain (AJAX, admin).
+Router::post('/servers/{id}/pool/update', function ($params) {
+    requireAdmin();
+    header('Content-Type: application/json');
+    $serverId = (int) $params['id'];
+    $input = json_decode(file_get_contents('php://input'), true) ?: [];
+    try {
+        $server = new VpnServer($serverId);
+        $serverData = $server->getData();
+        $poolId = (int) ($serverData['pool_id'] ?? 0);
+        if ($poolId <= 0) {
+            http_response_code(400);
+            echo json_encode(['success' => false, 'error' => 'Server is not in a pool']);
+            return;
+        }
+        $pool = ServerPool::get($poolId);
+        $response = ['success' => true];
+
+        if (array_key_exists('name', $input)) {
+            $name = trim((string) $input['name']);
+            if ($name === '' || mb_strlen($name) > 100) {
+                http_response_code(400);
+                echo json_encode(['success' => false, 'error' => 'Имя пула обязательно (до 100 символов)']);
+                return;
+            }
+            DB::conn()->prepare('UPDATE server_pools SET name = ? WHERE id = ?')->execute([$name, $poolId]);
+            $response['name'] = $name;
+        }
+
+        if (array_key_exists('domain', $input)) {
+            $domain = strtolower(trim((string) $input['domain'], ". \t\n"));
+            if ($domain !== '' && !preg_match('/^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/', $domain)) {
+                http_response_code(400);
+                echo json_encode(['success' => false, 'error' => 'Неверный домен']);
+                return;
+            }
+            // The domain is shared: update the pool row AND every member so client-config
+            // generation uses the new endpoint.
+            DB::conn()->prepare('UPDATE server_pools SET domain = ? WHERE id = ?')->execute([$domain !== '' ? $domain : null, $poolId]);
+            DB::conn()->prepare('UPDATE vpn_servers SET domain = ? WHERE pool_id = ?')->execute([$domain !== '' ? $domain : null, $poolId]);
+            $response['domain'] = $domain;
+            $response['warning'] = 'Домен пула изменён. Существующие клиентские конфиги ведут на старый домен — их нужно перевыпустить.';
+
+            // Point the new domain at the current active member.
+            if ($domain !== '' && !empty($input['repoint'])) {
+                if (!DnsManager::isConfigured()) {
+                    $response['dns'] = ['success' => false, 'message' => 'DNS provider token не настроен (Settings → API)'];
+                } else {
+                    $activeId = (int) ($pool['active_server_id'] ?? 0);
+                    $activeHost = '';
+                    foreach (ServerPool::members($poolId) as $m) {
+                        if ((int) $m['id'] === $activeId) { $activeHost = (string) $m['host']; break; }
+                    }
+                    if ($activeHost !== '') {
+                        $response['dns'] = DnsManager::upsertARecord($domain, $activeHost);
+                    }
+                }
+            }
+        }
+
+        echo json_encode($response, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    } catch (Exception $e) {
+        http_response_code(500);
+        echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+    }
+});
+
+// Dissolve & delete the pool this server belongs to (AJAX, admin). Members become
+// standalone again (keep their awg2 + clients); optionally free the endpoint domain.
+Router::post('/servers/{id}/pool/delete', function ($params) {
+    requireAdmin();
+    header('Content-Type: application/json');
+    $serverId = (int) $params['id'];
+    $input = json_decode(file_get_contents('php://input'), true) ?: [];
+    try {
+        $server = new VpnServer($serverId);
+        $serverData = $server->getData();
+        $poolId = (int) ($serverData['pool_id'] ?? 0);
+        if ($poolId <= 0) {
+            http_response_code(400);
+            echo json_encode(['success' => false, 'error' => 'Server is not in a pool']);
+            return;
+        }
+        $pool = ServerPool::get($poolId);
+        $domain = trim((string) ($pool['domain'] ?? ''));
+        $poolName = (string) ($pool['name'] ?? ('pool ' . $poolId));
+
+        // Dissolve: clear pool membership/state on every member → standalone.
+        DB::conn()->prepare(
+            'UPDATE vpn_servers
+             SET pool_id = NULL, pool_priority = 0, pool_sync_pending = 0,
+                 validated_clean = NULL, validated_at = NULL, validation_note = NULL,
+                 pool_join_state = NULL, pool_join_message = NULL, pool_join_started_at = NULL
+             WHERE pool_id = ?'
+        )->execute([$poolId]);
+        DB::conn()->prepare('DELETE FROM server_pools WHERE id = ?')->execute([$poolId]);
+        try {
+            DB::conn()->prepare('DELETE FROM pool_repair_state WHERE pool_id = ?')->execute([$poolId]);
+        } catch (Throwable $e) {
+            // table may not exist on older schemas
+        }
+
+        $response = ['success' => true, 'message' => "Пул «{$poolName}» распущен и удалён; серверы стали standalone."];
+
+        // Optional: free the endpoint domain (remove its A-records).
+        if (!empty($input['remove_dns']) && $domain !== '' && DnsManager::isConfigured()) {
+            $response['dns'] = DnsManager::deleteAllARecords($domain);
+            $response['message'] .= ' DNS: ' . ($response['dns']['message'] ?? '');
+        }
+        echo json_encode($response, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    } catch (Exception $e) {
+        http_response_code(500);
+        echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+    }
+});
+
+// Mark a pool member as validated-clean (or clear it) — the manual canary: the
+// operator verifies the member live (make active, connect from a censored
+// network), then marks it good so auto-failover may target it.
+Router::post('/servers/{id}/pool/mark-clean', function ($params) {
+    requireAdmin();
+    header('Content-Type: application/json');
+    $serverId = (int) $params['id'];
+    $input = json_decode(file_get_contents('php://input'), true) ?: [];
+    $clean = !empty($input['clean']);
+    try {
+        $server = new VpnServer($serverId);
+        $serverData = $server->getData();
+        if ((int) ($serverData['pool_id'] ?? 0) <= 0) {
+            http_response_code(400);
+            echo json_encode(['success' => false, 'error' => 'Server is not in a pool']);
+            return;
+        }
+        if ($clean) {
+            DB::conn()->prepare('UPDATE vpn_servers SET validated_clean = 1, validated_at = NOW(), validation_note = ? WHERE id = ?')
+                ->execute(['вручную помечен годным (проверен оператором)', $serverId]);
+            $msg = 'Помечен годным — доступен для авто-failover';
+        } else {
+            DB::conn()->prepare('UPDATE vpn_servers SET validated_clean = NULL, validated_at = NOW(), validation_note = ? WHERE id = ?')
+                ->execute(['пометка «годен» снята', $serverId]);
+            $msg = 'Пометка снята';
+        }
+        echo json_encode(['success' => true, 'message' => $msg], JSON_UNESCAPED_UNICODE);
+    } catch (Exception $e) {
+        http_response_code(500);
+        echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+    }
+});
+
+// Build a full-tunnel AllowedIPs list (0.0.0.0/0 minus all pool member IPs +
+// caller-supplied local exclusions) for a router config that must survive an
+// in-pool DNS failover. (AJAX, admin)
+Router::get('/servers/{id}/pool/allowed-ips', function ($params) {
+    requireAdmin();
+    header('Content-Type: application/json');
+    $serverId = (int) $params['id'];
+    try {
+        $server = new VpnServer($serverId);
+        $serverData = $server->getData();
+        $poolId = (int) ($serverData['pool_id'] ?? 0);
+        if ($poolId <= 0) {
+            http_response_code(400);
+            echo json_encode(['success' => false, 'error' => 'Server is not in a pool']);
+            return;
+        }
+        // Extra exclusions: split on commas, whitespace and newlines.
+        $raw = (string) ($_GET['exclude'] ?? '');
+        $extra = array_filter(array_map('trim', preg_split('/[,\s]+/', $raw) ?: []));
+        $res = ServerPool::allowedIpsExcludingPool($poolId, $extra);
+        echo json_encode(['success' => true] + $res, JSON_UNESCAPED_SLASHES);
     } catch (Exception $e) {
         http_response_code(500);
         echo json_encode(['success' => false, 'error' => $e->getMessage()]);
@@ -849,6 +1354,32 @@ Router::post('/servers/{id}/pool/resync', function ($params) {
                 ? "Re-synced {$synced} client peers"
                 : "{$failed} of " . ($synced + $failed) . " peers still failed — member kept out of failover",
         ], JSON_UNESCAPED_SLASHES);
+    } catch (Exception $e) {
+        http_response_code(500);
+        echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+    }
+});
+
+// Tier-1 reachability probe: from an external pool member (the active one),
+// stand up a throwaway amneziawg client against this server's public ip:port and
+// check for a handshake. Confirms the ingress is UP/routed from the datacenter —
+// does NOT prove the IP is "clean" for censored client networks (that's the canary).
+Router::post('/servers/{id}/pool/probe', function ($params) {
+    requireAdmin();
+    @set_time_limit(120);
+    header('Content-Type: application/json');
+    $serverId = (int) $params['id'];
+    try {
+        $server = new VpnServer($serverId);
+        $serverData = $server->getData();
+        $poolId = (int) ($serverData['pool_id'] ?? 0);
+        if ($poolId <= 0) {
+            http_response_code(400);
+            echo json_encode(['success' => false, 'error' => 'Server is not in a pool']);
+            return;
+        }
+        $res = ServerPool::probeReachability($poolId, $serverId);
+        echo json_encode($res, JSON_UNESCAPED_SLASHES);
     } catch (Exception $e) {
         http_response_code(500);
         echo json_encode(['success' => false, 'error' => $e->getMessage()]);
@@ -926,6 +1457,9 @@ Router::get('/servers/{id}', function ($params) {
             'selected_protocol_id' => $selectedProtocolId,
             'available_protocols' => $availableProtocols,
             'online_logins' => $onlineLogins,
+            // Same window the /online endpoint uses, so the first render and the
+            // JS poll can never disagree and flip a client's badge.
+            'online_window' => ServerMonitoring::onlineWindow(),
         ]);
     } catch (Exception $e) {
         error_log('Server view error: ' . $e->getMessage() . ' at ' . $e->getFile() . ':' . $e->getLine());
