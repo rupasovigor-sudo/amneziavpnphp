@@ -193,13 +193,33 @@ class Ssh
     {
         $options = [
             'LogLevel=ERROR',
-            'StrictHostKeyChecking=no',
-            'UserKnownHostsFile=/dev/null',
             'ConnectTimeout=10',
             'ConnectionAttempts=1',
             'ServerAliveInterval=10',
             'ServerAliveCountMax=2',
         ];
+
+        // Host key handling. This panel SSHes into VPN nodes as root, so a MITM
+        // on that path harvests the server password and can feed us any output
+        // we then persist. StrictHostKeyChecking=no accepted a changed key
+        // silently, forever.
+        //
+        // 'accept-new' keeps first contact frictionless (the key is recorded)
+        // but REFUSES to connect if a known host's key later changes — which is
+        // exactly the MITM case. A legitimately reprovisioned host is handled by
+        // forgetHost(), called on delete and before a deploy.
+        //
+        // If the store is unusable we fall back to the old behaviour rather than
+        // locking the panel out of every server.
+        $knownHosts = self::knownHostsFile();
+        if ($knownHosts !== null) {
+            $options[] = 'StrictHostKeyChecking=accept-new';
+            $options[] = 'UserKnownHostsFile=' . $knownHosts;
+        } else {
+            error_log('Ssh: known_hosts store unavailable, falling back to StrictHostKeyChecking=no');
+            $options[] = 'StrictHostKeyChecking=no';
+            $options[] = 'UserKnownHostsFile=/dev/null';
+        }
 
         $controlDir = self::controlDir();
         if ($controlDir !== null) {
@@ -220,6 +240,51 @@ class Ssh
      * requests) and root (metrics daemon, CLI), and a shared directory would
      * be writable only by whoever created it first.
      */
+    /**
+     * Persistent known_hosts store. Lives in the bind-mounted app dir so pinned
+     * keys survive container restarts — a store that resets on every restart
+     * would re-trust whatever answers next time and defeat the point.
+     */
+    private static function knownHostsFile(): ?string
+    {
+        $dir = dirname(__DIR__) . '/storage/ssh';
+        if (!is_dir($dir)) {
+            @mkdir($dir, 0700, true);
+        }
+        if (!is_dir($dir) || !is_writable($dir)) {
+            return null;
+        }
+        $file = $dir . '/known_hosts';
+        if (!file_exists($file)) {
+            @touch($file);
+            @chmod($file, 0600);
+        }
+        return is_writable($file) ? $file : null;
+    }
+
+    /**
+     * Drop a host's pinned key. Required when a host is legitimately rebuilt
+     * (same IP, fresh OS = new key): without this, every later connection would
+     * be refused as a suspected MITM.
+     */
+    public static function forgetHost(string $host, int $port = 22): void
+    {
+        $file = self::knownHostsFile();
+        $host = trim($host);
+        if ($file === null || $host === '') {
+            return;
+        }
+        $target = ($port !== 22) ? '[' . $host . ']:' . $port : $host;
+        $proc = @proc_open(
+            ['ssh-keygen', '-f', $file, '-R', $target],
+            [0 => ['file', '/dev/null', 'r'], 1 => ['file', '/dev/null', 'w'], 2 => ['file', '/dev/null', 'w']],
+            $pipes
+        );
+        if (is_resource($proc)) {
+            proc_close($proc);
+        }
+    }
+
     private static function controlDir(): ?string
     {
         $uid = function_exists('posix_geteuid') ? posix_geteuid() : getmyuid();

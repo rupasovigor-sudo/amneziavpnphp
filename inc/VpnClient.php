@@ -1477,6 +1477,14 @@ BASH;
             throw new Exception('Client not loaded');
         }
 
+        // Track servers where the peer could NOT be removed. Swallowing these
+        // failures meant an expired / over-limit client was marked disabled in
+        // the DB while its peer kept serving traffic on awg0 — i.e. limits and
+        // expiry silently did not apply. We still record the intent (status =
+        // disabled) but flag those members for re-sync and report failure, so
+        // enforcement is never reported as done when it is not.
+        $failedServers = [];
+
         $isWireguard = self::isWireguardProtocol((int) ($this->data['protocol_id'] ?? 0));
         if ($isWireguard) {
             $server = new VpnServer($this->data['server_id']);
@@ -1487,9 +1495,14 @@ BASH;
                         'server_id' => $this->data['server_id'] ?? null,
                         'client_id' => $this->clientId,
                     ], fn() => self::removeClientFromServer($serverData, $this->data['public_key']));
-                } catch (Exception $e) {
+                } catch (Throwable $e) {
+                    // Throwable, not Exception: the SSH layer can raise Errors.
                     error_log('Failed to remove client from server: ' . $e->getMessage());
+                    $failedServers[] = (int) $this->data['server_id'];
                 }
+            } elseif ($serverData) {
+                // Server not active: the peer was never touched, so it survives.
+                $failedServers[] = (int) $this->data['server_id'];
             }
 
             // Failover pool: the peer was synced to every member, so remove it
@@ -1506,21 +1519,42 @@ BASH;
                         $md = (new VpnServer((int) $mid))->getData();
                         if ($md && $md['status'] === 'active') {
                             self::removeClientFromServer($md, $pk);
+                        } else {
+                            $failedServers[] = (int) $mid;
                         }
                     } catch (Throwable $e) {
                         error_log("revoke: pool peer removal failed on server {$mid}: " . $e->getMessage());
+                        $failedServers[] = (int) $mid;
                     }
                 }
             }
         }
 
-        // Mark as disabled in database
+        // Mark as disabled in database (records the intent regardless)
         $pdo = DB::conn();
         $stmt = $pdo->prepare('UPDATE vpn_clients SET status = ? WHERE id = ?');
-        return self::timed('revoke.db_update', [
+        $dbOk = self::timed('revoke.db_update', [
             'server_id' => $this->data['server_id'] ?? null,
             'client_id' => $this->clientId,
         ], fn() => $stmt->execute(['disabled', $this->clientId]));
+
+        if ($failedServers) {
+            // Flag the members that still carry the peer: reconcilePeers()
+            // rebuilds their peer list from the DB (where this client is now
+            // disabled) and drops the orphan, and until that happens the flag
+            // keeps them out of auto-failover.
+            $ids = array_values(array_unique($failedServers));
+            $in = implode(',', array_fill(0, count($ids), '?'));
+            $pdo->prepare("UPDATE vpn_servers SET pool_sync_pending = 1 WHERE id IN ($in)")->execute($ids);
+            error_log(sprintf(
+                'VpnClient::revoke: client #%d marked disabled but its peer still lives on server(s) %s — flagged for re-sync.',
+                $this->clientId,
+                implode(', ', $ids)
+            ));
+            return false;
+        }
+
+        return $dbOk;
     }
 
     /**
@@ -1581,10 +1615,12 @@ BASH;
             throw new Exception('Client not loaded');
         }
 
-        // First revoke to remove from server
-        if ($this->data['status'] === 'active') {
-            $this->revoke();
-        }
+        // Strip the peer regardless of status. Gating this on 'active' meant a
+        // client already marked disabled — including one whose earlier revoke
+        // failed to remove the peer — had its row deleted while the peer lived
+        // on forever, invisible to the DB and holding an IP that getNextClientIP
+        // would then hand to somebody else.
+        $this->revoke();
 
         // Delete from database
         $pdo = DB::conn();

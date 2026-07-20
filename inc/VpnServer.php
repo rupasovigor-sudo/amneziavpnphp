@@ -617,14 +617,44 @@ BASH;
     {
         $pdo = DB::conn();
         $serverId = (int) $this->serverId;
+
+        // Drop the pinned host key: the IP is very likely to be reused by a new
+        // machine, and a stale pin would make every future connection to it look
+        // like a MITM and be refused.
+        if (!empty($this->data['host'])) {
+            Ssh::forgetHost((string) $this->data['host'], (int) ($this->data['port'] ?? 22));
+        }
         $poolId = (int) ($this->data['pool_id'] ?? 0);
 
         // Pool cleanup BEFORE removing the row (the DELETE cascades this server's
         // vpn_clients rows). Two things must happen or the pool is left broken:
         if ($poolId > 0) {
-            // 1) This member's client peers were synced to every other member.
-            //    Strip them from the survivors, otherwise they linger as orphans
-            //    (counted as live clients, holding pool IPs).
+            // 0) Clients in a pool are logically SHARED — the same config works
+            //    against any member — but each row is bound by server_id to the
+            //    member it happened to be created on. Cascading that delete wiped
+            //    those clients from the whole pool and stripped their peers off
+            //    the survivors: users silently lost access even though the pool
+            //    was still alive. Hand them to a surviving member instead; their
+            //    peers are already present there, so nothing else has to change.
+            $stmtS = $pdo->prepare(
+                'SELECT id FROM vpn_servers WHERE pool_id = ? AND id <> ? ORDER BY pool_priority ASC, id ASC LIMIT 1'
+            );
+            $stmtS->execute([$poolId, $serverId]);
+            $heir = (int) $stmtS->fetchColumn();
+            if ($heir > 0) {
+                $stmtR = $pdo->prepare('UPDATE vpn_clients SET server_id = ? WHERE server_id = ?');
+                $stmtR->execute([$heir, $serverId]);
+                $moved = $stmtR->rowCount();
+                if ($moved > 0) {
+                    error_log("VpnServer::delete: reassigned {$moved} client(s) from server {$serverId} to pool member {$heir}");
+                }
+            }
+
+            // 1) Any peers still bound to THIS server (none, if the step above
+            //    found an heir) were synced to every other member. Strip those
+            //    from the survivors, otherwise they linger as orphans holding
+            //    pool IPs. With an heir this loop finds nothing, which is the
+            //    point: surviving clients keep working.
             try {
                 $stmtC = $pdo->prepare('SELECT public_key FROM vpn_clients WHERE server_id = ?');
                 $stmtC->execute([$serverId]);

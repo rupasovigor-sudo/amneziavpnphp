@@ -1020,6 +1020,19 @@ SWAP;
     }
     public static function activate(VpnServer $server, array $protocol, array $options = []): array
     {
+        // A deploy is an explicit "I am provisioning this host" action, so a
+        // changed host key here is expected (fresh OS on a reused IP) rather
+        // than suspicious. Clear the pin so accept-new can record the new one;
+        // steady-state operations keep the strict check.
+        try {
+            $sd = $server->getData();
+            if (!empty($sd['host'])) {
+                Ssh::forgetHost((string) $sd['host'], (int) ($sd['port'] ?? 22));
+            }
+        } catch (Throwable $e) {
+            error_log('activate: forgetHost failed: ' . $e->getMessage());
+        }
+
         $serverId = $server->getId();
         try {
             Logger::appendInstall($serverId, 'Activate start for ' . ($protocol['slug'] ?? 'unknown'));
