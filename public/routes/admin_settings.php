@@ -559,6 +559,7 @@ Router::post('/settings/delete-user/{id}', function ($params) {
 
 // Change language
 Router::post('/language/change', function () {
+    requireAuth();
     $lang = $_POST['language'] ?? '';
 
     if (Translator::setLanguage($lang)) {
@@ -567,7 +568,13 @@ Router::post('/language/change', function () {
         $_SESSION['error'] = 'Invalid language';
     }
 
-    $redirect = $_POST['redirect'] ?? '/dashboard';
+    // Only same-site paths: taking the target straight from POST turned this
+    // into an open redirect — a link on the panel's own domain that lands the
+    // victim on an attacker's page.
+    $redirect = (string) ($_POST['redirect'] ?? '/dashboard');
+    if ($redirect === '' || $redirect[0] !== '/' || str_starts_with($redirect, '//')) {
+        $redirect = '/dashboard';
+    }
     redirect($redirect);
 });
 
