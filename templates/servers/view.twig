@@ -1521,6 +1521,20 @@ if (document.querySelector('[id^="client-speed-"]')) {
 // Live online status: poll the active member's awg0 so the status badge and
 // last-handshake reflect reality without waiting for the collector cycle.
 const STATUS_LABELS = { active: '{{ t('status.active') }}', disabled: '{{ t('status.disabled') }}' };
+
+// Sub-line under the status badge: the pool member the client is actually
+// connected to. Highlighted when that is NOT the active member — that is the
+// "client lingering on the old server after a switch" case, which is otherwise
+// invisible until something breaks.
+function connLine(cell) {
+  const name = cell.dataset.connServer || '';
+  if (!name) return '';
+  const off = cell.dataset.connOffMember === '1';
+  const esc = String(name).replace(/[&<>"]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m]));
+  return off
+    ? `<div class="text-xs text-amber-700 mt-0.5" title="Клиент подключён не к активному серверу пула — переедет при переподключении"><i class="fas fa-arrow-turn-down mr-1"></i>${esc}</div>`
+    : `<div class="text-xs text-gray-500 mt-0.5"><i class="fas fa-server mr-1"></i>${esc}</div>`;
+}
 function fmtHsAge(sec) {
   if (sec == null) return '—';
   if (sec < 60) return sec + 'с назад';
@@ -1549,7 +1563,17 @@ async function refreshLiveStatus() {
         } else {
           html = '<span class="status-badge inline-flex items-center gap-1 px-2 py-1 bg-red-100 text-red-800 rounded text-xs"><i class="fas fa-ban"></i>' + STATUS_LABELS.disabled + '</span>';
         }
-        cell.innerHTML = html;
+        // Which pool member is actually carrying this client. Stored on the
+        // cell so the other (coarser) poller renders the same sub-line instead
+        // of wiping it.
+        if (online && peer && peer.server_name) {
+          cell.dataset.connServer = peer.server_name;
+          cell.dataset.connOffMember = peer.is_active_member ? '' : '1';
+        } else {
+          cell.dataset.connServer = '';
+          cell.dataset.connOffMember = '';
+        }
+        cell.innerHTML = html + connLine(cell);
       }
       const hsCell = row.querySelector('[data-hs-cell]');
       if (hsCell && peer && peer.handshake_age != null) {
@@ -1607,13 +1631,21 @@ async function updateOnlineStatus() {
       const clientName = cell.dataset.clientName;
       const clientStatus = cell.dataset.clientStatus;
       
+      // This poller knows names only, not which member serves them. Render the
+      // sub-line from the value the richer poller stored on the cell instead of
+      // wiping it — two pollers fighting over one cell is what made statuses
+      // flicker before.
+      let badge;
       if (onlineSet.has(clientName)) {
-        cell.innerHTML = '<span class="online-badge px-2 py-1 bg-green-100 text-green-800 rounded text-xs"><i class="fas fa-wifi mr-1"></i>Online</span>';
+        badge = '<span class="online-badge px-2 py-1 bg-green-100 text-green-800 rounded text-xs"><i class="fas fa-wifi mr-1"></i>Online</span>';
       } else if (clientStatus === 'active') {
-        cell.innerHTML = '<span class="status-badge px-2 py-1 bg-gray-100 text-gray-600 rounded text-xs">{{ t("status.active") }}</span>';
+        badge = '<span class="status-badge px-2 py-1 bg-gray-100 text-gray-600 rounded text-xs">{{ t("status.active") }}</span>';
+        cell.dataset.connServer = '';
       } else {
-        cell.innerHTML = '<span class="status-badge px-2 py-1 bg-red-100 text-red-800 rounded text-xs">{{ t("status.disabled") }}</span>';
+        badge = '<span class="status-badge px-2 py-1 bg-red-100 text-red-800 rounded text-xs">{{ t("status.disabled") }}</span>';
+        cell.dataset.connServer = '';
       }
+      cell.innerHTML = badge + connLine(cell);
     });
   } catch (e) {
     console.error('Failed to update online status:', e);

@@ -826,6 +826,7 @@ Router::get('/servers/{id}/clients/live-status', function ($params) {
             // elsewhere as offline and reset its badge to "active". Merge all
             // members and keep the freshest handshake per peer.
             $peers = [];
+            $activeMemberId = (int) (ServerPool::get($poolId)['active_server_id'] ?? 0);
             foreach (ServerPool::members($poolId) as $member) {
                 try {
                     $memberPeers = (new VpnServer((int) $member['id']))->liveClientPeers();
@@ -836,6 +837,14 @@ Router::get('/servers/{id}/clients/live-status', function ($params) {
                     $age = $info['handshake_age'] ?? null;
                     $seen = $peers[$pub]['handshake_age'] ?? null;
                     if (!isset($peers[$pub]) || ($age !== null && ($seen === null || $age < $seen))) {
+                        // Remember WHICH member this handshake came from. Clients
+                        // stay on the member they last resolved, so after a switch
+                        // they linger on the old one — surfacing that per client
+                        // turns an invisible split into something the operator
+                        // can see at a glance.
+                        $info['server_id'] = (int) $member['id'];
+                        $info['server_name'] = (string) $member['name'];
+                        $info['is_active_member'] = ((int) $member['id'] === $activeMemberId);
                         $peers[$pub] = $info;
                     }
                 }
