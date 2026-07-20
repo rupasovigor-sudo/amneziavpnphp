@@ -891,9 +891,10 @@
       </thead>
       <tbody id="clientsTableBody">
         {% for client in clients %}
-        {# last_handshake is the newest seen across all pool members, i.e. "online somewhere in the pool". #}
-        {% set is_online_by_handshake = client.last_handshake and (("now"|date('U') - client.last_handshake|date('U')) < (online_window|default(600))) %}
-        {% set is_online = client.name in online_logins or is_online_by_handshake %}
+        {# online_logins is authoritative: it is computed from traffic received from
+           the client, so a disconnected client drops out at once instead of
+           lingering until its handshake ages. #}
+        {% set is_online = client.name in online_logins %}
         <tr class="border-t client-row" data-search="{{ (client.name ~ ' ' ~ client.client_ip)|lower }}" data-public-key="{{ client.public_key }}">
           <td class="px-4 py-3">
             <div class="font-medium text-gray-900">{{ client.name }}</div>
@@ -1554,7 +1555,12 @@ async function refreshLiveStatus() {
       const cell = row.querySelector('[data-status-cell]');
       if (cell) {
         const dbStatus = cell.getAttribute('data-client-status');
-        const online = peer && peer.handshake_age != null && peer.handshake_age < (d.online_window || {{ online_window|default(600) }});
+        // The server decides: it compares traffic received from the client, which
+        // distinguishes "idle but connected" from "gone". handshake_age is only a
+        // fallback for responses predating that field.
+        const online = peer && (peer.online !== undefined
+          ? peer.online
+          : (peer.handshake_age != null && peer.handshake_age < (d.online_window || {{ online_window|default(180) }})));
         let html;
         if (online) {
           html = '<span class="online-badge inline-flex items-center gap-1 px-2 py-1 bg-green-100 text-green-800 rounded text-xs"><i class="fas fa-wifi"></i>Online</span>';

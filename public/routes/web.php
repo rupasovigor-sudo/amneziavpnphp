@@ -852,6 +852,20 @@ Router::get('/servers/{id}/clients/live-status', function ($params) {
         } else {
             $peers = $server->liveClientPeers();
         }
+        // Stamp each peer with the SAME online verdict the rest of the panel uses
+        // (traffic received from the client), so the two pollers and the initial
+        // render can never disagree — that disagreement is what made statuses
+        // flicker before.
+        $onlineNames = array_flip(ServerMonitoring::clientsWithRecentTraffic($poolId, $serverId));
+        $keyToName = [];
+        foreach (DB::conn()->query("SELECT public_key, name FROM vpn_clients WHERE status = 'active'")->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $keyToName[(string) $row['public_key']] = (string) $row['name'];
+        }
+        foreach ($peers as $pk => $info) {
+            $name = $keyToName[(string) $pk] ?? null;
+            $peers[$pk]['online'] = $name !== null && isset($onlineNames[$name]);
+        }
+
         if ($cacheTtl > 0) {
             @file_put_contents($cacheFile, json_encode(['peers' => $peers, 'at' => time()]));
         }

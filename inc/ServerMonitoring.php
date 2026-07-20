@@ -513,10 +513,16 @@ SH;
             $deltaReceived = 0;
         }
 
+        // $rawSent is what the server RECEIVED FROM the client. It only moves
+        // while the client is actually transmitting (keepalive counts), so the
+        // moment it last moved is the truthful "still connected" timestamp —
+        // unlike a handshake, which merely ages after a disconnect.
+        $rxMoved = !$prev || $rawSent !== (int) $prev['last_sent'];
         $db->prepare(
-            'INSERT INTO client_traffic_counters (client_id, server_id, last_sent, last_received)
-             VALUES (?, ?, ?, ?)
+            'INSERT INTO client_traffic_counters (client_id, server_id, last_sent, last_received, last_rx_at)
+             VALUES (?, ?, ?, ?, ' . ($rxMoved ? 'NOW()' : 'NULL') . ')
              ON DUPLICATE KEY UPDATE last_sent = VALUES(last_sent), last_received = VALUES(last_received)'
+            . ($rxMoved ? ', last_rx_at = NOW()' : '')
         )->execute([$clientId, $serverId, $rawSent, $rawReceived]);
 
         $cur = $db->prepare('SELECT bytes_sent, bytes_received FROM vpn_clients WHERE id = ?');
@@ -1263,11 +1269,65 @@ SH);
      */
     public static function onlineWindow(): int
     {
-        return max(60, (int) Config::get('CLIENT_ONLINE_WINDOW_SECONDS', '600'));
+        // Judged against the last traffic RECEIVED FROM the client, not the last
+        // handshake. A handshake only ages, so a client that switched its VPN
+        // off still read as online for the whole window; with keepalive the
+        // from-client counter moves every ~25s and stops the instant it leaves.
+        // The floor is well above the 60s collector cycle so a client is not
+        // flagged offline merely because the sample is between passes.
+        return max(120, (int) Config::get('CLIENT_ONLINE_WINDOW_SECONDS', '180'));
+    }
+
+    /**
+     * Names of clients that actually sent traffic recently. Pool-wide: the
+     * session may live on any member.
+     *
+     * @return string[]
+     */
+    public static function clientsWithRecentTraffic(int $poolId = 0, int $serverId = 0): array
+    {
+        $window = self::onlineWindow();
+        $db = DB::conn();
+        if ($poolId > 0) {
+            $stmt = $db->prepare(
+                "SELECT DISTINCT vc.name
+                 FROM vpn_clients vc
+                 JOIN client_traffic_counters t ON t.client_id = vc.id
+                 JOIN vpn_servers s ON s.id = t.server_id
+                 WHERE s.pool_id = ? AND vc.status = 'active'
+                   AND t.last_rx_at IS NOT NULL
+                   AND t.last_rx_at >= DATE_SUB(NOW(), INTERVAL ? SECOND)"
+            );
+            $stmt->execute([$poolId, $window]);
+        } else {
+            $stmt = $db->prepare(
+                "SELECT DISTINCT vc.name
+                 FROM vpn_clients vc
+                 JOIN client_traffic_counters t ON t.client_id = vc.id
+                 WHERE t.server_id = ? AND vc.status = 'active'
+                   AND t.last_rx_at IS NOT NULL
+                   AND t.last_rx_at >= DATE_SUB(NOW(), INTERVAL ? SECOND)"
+            );
+            $stmt->execute([$serverId, $window]);
+        }
+        return array_values(array_unique($stmt->fetchAll(PDO::FETCH_COLUMN) ?: []));
     }
 
     public static function getOnlineClientsForServer(array $serverData): array
     {
+        // Prefer the traffic-based signal; fall back to the handshake window only
+        // while last_rx_at has not been populated yet (fresh install, first
+        // collector pass), otherwise a disconnected client reads online until
+        // its handshake ages out.
+        $poolId = (int) ($serverData['pool_id'] ?? 0);
+        $byTraffic = self::clientsWithRecentTraffic($poolId, (int) ($serverData['id'] ?? 0));
+        $haveTrafficData = (int) DB::conn()->query(
+            'SELECT COUNT(*) FROM client_traffic_counters WHERE last_rx_at IS NOT NULL'
+        )->fetchColumn() > 0;
+        if ($haveTrafficData) {
+            return $byTraffic;
+        }
+
         $result = [];
         $db = DB::conn();
 
