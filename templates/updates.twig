@@ -1,0 +1,142 @@
+{% extends "layout.twig" %}
+{% block title %}Обновления{% endblock %}
+
+{% block content %}
+<div class="max-w-7xl mx-auto px-4 py-8">
+  <div class="mb-6 flex items-center justify-between flex-wrap gap-2">
+    <div>
+      <h1 class="text-3xl font-bold">Обновления серверов</h1>
+      <p class="text-gray-600">Состояние пакетов, awg2 и WARP по всему парку</p>
+    </div>
+    <div class="flex items-center gap-2 flex-wrap">
+      <button type="button" id="fleetRefresh" class="px-4 py-2 bg-slate-600 text-white rounded-md text-sm">
+        <i class="fas fa-rotate mr-1"></i>Проверить все
+      </button>
+      <button type="button" id="fleetRolling" class="px-4 py-2 bg-purple-600 text-white rounded-md text-sm" style="display:none">
+        <i class="fas fa-arrows-rotate mr-1"></i>Обновить пул без простоя
+      </button>
+    </div>
+  </div>
+
+  <div class="bg-white rounded shadow overflow-x-auto">
+    <table class="min-w-full text-sm">
+      <thead class="bg-gray-50 text-gray-600">
+        <tr>
+          <th class="px-4 py-3 text-left">Сервер</th>
+          <th class="px-4 py-3 text-left">Роль</th>
+          <th class="px-4 py-3 text-left">Пакеты</th>
+          <th class="px-4 py-3 text-left">Перезагрузка</th>
+          <th class="px-4 py-3 text-left">awg2</th>
+          <th class="px-4 py-3 text-left">WARP</th>
+          <th class="px-4 py-3 text-left">Проверено</th>
+          <th class="px-4 py-3 text-left"></th>
+        </tr>
+      </thead>
+      <tbody id="fleetBody">
+        <tr><td colspan="8" class="px-4 py-6 text-center text-gray-400">Загрузка…</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="mt-3 text-sm text-gray-500">
+    Действия выполняются на странице конкретного сервера — там же подтверждение риска и прогресс.
+    Обновлять <b>активный</b> член пула нельзя без явного подтверждения: на нём висят клиенты.
+  </p>
+</div>
+
+<script>
+(function () {
+  const body = document.getElementById('fleetBody');
+  const btn = document.getElementById('fleetRefresh');
+  const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m]));
+
+  const yes = (v, okTxt, badTxt) => v == null
+    ? '<span class="text-gray-400">—</span>'
+    : (v ? `<span class="text-yellow-700">${badTxt}</span>` : `<span class="text-green-700">${okTxt}</span>`);
+
+  function render(rows) {
+    if (!rows || !rows.length) {
+      body.innerHTML = '<tr><td colspan="8" class="px-4 py-6 text-center text-gray-400">Серверов нет</td></tr>';
+      return;
+    }
+    body.innerHTML = rows.map(r => {
+      const a = r.audit || {};
+      const act = a.actionable != null ? a.actionable : a.upgradable;
+      const phased = a.phased ? ` <span class="text-gray-400" title="отложены Ubuntu (phased rollout)">+${a.phased}</span>` : '';
+      const pkg = act == null ? '—'
+        : (act === 0 ? '<span class="text-green-700">0</span>' + phased
+          : `<span class="${a.security ? 'text-red-700 font-semibold' : 'text-yellow-700'}">${act}${a.security ? ' · sec ' + a.security : ''}</span>` + phased);
+      const role = r.is_active
+        ? '<span class="px-2 py-0.5 rounded text-xs bg-green-100 text-green-700">ACTIVE</span>'
+        : (r.pool_id ? '<span class="px-2 py-0.5 rounded text-xs bg-gray-200 text-gray-600">STANDBY</span>' : '<span class="text-gray-400 text-xs">—</span>');
+      const running = (r.state && r.state.state === 'running')
+        ? ' <i class="fas fa-circle-notch fa-spin text-purple-600" title="идёт задача"></i>' : '';
+      return `<tr class="border-t">
+        <td class="px-4 py-3"><a href="/servers/${r.id}" class="text-purple-700 hover:underline">${esc(r.name)}</a>${running}
+          <div class="text-gray-400 font-mono text-xs">${esc(r.host)}</div></td>
+        <td class="px-4 py-3">${role}</td>
+        <td class="px-4 py-3">${pkg}</td>
+        <td class="px-4 py-3">${a.reboot_required == null ? '—' : (a.reboot_required ? '<span class="text-red-600">нужна</span>' : '<span class="text-green-700">нет</span>')}</td>
+        <td class="px-4 py-3">${yes(a.awg2_update_available, 'актуален', 'обновить')}</td>
+        <td class="px-4 py-3">${yes(a.warp_update_available, 'актуальны', 'обновить')}</td>
+        <td class="px-4 py-3 text-gray-500">${esc((a.audited_at || '').slice(0, 16))}</td>
+        <td class="px-4 py-3"><a href="/servers/${r.id}" class="px-2 py-1 bg-slate-600 text-white rounded text-xs">Открыть</a></td>
+      </tr>`;
+    }).join('');
+  }
+
+  function load(refresh) {
+    const orig = btn.innerHTML;
+    btn.disabled = true;
+    if (refresh) btn.innerHTML = '<i class="fas fa-circle-notch fa-spin mr-1"></i>Проверяю…';
+    fetch('/updates/fleet' + (refresh ? '?refresh=1' : ''), { credentials: 'same-origin' })
+      .then(async r => {
+        const t = await r.text();
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        try { return JSON.parse(t); } catch (e) { throw new Error('некорректный ответ'); }
+      })
+      .then(d => {
+        if (!d.success) throw new Error(d.error || 'ошибка');
+        render(d.servers);
+        maybeShowRolling(d.servers);
+        if (refresh && window.showToast) showToast('Проверено серверов: ' + (d.servers || []).length, 'success');
+      })
+      .catch(e => {
+        body.innerHTML = `<tr><td colspan="8" class="px-4 py-6 text-center text-red-600">Ошибка: ${esc(e.message)}</td></tr>`;
+      })
+      .finally(() => { btn.disabled = false; btn.innerHTML = orig; });
+  }
+
+  // Rolling update is only meaningful for a pool with a spare member.
+  const rolling = document.getElementById('fleetRolling');
+  let poolId = 0;
+  function maybeShowRolling(rows) {
+    const pools = {};
+    (rows || []).forEach(r => { if (r.pool_id) pools[r.pool_id] = (pools[r.pool_id] || 0) + 1; });
+    const ready = Object.keys(pools).filter(p => pools[p] >= 2);
+    poolId = ready.length ? Number(ready[0]) : 0;
+    rolling.style.display = poolId ? 'inline-flex' : 'none';
+  }
+  rolling.addEventListener('click', () => {
+    showConfirmModal(
+      'Порядок: сначала обновляются резервные серверы, затем пул переключается на проверенный из них, и только потом обновляется бывший активный.\n\n' +
+      'Активный сервер не трогается, пока есть кому его заменить. Клиенты, оставшиеся на бывшем активном, кратко переподключатся.',
+      'Rolling-обновление пула?', 'Запустить'
+    ).then(ok => {
+      if (!ok) return;
+      rolling.disabled = true;
+      fetch('/updates/pool/' + poolId, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin', body: JSON.stringify({ actions: ['os'] })
+      }).then(async r => ({ code: r.status, d: await r.json() })).then(({ d }) => {
+        if (window.showToast) showToast(d.message || d.error || 'Ошибка', d.success ? 'success' : 'error');
+        setTimeout(() => load(false), 3000);
+      }).catch(e => { if (window.showToast) showToast('Ошибка: ' + e, 'error'); })
+        .finally(() => { rolling.disabled = false; });
+    });
+  });
+
+  btn.addEventListener('click', () => load(true));
+  load(false);
+})();
+</script>
+{% endblock %}

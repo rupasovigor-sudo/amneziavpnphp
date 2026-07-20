@@ -49,6 +49,10 @@ class InstallProtocolManager
 
             $script = preg_replace('/^CONTAINER=.*$/m', 'CONTAINER=' . self::shellDoubleQuotedLiteral($containerName), $script);
             $script = preg_replace('/^WG_IFACE=.*$/m', 'WG_IFACE="awg0"', $script);
+            // Pin the amneziawg-go ref so rebuilds are deliberate version bumps
+            // rather than "whatever is on master at this moment".
+            $awg2Ref = trim((string) Config::get('AWG2_PIN_REF', 'master')) ?: 'master';
+            $script = preg_replace('/^AWG2_REF=.*$/m', 'AWG2_REF=' . self::shellDoubleQuotedLiteral($awg2Ref), $script);
             if ($vpnPort > 0) {
                 $script = preg_replace('/^UDP_PORT=.*$/m', 'UDP_PORT="' . $vpnPort . '"', $script);
             }
@@ -462,6 +466,20 @@ class InstallProtocolManager
         $requiresDocker = !array_key_exists('requires_docker', $metadata) || filter_var($metadata['requires_docker'], FILTER_VALIDATE_BOOLEAN);
 
         if ($phase === 'install' && $requiresDocker) {
+            // Swap insurance: the awg2 image build is a golang compile that can spike
+            // memory. On small (≤2.5 GB) servers with no swap, add a 2 GB swapfile so
+            // the OOM-killer doesn't abort the build. Idempotent, best-effort: skips
+            // when swap already exists, RAM is ample, or the disk is tight.
+            $swapCmd = <<<'SWAP'
+bash -lc 'set -e; sw=$(grep SwapTotal /proc/meminfo | tr -dc 0-9); if [ "${sw:-0}" -gt 0 ]; then echo swap-present; exit 0; fi; mem=$(grep MemTotal /proc/meminfo | tr -dc 0-9); if [ "${mem:-0}" -gt 2621440 ]; then echo swap-ram-ok; exit 0; fi; av=$(df -Pk / | tail -1 | tr -s " " | cut -d" " -f4); if [ "${av:-0}" -lt 2621440 ]; then echo swap-no-disk; exit 0; fi; (fallocate -l 2G /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=2048); chmod 600 /swapfile; mkswap /swapfile >/dev/null; swapon /swapfile; grep -q "^/swapfile " /etc/fstab || echo "/swapfile none swap sw 0 0" >> /etc/fstab; echo swap-created-2g'
+SWAP;
+            try {
+                $swapOut = trim((string) $server->executeCommand($swapCmd, true));
+                Logger::appendInstall($server->getId(), 'INSTALL phase: swap preflight -> ' . ($swapOut !== '' ? substr($swapOut, -120) : 'no-output'));
+            } catch (Throwable $e) {
+                Logger::appendInstall($server->getId(), 'INSTALL phase: swap preflight failed (ignored): ' . $e->getMessage());
+            }
+
             Logger::appendInstall($server->getId(), 'INSTALL phase: docker preflight start');
             $bootstrapCmd = "bash -lc 'set -e; "
                 . "if command -v docker >/dev/null 2>&1; then command -v docker; docker --version || true; exit 0; fi; "
