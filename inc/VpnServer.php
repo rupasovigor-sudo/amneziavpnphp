@@ -264,7 +264,8 @@ class VpnServer
             && strtolower((string) ($this->data['username'] ?? '')) !== 'root';
         $prepared = $needsSudo ? Ssh::wrapSudo($this->data, $command) : $command;
 
-        $output = Ssh::exec($this->data, $pathPrefix . $prepared, ['timeout' => 900])->output;
+        $result = Ssh::exec($this->data, $pathPrefix . $prepared, ['timeout' => 900]);
+        $output = $result->output;
 
         // If sudo auth fails but user can run docker without sudo, retry docker commands directly.
         if ($needsSudo && $isDockerCommand && Ssh::isSudoAuthFailure($output)) {
@@ -272,7 +273,22 @@ class VpnServer
             if ($this->serverId !== null) {
                 self::$dockerSudoCache[$this->serverId] = false;
             }
-            $output = Ssh::exec($this->data, $pathPrefix . $baseCommand, ['timeout' => 900])->output;
+            $result = Ssh::exec($this->data, $pathPrefix . $baseCommand, ['timeout' => 900]);
+            $output = $result->output;
+        }
+
+        // The command's exit code is intentionally NOT surfaced — plenty of
+        // callers run commands that legitimately fail. But a failure to CONNECT
+        // is different: nothing ran, and returning ssh's diagnostic as "output"
+        // made callers act on it as data (a refused host key read as a server
+        // reporting no containers, an unreachable host as an empty peer list).
+        if (Ssh::isConnectionFailure($result)) {
+            $first = trim(strtok(trim($output), "\n") ?: '');
+            throw new Exception(sprintf(
+                'SSH connection to %s failed: %s',
+                (string) ($this->data['host'] ?? '?'),
+                $first !== '' ? $first : 'exit code 255'
+            ));
         }
 
         return $output;

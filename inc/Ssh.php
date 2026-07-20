@@ -138,6 +138,35 @@ class Ssh
     }
 
     /**
+     * True when ssh itself failed to establish the session, i.e. the remote
+     * command never ran and $output is an ssh diagnostic, not command output.
+     *
+     * Deliberately narrow: a remote command may legitimately exit non-zero (or
+     * even 255), so we require ssh's own exit code AND a recognisable transport
+     * error. Callers of VpnServer::executeCommand() would otherwise parse the
+     * error banner as if it were the command's result — e.g. a refused host key
+     * looked like a server happily reporting no containers.
+     */
+    public static function isConnectionFailure(SshResult $result): bool
+    {
+        if ($result->exitCode !== 255) {
+            return false;
+        }
+        return (bool) preg_match(
+            '/REMOTE HOST IDENTIFICATION HAS CHANGED'
+            . '|Host key verification failed'
+            . '|Permission denied'
+            . '|Connection (refused|closed|timed out|reset)'
+            . '|No route to host'
+            . '|Could not resolve hostname'
+            . '|Network is unreachable'
+            . '|Too many authentication failures'
+            . '|kex_exchange_identification/i',
+            $result->output
+        );
+    }
+
+    /**
      * Build the local argv prefix for ssh/scp: timeout wrapper, sshpass when
      * using password auth, connection options, multiplexing and auth options.
      *
