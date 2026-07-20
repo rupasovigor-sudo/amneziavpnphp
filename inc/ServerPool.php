@@ -34,16 +34,78 @@ class ServerPool
     public static function members(int $poolId): array
     {
         $stmt = DB::conn()->prepare(
-            'SELECT id, name, host, domain, status, pool_priority, pool_sync_pending, last_check_at
+            'SELECT id, name, host, domain, status, pool_priority, pool_sync_pending, last_check_at,
+                    validated_clean, validated_at, validation_note
              FROM vpn_servers WHERE pool_id = ? ORDER BY pool_priority ASC, id ASC'
         );
         $stmt->execute([$poolId]);
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
+    /**
+     * Build a full-tunnel "AllowedIPs" list (0.0.0.0/0 minus exclusions) that
+     * carves out EVERY pool member's ingress IP, not just the active one.
+     *
+     * A router/full-tunnel peer must not route the encrypted tunnel packets back
+     * into the tunnel, so the current endpoint IP is normally excluded. In a
+     * failover pool the active IP rotates via DNS, so excluding only the active
+     * one breaks after failover. Excluding all member IPs makes the config
+     * survive any in-pool failover; it only needs regenerating when a NEW member
+     * is added to the pool.
+     *
+     * @param string[] $extraExcludes Router-local CIDRs to also carve out
+     *                                (own address, LAN, docker bridges).
+     * @return array{allowed_ips:string,member_ips:string[],excluded:string[]}
+     */
+    public static function allowedIpsExcludingPool(int $poolId, array $extraExcludes = []): array
+    {
+        $memberIps = [];
+        foreach (self::members($poolId) as $m) {
+            $host = trim((string) ($m['host'] ?? ''));
+            if ($host !== '' && filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false) {
+                $memberIps[] = $host . '/32';
+            }
+        }
+        $memberIps = array_values(array_unique($memberIps));
+
+        $extra = [];
+        foreach ($extraExcludes as $e) {
+            $e = trim((string) $e);
+            if ($e !== '') {
+                $extra[] = $e;
+            }
+        }
+
+        $excluded = array_merge($memberIps, $extra);
+        $allowed = CidrMath::complement($excluded);
+
+        return [
+            'allowed_ips' => implode(', ', $allowed),
+            'member_ips'  => $memberIps,
+            'excluded'    => $excluded,
+        ];
+    }
+
     public static function list(): array
     {
         return DB::conn()->query('SELECT * FROM server_pools ORDER BY name')->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    /**
+     * The pool whose shared domain equals $domain, or null. Used to stop a
+     * non-active node (even a standalone server that carries the same domain,
+     * e.g. right after provisioning) from hijacking a pool's shared A-record.
+     */
+    public static function findByDomain(string $domain): ?array
+    {
+        $domain = trim($domain);
+        if ($domain === '') {
+            return null;
+        }
+        $stmt = DB::conn()->prepare('SELECT * FROM server_pools WHERE domain = ? LIMIT 1');
+        $stmt->execute([$domain]);
+        $pool = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $pool ? self::decryptPool($pool) : null;
     }
 
     /**
@@ -85,6 +147,8 @@ class ServerPool
                 'role' => ((int) $m['id'] === $activeId) ? 'active' : 'standby',
                 'dns_points_here' => in_array($m['host'], $resolved, true),
                 'sync_pending' => (int) ($m['pool_sync_pending'] ?? 0) === 1,
+                'validated_clean' => is_null($m['validated_clean'] ?? null) ? null : (int) $m['validated_clean'],
+                'validation_note' => $m['validation_note'] ?? null,
             ];
         }
 
@@ -168,7 +232,21 @@ class ServerPool
             return ['success' => false, 'message' => 'Failed to create pool: ' . $e->getMessage()];
         }
 
-        return ['success' => true, 'pool_id' => $poolId, 'message' => "Pool '{$poolName}' created from server {$serverId}"];
+        // Point the pool domain at the founding (active) member so the pool is
+        // usable at once — otherwise clients/the badge see "домен ≠ активный".
+        $domain = trim((string) ($data['domain'] ?? ''));
+        $dnsMsg = '';
+        if ($domain !== '' && DnsManager::isConfigured()) {
+            try {
+                $dns = DnsManager::upsertARecord($domain, (string) ($data['host'] ?? ''));
+                $dnsMsg = !empty($dns['success'])
+                    ? ' Домен указан на этот сервер.'
+                    : ' ВНИМАНИЕ: домен не обновлён — ' . ($dns['message'] ?? '?');
+            } catch (Throwable $e) {
+                $dnsMsg = ' DNS-репойнт не удался: ' . $e->getMessage();
+            }
+        }
+        return ['success' => true, 'pool_id' => $poolId, 'message' => "Pool '{$poolName}' created from server {$serverId}." . $dnsMsg];
     }
 
     /**
@@ -192,6 +270,40 @@ class ServerPool
         }
         if (!$target) {
             return ['success' => false, 'message' => "Server {$serverId} is not a member of this pool"];
+        }
+
+        // Safety: never repoint to a member that isn't actually serving the pool's
+        // clients on its LIVE awg0 interface. Peers can be absent even when
+        // pool_sync_pending = 0 (they live in clientsTable/`awg set`, not awg0.conf,
+        // so a container restart drops them). Activating a peer-less member
+        // black-holes every client — this exact gap caused a full outage.
+        $memberIds = array_map(static fn($m) => (int) $m['id'], self::members($poolId));
+        $expectedPeers = 0;
+        if (!empty($memberIds)) {
+            $in = implode(',', array_fill(0, count($memberIds), '?'));
+            $stmtC = DB::conn()->prepare(
+                "SELECT COUNT(DISTINCT public_key) FROM vpn_clients
+                 WHERE server_id IN ($in) AND status = 'active' AND public_key <> ''"
+            );
+            $stmtC->execute($memberIds);
+            $expectedPeers = (int) $stmtC->fetchColumn();
+        }
+        if ($expectedPeers > 0) {
+            $targetData = (new VpnServer($serverId))->getData();
+            $tc = (string) ($targetData['container_name'] ?? '') ?: 'amnezia-awg2';
+            $livePeers = (int) trim((string) (new VpnServer($serverId))->executeCommand(
+                'docker exec ' . escapeshellarg($tc) . ' awg show awg0 allowed-ips 2>/dev/null | grep -c "/32"',
+                true
+            ));
+            if ($livePeers < $expectedPeers) {
+                error_log("ServerPool::setActive REFUSED #{$serverId}: {$livePeers}/{$expectedPeers} live peers");
+                return [
+                    'success' => false,
+                    'message' => "Отказ активировать #{$serverId} ({$target['name']}): на живом интерфейсе {$livePeers}/{$expectedPeers} клиентских пиров — сначала «Ре-синк» (иначе клиенты не подключатся).",
+                    'live_peers' => $livePeers,
+                    'expected_peers' => $expectedPeers,
+                ];
+            }
         }
 
         $oldActive = (int) ($pool['active_server_id'] ?? 0);
@@ -496,6 +608,9 @@ class ServerPool
             if ((int) ($m['pool_sync_pending'] ?? 0) === 1) {
                 continue; // client peers incomplete — those clients couldn't connect here
             }
+            if ((int) ($m['validated_clean'] ?? 0) !== 1) {
+                continue; // only auto-fail-over to a member proven clean for censored networks
+            }
             if (self::memberCriticalDown($id, $threshold)) {
                 continue;
             }
@@ -529,6 +644,65 @@ class ServerPool
             'server_address' => self::serverAddress((string) ($pool['vpn_subnet'] ?? '')),
             'awg_params' => is_array($params) ? $params : [],
         ];
+    }
+
+    /**
+     * Rebuild an existing member's awg2 in place, keeping the pool identity.
+     *
+     * Used to pick up a newer amneziawg-go build. Safe because the identity
+     * (keys, PSK, obfuscation params, subnet, port) is authoritative in the
+     * pool row: the local files are wiped so the installer regenerates from the
+     * pool, producing byte-identical identity — existing client configs keep
+     * working. Peers are then restored from the DB.
+     *
+     * Only valid for pool members: a standalone server's awg2 identity would be
+     * regenerated from scratch and every client config would break.
+     *
+     * @return array{success:bool,message:string,synced?:int}
+     */
+    public static function redeployMember(int $serverId): array
+    {
+        $pool = self::getForServer($serverId);
+        if (!$pool) {
+            return ['success' => false, 'message' => 'Сервер не состоит в пуле — пересборка awg2 доступна только для членов пула (иначе слетит идентичность и все клиентские конфиги).'];
+        }
+        $poolId = (int) $pool['id'];
+
+        $server = new VpnServer($serverId);
+        // Wipe the local identity so the installer regenerates it from the pool
+        // instead of reusing the existing awg0.conf.
+        $server->executeCommand(
+            'docker rm -f amnezia-awg2 >/dev/null 2>&1; rm -f /opt/amnezia/awg2/awg0.conf '
+            . '/opt/amnezia/awg2/wireguard_server_private_key.key /opt/amnezia/awg2/wireguard_server_public_key.key '
+            . '/opt/amnezia/awg2/wireguard_psk.key /opt/amnezia/awg2/clientsTable; echo reset-done',
+            true
+        );
+
+        $protocol = InstallProtocolManager::getBySlug('awg2');
+        $deploy = InstallProtocolManager::activate(new VpnServer($serverId), $protocol, [
+            'pool_identity' => self::identityOptions($pool),
+            'server_port' => (int) ($pool['vpn_port'] ?? 443) ?: 443,
+        ]);
+        if (empty($deploy['success'])) {
+            // The identity was wiped, so the member is now serving nothing. Flag
+            // it so auto-failover cannot send clients here.
+            DB::conn()->prepare(
+                'UPDATE vpn_servers SET pool_sync_pending = 1, validated_clean = NULL, validation_note = ? WHERE id = ?'
+            )->execute(['пересборка awg2 не удалась — член пула не обслуживает клиентов', $serverId]);
+            return ['success' => false, 'message' => 'Пересборка awg2 не удалась. Член помечен рассинхронизированным и снят с failover.'];
+        }
+
+        $failed = 0;
+        $synced = self::syncClientsToServer($poolId, $serverId, $failed);
+        if ($failed > 0) {
+            return [
+                'success' => false,
+                'message' => "awg2 пересобран, но {$failed} пиров не синхронизировались (перенесено {$synced}). Сделайте ре-синк.",
+                'synced' => $synced,
+            ];
+        }
+
+        return ['success' => true, 'message' => "awg2 пересобран с идентичностью пула, пиров восстановлено: {$synced}", 'synced' => $synced];
     }
 
     /**
@@ -618,12 +792,35 @@ class ServerPool
             return [
                 'success' => false,
                 'message' => 'Member deploy failed; membership rolled back. The server\'s awg2 identity was reset — redeploy it standalone before retrying.',
-                'deploy' => $deploy,
+                'deploy' => ['success' => !empty($deploy['success'])],
             ];
         }
 
         // 4. Sync every existing pool client peer onto the new member.
+        $failed = 0;
         $synced = self::syncClientsToServer($poolId, $serverId, $failed);
+
+        // 5. Install Cloudflare WARP egress so EVERY member is identical (client
+        //    traffic exits via WARP, real server IP not exposed on egress).
+        //    Best-effort: a WARP failure does not fail the join (the member still
+        //    serves clients), but it is surfaced so the operator can retry.
+        $warpStatus = 'skipped';
+        try {
+            $warpProto = InstallProtocolManager::getBySlug('cf-warp');
+            if ($warpProto) {
+                $warpRes = InstallProtocolManager::activate(new VpnServer($serverId), $warpProto, []);
+                $warpStatus = !empty($warpRes['success']) ? 'installed' : 'failed';
+                if ($warpStatus === 'failed') {
+                    error_log("ServerPool::addMember: WARP egress install returned failure on {$serverId}");
+                }
+            }
+        } catch (Throwable $e) {
+            $warpStatus = 'failed';
+            error_log("ServerPool::addMember: WARP egress install failed on {$serverId}: " . $e->getMessage());
+        }
+        $warpNote = $warpStatus === 'installed'
+            ? ' WARP egress включён.'
+            : ($warpStatus === 'failed' ? ' ВНИМАНИЕ: WARP egress не установился — переустановите вручную (серверы неидентичны).' : '');
 
         // A member that is missing some peers must NOT silently become a valid
         // failover target — those clients would be unable to connect after a
@@ -632,18 +829,20 @@ class ServerPool
             return [
                 'success' => true,
                 'partial' => true,
-                'message' => "Server {$serverId} joined pool but {$failed} of " . ($synced + $failed) . " client peers failed to sync — re-sync before relying on it for failover.",
-                'deploy' => $deploy,
+                'message' => "Server {$serverId} joined pool but {$failed} of " . ($synced + $failed) . " client peers failed to sync — re-sync before relying on it for failover." . $warpNote,
+                'deploy' => ['success' => !empty($deploy['success'])],
                 'synced' => $synced,
                 'failed' => $failed,
+                'warp' => $warpStatus,
             ];
         }
 
         return [
             'success' => true,
-            'message' => "Server {$serverId} joined pool (synced {$synced} clients)",
-            'deploy' => $deploy,
+            'message' => "Server {$serverId} joined pool (synced {$synced} clients)." . $warpNote,
+            'deploy' => ['success' => !empty($deploy['success'])],
             'synced' => $synced,
+            'warp' => $warpStatus,
         ];
     }
 
@@ -652,38 +851,108 @@ class ServerPool
      * Returns the number of peers synced; sets $failed to the number that
      * could not be pushed (so the caller can refuse to trust an incomplete member).
      */
-    public static function syncClientsToServer(int $poolId, int $serverId, int &$failed = 0): int
+    public static function syncClientsToServer(int $poolId, int $serverId, &$failed = 0): int
     {
-        $failed = 0;
-        $memberIds = array_map(static fn($m) => (int) $m['id'], self::members($poolId));
-        if (empty($memberIds)) {
-            return 0;
-        }
+        // Delegate to the authoritative rebuild: it rewrites awg0.conf's [Peer]
+        // set from the DB (so peers survive a container restart) and applies it
+        // live with `awg syncconf` (connected clients are not dropped). This
+        // replaces the old append-per-peer loop, which duplicated peers and could
+        // miss awg0.conf when the freshly-deployed conf wasn't ready yet — the
+        // exact bug that left a joined member with zero live peers.
+        // reconcilePeers already sets pool_sync_pending based on the result.
+        $res = self::reconcilePeers($serverId);
+        $failed = $res['success'] ? 0 : max(0, (int) $res['peers'] - (int) $res['live']);
+        return (int) $res['live'];
+    }
+
+    /**
+     * Authoritatively rebuild a member's peer set from the DB (source of truth),
+     * so peers survive an awg2 container restart and drift is corrected.
+     *
+     * awg0.conf's [Peer] sections are replaced with exactly the pool's active
+     * client peers (no duplicates, none missing); the [Interface] block is kept
+     * verbatim. The live interface is then updated with `awg syncconf`, which
+     * applies only the delta — connected clients are NOT dropped. Because the
+     * peers now live in awg0.conf, `awg-quick up` restores them on restart.
+     *
+     * @return array{success:bool, peers:int, live:int, message:string}
+     */
+    public static function reconcilePeers(int $serverId): array
+    {
         $server = new VpnServer($serverId);
-        $serverData = $server->getData();
-
-        $in = implode(',', array_fill(0, count($memberIds), '?'));
-        $stmt = DB::conn()->prepare(
-            "SELECT DISTINCT public_key, client_ip FROM vpn_clients
-             WHERE server_id IN ($in) AND status = 'active' AND public_key <> ''"
-        );
-        $stmt->execute($memberIds);
-
-        $count = 0;
-        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $client) {
-            try {
-                VpnClient::addClientToServer($serverData, (string) $client['public_key'], (string) $client['client_ip']);
-                $count++;
-            } catch (Throwable $e) {
-                $failed++;
-                error_log("ServerPool::syncClientsToServer: failed peer {$client['public_key']} on server {$serverId}: " . $e->getMessage());
-            }
+        $data = $server->getData();
+        if (!$data) {
+            return ['success' => false, 'peers' => 0, 'live' => 0, 'message' => "Server {$serverId} not found"];
         }
-        // Flag the member as incomplete when any peer failed to sync so it is
-        // excluded from failover candidates; clear it on a fully-successful sync.
+        $poolId = (int) ($data['pool_id'] ?? 0);
+        if ($poolId <= 0) {
+            return ['success' => false, 'peers' => 0, 'live' => 0, 'message' => 'Server is not in a pool'];
+        }
+        $pool = self::get($poolId);
+        $psk = trim((string) ($pool['preshared_key'] ?? ''));
+        $container = (string) ($data['container_name'] ?? '') ?: 'amnezia-awg2';
+
+        // Authoritative peer list = every active client across all pool members.
+        $memberIds = array_map(static fn($m) => (int) $m['id'], self::members($poolId));
+        $peerRows = [];
+        if (!empty($memberIds)) {
+            $in = implode(',', array_fill(0, count($memberIds), '?'));
+            $stmt = DB::conn()->prepare(
+                "SELECT DISTINCT public_key, client_ip FROM vpn_clients
+                 WHERE server_id IN ($in) AND status = 'active' AND public_key <> '' AND client_ip <> ''"
+            );
+            $stmt->execute($memberIds);
+            $peerRows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        }
+        $peers = '';
+        foreach ($peerRows as $r) {
+            $peers .= "\n[Peer]\nPublicKey = " . trim((string) $r['public_key']) . "\n";
+            if ($psk !== '') {
+                $peers .= 'PresharedKey = ' . $psk . "\n";
+            }
+            $peers .= 'AllowedIPs = ' . trim((string) $r['client_ip']) . "/32\n";
+        }
+
+        // Read the current conf (into a var, never echoed — it holds the private key),
+        // keep everything before the first [Peer] (the [Interface] block).
+        $conf = (string) $server->executeCommand('cat /opt/amnezia/awg2/awg0.conf 2>/dev/null', true);
+        if (strpos($conf, '[Interface]') === false) {
+            return ['success' => false, 'peers' => count($peerRows), 'live' => 0, 'message' => 'awg0.conf missing/invalid on server'];
+        }
+        $head = preg_split('/^\s*\[Peer\]/m', $conf, 2)[0];
+        $newConf = rtrim($head, "\n") . "\n" . $peers;
+        $b64 = base64_encode($newConf);
+
+        // Write awg0.conf on the host (bind-mounted into the container), then
+        // apply live non-disruptively with syncconf.
+        $script = 'cp /opt/amnezia/awg2/awg0.conf /opt/amnezia/awg2/awg0.conf.bak-reconcile 2>/dev/null; '
+            . 'echo ' . $b64 . ' | base64 -d > /opt/amnezia/awg2/awg0.conf && '
+            . 'docker exec ' . escapeshellarg($container) . ' sh -c '
+            . escapeshellarg(
+                'awg-quick strip /opt/amnezia/awg/awg0.conf > /tmp/awg0.strip 2>/dev/null; '
+                . 'awg syncconf awg0 /tmp/awg0.strip 2>&1 || wg syncconf awg0 /tmp/awg0.strip 2>&1; '
+                . 'rm -f /tmp/awg0.strip; '
+                . 'echo "LIVE=$(awg show awg0 allowed-ips 2>/dev/null | grep -c /32)"'
+            );
+        $out = (string) $server->executeCommand($script, true);
+        $live = 0;
+        if (preg_match('/LIVE=(\d+)/', $out, $m)) {
+            $live = (int) $m[1];
+        }
+        $expected = count($peerRows);
+        $ok = $live === $expected;
+        // Keep the failover-eligibility flag honest.
         DB::conn()->prepare('UPDATE vpn_servers SET pool_sync_pending = ? WHERE id = ?')
-            ->execute([$failed > 0 ? 1 : 0, $serverId]);
-        return $count;
+            ->execute([$ok ? 0 : 1, $serverId]);
+
+        return [
+            'success' => $ok,
+            'peers' => $expected,
+            'live' => $live,
+            'message' => $ok
+                ? "Пиры пересобраны из БД: {$live} на живом интерфейсе и в awg0.conf (переживут рестарт)."
+                : "Рассинхрон: ожидалось {$expected}, на интерфейсе {$live}. Проверьте контейнер {$container}.",
+        ];
     }
 
     /**
@@ -710,6 +979,158 @@ class ServerPool
                 }
             }
         }
+    }
+
+    /**
+     * Tier-1 server-side reachability probe. From an external vantage member
+     * (the active member by default), stand up a throwaway amneziawg client that
+     * targets the candidate member's PUBLIC ip:port and check whether it completes
+     * a handshake. Confirms the candidate's ingress is UP and routed across the
+     * datacenter backbone — it does NOT prove the IP is "clean" for censored client
+     * networks (that is the Tier-2 client canary's job).
+     *
+     * Unreachable => member flagged validated_clean = 0 (unusable). Reachable =>
+     * validated_clean left untouched (infra OK, cleanliness still unknown).
+     *
+     * @return array{success:bool, reachable:bool, handshake_age:?int, vantage:int, message:string}
+     */
+    public static function probeReachability(int $poolId, int $targetServerId, ?int $vantageServerId = null): array
+    {
+        $fail = static fn(string $m, int $v = 0): array => [
+            'success' => false, 'reachable' => false, 'handshake_age' => null, 'vantage' => $v, 'message' => $m,
+        ];
+
+        $pool = self::get($poolId);
+        if (!$pool) {
+            return $fail("Pool {$poolId} not found");
+        }
+        $target = (new VpnServer($targetServerId))->getData();
+        if (!$target || empty($target['host'])) {
+            return $fail("Target server {$targetServerId} not found");
+        }
+
+        // Vantage = an external member (never the target itself). Prefer the active.
+        if ($vantageServerId === null) {
+            $vantageServerId = (int) ($pool['active_server_id'] ?? 0);
+        }
+        if ($vantageServerId <= 0 || $vantageServerId === $targetServerId) {
+            foreach (self::members($poolId) as $m) {
+                if ((int) $m['id'] !== $targetServerId) {
+                    $vantageServerId = (int) $m['id'];
+                    break;
+                }
+            }
+        }
+        if ($vantageServerId <= 0 || $vantageServerId === $targetServerId) {
+            return $fail('No external vantage member available (need another pool member to probe from).');
+        }
+        $vantage = new VpnServer($vantageServerId);
+
+        $subnet = trim((string) ($pool['vpn_subnet'] ?? '')) ?: '10.8.1.0/24';
+        $probeIp = preg_replace('#\.\d+(/\d+)?$#', '.254', preg_replace('#/\d+$#', '', $subnet)) ?: '10.8.1.254';
+        $port = (int) ($pool['vpn_port'] ?? 443) ?: 443;
+
+        // 1. Ephemeral probe keypair, generated on the vantage (has the awg image).
+        $keys = (string) $vantage->executeCommand(
+            'P=$(docker run --rm amnezia-awg2 awg genkey 2>/dev/null); echo "PRIV=$P"; '
+            . 'echo "PUB=$(printf %s "$P" | docker run --rm -i amnezia-awg2 awg pubkey 2>/dev/null)"',
+            true
+        );
+        preg_match('/PRIV=(\S+)/', $keys, $mp);
+        preg_match('/PUB=(\S+)/', $keys, $mpub);
+        $priv = $mp[1] ?? '';
+        $pub = $mpub[1] ?? '';
+        if ($priv === '' || $pub === '') {
+            return $fail('Could not generate probe key on vantage (amnezia-awg2 image missing?)', $vantageServerId);
+        }
+
+        // 2. Register the probe peer directly on the TARGET's live interface
+        //    (no PSK, no persistence — throwaway). Direct `awg set` avoids the
+        //    config-path assumptions of the generic client-add helper.
+        $targetServer = new VpnServer($targetServerId);
+        $tContainer = (string) ($target['container_name'] ?? '') ?: 'amnezia-awg2';
+        $addOut = (string) $targetServer->executeCommand(
+            'docker exec ' . escapeshellarg($tContainer) . ' awg set awg0 peer ' . escapeshellarg($pub)
+            . ' allowed-ips ' . escapeshellarg($probeIp . '/32') . ' 2>&1 && echo OK-ADD',
+            true
+        );
+        if (strpos($addOut, 'OK-ADD') === false) {
+            return $fail('Could not register probe peer on target: ' . trim($addOut), $vantageServerId);
+        }
+
+        $reachable = false;
+        $hsTs = 0;
+        try {
+            // 3. Build the probe client conf (pool identity + target endpoint).
+            $p = $pool['awg_params'] ?? [];
+            if (is_string($p)) {
+                $p = json_decode($p, true) ?: [];
+            }
+            $lines = ['[Interface]', "PrivateKey = {$priv}", "Address = {$probeIp}/32", 'MTU = 1280'];
+            foreach (['Jc', 'Jmin', 'Jmax', 'S1', 'S2', 'S3', 'S4', 'H1', 'H2', 'H3', 'H4', 'I1', 'I2', 'I3', 'I4', 'I5'] as $k) {
+                if (isset($p[$k]) && $p[$k] !== '') {
+                    $lines[] = "{$k} = {$p[$k]}";
+                }
+            }
+            $lines[] = '';
+            $lines[] = '[Peer]';
+            $lines[] = 'PublicKey = ' . trim((string) ($pool['server_public_key'] ?? ''));
+            // No PresharedKey: the throwaway probe peer is registered on the target
+            // without a PSK, so the client must not present one either.
+            $lines[] = 'Endpoint = ' . $target['host'] . ':' . $port;
+            $lines[] = 'AllowedIPs = ' . $subnet;
+            $lines[] = 'PersistentKeepalive = 25';
+            $b64 = base64_encode(implode("\n", $lines) . "\n");
+
+            // 4. Throwaway client on the vantage; read the peer's latest-handshake.
+            $name = 'awgprobe_' . $targetServerId;
+            $script = 'docker rm -f ' . $name . ' >/dev/null 2>&1; '
+                . 'D=$(mktemp -d); echo ' . $b64 . ' | base64 -d > "$D/awgprobe.conf"; '
+                . 'docker run -d --rm --name ' . $name . ' --cap-add NET_ADMIN --device /dev/net/tun '
+                . '-v "$D/awgprobe.conf":/awgprobe.conf:ro amnezia-awg2 sh -c '
+                . '"WG_QUICK_USERSPACE_IMPLEMENTATION=amneziawg-go awg-quick up /awgprobe.conf >/dev/null 2>&1; sleep 18" >/dev/null 2>&1; '
+                . 'HS=0; for i in $(seq 1 14); do sleep 1; '
+                . 'H=$(docker exec ' . $name . ' awg show awgprobe latest-handshakes 2>/dev/null | head -1 | awk "{print \$2}"); '
+                . 'if [ -n "$H" ] && [ "$H" != "0" ]; then HS=$H; break; fi; done; '
+                . 'docker rm -f ' . $name . ' >/dev/null 2>&1; rm -rf "$D"; echo "HS=$HS"';
+            $out = (string) $vantage->executeCommand($script, true);
+            if (preg_match('/HS=(\d+)/', $out, $mh)) {
+                $hsTs = (int) $mh[1];
+            }
+            $reachable = $hsTs > 0;
+        } finally {
+            // 5. Always remove the throwaway probe peer from the target's live interface.
+            try {
+                $targetServer->executeCommand(
+                    'docker exec ' . escapeshellarg($tContainer) . ' awg set awg0 peer ' . escapeshellarg($pub) . ' remove 2>/dev/null; echo cleaned',
+                    true
+                );
+            } catch (Throwable $e) {
+                error_log("ServerPool::probeReachability: probe-peer cleanup failed on {$targetServerId}: " . $e->getMessage());
+            }
+        }
+
+        $age = $reachable ? max(0, time() - $hsTs) : null;
+        $note = $reachable
+            ? "probe: reachable from #{$vantageServerId}"
+            : "probe: UNREACHABLE from #{$vantageServerId}";
+        if ($reachable) {
+            DB::conn()->prepare('UPDATE vpn_servers SET validated_at = NOW(), validation_note = ? WHERE id = ?')
+                ->execute([$note, $targetServerId]);
+        } else {
+            DB::conn()->prepare('UPDATE vpn_servers SET validated_clean = 0, validated_at = NOW(), validation_note = ? WHERE id = ?')
+                ->execute([$note, $targetServerId]);
+        }
+
+        return [
+            'success' => true,
+            'reachable' => $reachable,
+            'handshake_age' => $age,
+            'vantage' => $vantageServerId,
+            'message' => $reachable
+                ? "Reachable: handshake completed from member #{$vantageServerId} (age {$age}s). Infra OK — run the client canary to confirm the IP is clean for censored networks."
+                : "Unreachable from member #{$vantageServerId}: no handshake (IP not routed / server down / firewall). Marked unusable.",
+        ];
     }
 
     /** Read PrivateKey from the server's host awg0.conf. */

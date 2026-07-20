@@ -64,4 +64,13 @@ class DnsManager
             default => [],
         };
     }
+
+    /** Delete all A-records for a domain (e.g. when dissolving a pool). */
+    public static function deleteAllARecords(string $fqdn): array
+    {
+        return match (self::provider()) {
+            'timeweb' => TimewebDnsService::deleteAllARecords($fqdn),
+            default => ['success' => false, 'message' => 'Unknown DNS provider: ' . self::provider()],
+        };
+    }
 }

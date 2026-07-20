@@ -194,6 +194,39 @@ class TimewebDnsService
         return $ips;
     }
 
+    /**
+     * Delete ALL A-records for $fqdn (used when dissolving a pool / freeing the
+     * endpoint domain). Best-effort: reports how many were removed.
+     *
+     * @return array{success: bool, message: string, removed?: int}
+     */
+    public static function deleteAllARecords(string $fqdn): array
+    {
+        $fqdn = strtolower(trim($fqdn, ". \t\n"));
+        if ($fqdn === '') {
+            return ['success' => false, 'message' => 'Domain is empty'];
+        }
+        $token = self::getToken();
+        if ($token === null) {
+            return ['success' => false, 'message' => 'Timeweb API token is not configured (Settings → API)'];
+        }
+        $base = "/api/v1/domains/{$fqdn}/dns-records";
+        $list = self::request('GET', $base, null, $token);
+        if (!$list['ok']) {
+            return ['success' => false, 'message' => "Failed to list DNS records: {$list['error']}"];
+        }
+        $ids = self::aRecordIds($list['body']);
+        $removed = 0;
+        foreach ($ids as $id) {
+            $del = self::request('DELETE', "{$base}/{$id}", null, $token);
+            if ($del['ok']) {
+                $removed++;
+            }
+        }
+        error_log("TimewebDnsService: deleted {$removed} A-record(s) for {$fqdn}");
+        return ['success' => true, 'message' => "Удалено A-записей: {$removed}", 'removed' => $removed];
+    }
+
     /** All A-record ids for the fqdn from a dns-records list response. */
     private static function aRecordIds($body): array
     {
