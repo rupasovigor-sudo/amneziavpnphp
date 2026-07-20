@@ -2381,7 +2381,9 @@ BASH;
             return 0;
         }
 
-        return (int) ($this->data['traffic_sent'] ?? 0) + (int) ($this->data['traffic_received'] ?? 0);
+        // The columns are bytes_sent/bytes_received (traffic_* never existed);
+        // referencing the wrong names made the traffic-limit cron fail on every run.
+        return (int) ($this->data['bytes_sent'] ?? 0) + (int) ($this->data['bytes_received'] ?? 0);
     }
 
     /**
@@ -2428,10 +2430,11 @@ BASH;
     {
         $pdo = DB::conn();
         $stmt = $pdo->query('
-            SELECT id, name, traffic_sent, traffic_received, traffic_limit 
-            FROM vpn_clients 
-            WHERE traffic_limit IS NOT NULL 
-            AND (traffic_sent + traffic_received) >= traffic_limit 
+            SELECT id, name, bytes_sent, bytes_received, traffic_limit
+            FROM vpn_clients
+            WHERE traffic_limit IS NOT NULL
+            AND traffic_limit > 0
+            AND (bytes_sent + bytes_received) >= traffic_limit
             AND status = "active"
             ORDER BY id
         ');

@@ -308,7 +308,46 @@ SH;
             $recentPeerCount = (int) ($values['wg_recent_peer_count'] ?? 0);
             $minPeers = max(1, (int) Config::get('ALERT_HANDSHAKE_MIN_PEERS', '3'));
             $stalePercentThreshold = max(1, min(100, (float) Config::get('ALERT_HANDSHAKE_STALE_PERCENT', '70')));
-            if ($peerCount >= $minPeers) {
+            // Pool-aware: a single member's peer dump is NOT a health signal for a
+            // pool. Clients sit on whichever member they last resolved — after a
+            // manual switch they linger on the OLD member until they re-resolve the
+            // domain, so the active member can legitimately show ~0 fresh peers
+            // while every client is happily online elsewhere in the pool. Judge the
+            // POOL as a whole (last_handshake is the newest seen across members);
+            // only alert when clients are stale on ALL members, which is a real
+            // outage rather than a migration in progress.
+            $poolId = (int) ($this->serverData['pool_id'] ?? 0);
+            if ($poolId > 0) {
+                $st = DB::conn()->prepare(
+                    "SELECT COUNT(*) AS total,
+                            SUM(vc.last_handshake IS NOT NULL
+                                AND vc.last_handshake >= DATE_SUB(NOW(), INTERVAL ? SECOND)) AS fresh
+                     FROM vpn_clients vc
+                     JOIN vpn_servers s ON s.id = vc.server_id
+                     WHERE s.pool_id = ? AND vc.status = 'active'"
+                );
+                $st->execute([$handshakeStaleSeconds, $poolId]);
+                $row = $st->fetch(PDO::FETCH_ASSOC) ?: [];
+                $poolTotal = (int) ($row['total'] ?? 0);
+                $poolFresh = (int) ($row['fresh'] ?? 0);
+                if ($poolTotal >= $minPeers) {
+                    $poolStalePercent = ($poolTotal - $poolFresh) / $poolTotal * 100;
+                    $checks['wireguard_mass_stale_handshake'] = [
+                        'ok' => $poolStalePercent < $stalePercentThreshold,
+                        'severity' => $poolStalePercent >= 90 ? 'critical' : 'warning',
+                        'message' => sprintf(
+                            'ПУЛ: свежий handshake за %ds у %d/%d клиентов (по всем членам пула), stale %.1f%% (порог %.1f%%); на этом сервере %d/%d',
+                            $handshakeStaleSeconds,
+                            $poolFresh,
+                            $poolTotal,
+                            $poolStalePercent,
+                            $stalePercentThreshold,
+                            $recentPeerCount,
+                            $peerCount
+                        ),
+                    ];
+                }
+            } elseif ($peerCount >= $minPeers) {
                 $staleCount = max(0, $peerCount - $recentPeerCount);
                 $stalePercent = $peerCount > 0 ? ($staleCount / $peerCount * 100) : 0.0;
                 $checks['wireguard_mass_stale_handshake'] = [
@@ -371,17 +410,17 @@ SH;
         // member it was created on — so match peers by pubkey, not server_id.
         $this->refreshHandshakes();
 
-        // Speed/traffic must be read from the awg0 where clients are actually
-        // connected. In a failover pool that is the ACTIVE member: collect the
-        // whole pool's clients there; standby members skip (reading their idle
-        // awg0 would overwrite the real figures with zeros).
+        // Speed/traffic must be read from the awg0 where the client's session
+        // actually lives. That is NOT necessarily the active member: after a
+        // manual switch clients linger on the old one until they re-resolve the
+        // domain. So every member collects the pool-wide list, and
+        // getClientStats() refuses to write for clients whose session belongs to
+        // another member — otherwise an idle member (peers are synced everywhere,
+        // so it sees them with zero counters) would wipe the real figures.
         $serverId = (int) ($this->serverData['id'] ?? 0);
         $poolId = (int) ($this->serverData['pool_id'] ?? 0);
         if ($poolId > 0) {
-            $stmt = DB::conn()->prepare('SELECT active_server_id FROM server_pools WHERE id = ?');
-            $stmt->execute([$poolId]);
-            $activeId = (int) $stmt->fetchColumn();
-            $clients = ($serverId === $activeId) ? VpnClient::listByPool($poolId) : [];
+            $clients = VpnClient::listByPool($poolId);
         } else {
             $clients = VpnClient::listByServer($serverId);
         }
@@ -441,6 +480,56 @@ SH;
     }
 
     /**
+     * Turn this server's raw WireGuard byte counters into monotonic pool-wide
+     * totals.
+     *
+     * The counters are per-server and restart from zero when the container is
+     * recreated, and in a failover pool a client's session hops between members
+     * — so the raw value is meaningless as a stored total. We remember the last
+     * raw value per (client, server) and add only the increment. A raw value
+     * BELOW the remembered one means the counter was reset, in which case the
+     * whole raw value is the increment.
+     *
+     * @return array{0:int,1:int} cumulative [sent, received]
+     */
+    private function accumulateTraffic(int $clientId, int $rawSent, int $rawReceived): array
+    {
+        $db = DB::conn();
+        $serverId = (int) ($this->serverData['id'] ?? 0);
+
+        $st = $db->prepare('SELECT last_sent, last_received FROM client_traffic_counters WHERE client_id = ? AND server_id = ?');
+        $st->execute([$clientId, $serverId]);
+        $prev = $st->fetch(PDO::FETCH_ASSOC);
+
+        if ($prev) {
+            $lastSent = (int) $prev['last_sent'];
+            $lastReceived = (int) $prev['last_received'];
+            $deltaSent = $rawSent >= $lastSent ? ($rawSent - $lastSent) : $rawSent;
+            $deltaReceived = $rawReceived >= $lastReceived ? ($rawReceived - $lastReceived) : $rawReceived;
+        } else {
+            // First sight of this (client, server): treat the current reading as
+            // the baseline rather than booking it all as fresh traffic.
+            $deltaSent = 0;
+            $deltaReceived = 0;
+        }
+
+        $db->prepare(
+            'INSERT INTO client_traffic_counters (client_id, server_id, last_sent, last_received)
+             VALUES (?, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE last_sent = VALUES(last_sent), last_received = VALUES(last_received)'
+        )->execute([$clientId, $serverId, $rawSent, $rawReceived]);
+
+        $cur = $db->prepare('SELECT bytes_sent, bytes_received FROM vpn_clients WHERE id = ?');
+        $cur->execute([$clientId]);
+        $row = $cur->fetch(PDO::FETCH_ASSOC) ?: [];
+
+        return [
+            (int) ($row['bytes_sent'] ?? 0) + $deltaSent,
+            (int) ($row['bytes_received'] ?? 0) + $deltaReceived,
+        ];
+    }
+
+    /**
      * Get client current stats and calculate speed
      */
     private function getClientStats(array $client): ?array
@@ -480,10 +569,40 @@ SH;
             $bytesReceived = (int) ($currentDbStats['bytes_received'] ?? 0);
         } else {
             $peerStats = $this->getWireguardPeerStats($containerName, $publicKey);
-            if ($peerStats) {
-                $bytesSent = (int) $peerStats['bytes_sent'];
-                $bytesReceived = (int) $peerStats['bytes_received'];
+            $inPool = (int) ($this->serverData['pool_id'] ?? 0) > 0;
+            if (!$peerStats) {
+                if ($inPool) {
+                    // Peer absent here — leave the owning member's figures alone.
+                    return null;
+                }
+            } else {
                 $handshakeTs = (int) $peerStats['handshake_ts'];
+                if ($inPool) {
+                    // Byte counters are per-server, but peers are synced to EVERY
+                    // pool member, so an idle member sees the peer with zero /
+                    // stale counters. Writing those would wipe the real traffic
+                    // recorded where the client is actually connected. Only the
+                    // member holding the freshest handshake owns the stats
+                    // (refreshHandshakes() has already stored that maximum).
+                    if ($handshakeTs <= 0) {
+                        return null; // never connected here
+                    }
+                    $stmtOwn = $db->prepare('SELECT last_handshake FROM vpn_clients WHERE id = ?');
+                    $stmtOwn->execute([$client['id']]);
+                    $dbHs = $stmtOwn->fetchColumn();
+                    if (!empty($dbHs) && strtotime((string) $dbHs) > $handshakeTs) {
+                        return null; // another member has a fresher session
+                    }
+                }
+                // Raw WireGuard counters are per-server and reset when the
+                // container is recreated; in a pool the session also moves
+                // between members. Accumulate DELTAS into a monotonic total so
+                // the stored figure survives both (traffic limits read it).
+                [$bytesSent, $bytesReceived] = $this->accumulateTraffic(
+                    (int) $client['id'],
+                    (int) $peerStats['bytes_sent'],
+                    (int) $peerStats['bytes_received']
+                );
                 if ($handshakeTs > 0) {
                     $handshakeDate = date('Y-m-d H:i:s', $handshakeTs);
                     // Only advance last_handshake, never overwrite a fresher value
@@ -1137,20 +1256,64 @@ SH);
      * Get online clients for a specific server
      * Returns array of online client logins/emails
      */
+    /**
+     * Seconds since the last handshake within which a client still counts as
+     * online. Tunable via CLIENT_ONLINE_WINDOW_SECONDS; the default is generous
+     * because an idle WireGuard tunnel refreshes its handshake only on rekey.
+     */
+    public static function onlineWindow(): int
+    {
+        return max(60, (int) Config::get('CLIENT_ONLINE_WINDOW_SECONDS', '600'));
+    }
+
     public static function getOnlineClientsForServer(array $serverData): array
     {
         $result = [];
         $db = DB::conn();
 
-        // WireGuard/AWG clients with a recent handshake (< 5 minutes) are considered online.
-        $stmt = $db->prepare("
-            SELECT vc.name FROM vpn_clients vc
-            WHERE vc.server_id = ?
-              AND vc.status = 'active'
-              AND vc.last_handshake IS NOT NULL
-              AND vc.last_handshake >= DATE_SUB(NOW(), INTERVAL 300 SECOND)
-        ");
-        $stmt->execute([$serverData['id']]);
+        // WireGuard/AWG clients with a recent handshake (< 5 minutes) are online.
+        // Pool-aware: in a failover pool a client is homed on one member but
+        // connects to the ACTIVE member (via the shared domain), and its handshake
+        // is collected there. So on the active member count online across the WHOLE
+        // pool (by pool_id), not just clients whose server_id equals this server —
+        // otherwise pool clients homed on a standby flicker to "Active".
+        $poolId = (int) ($serverData['pool_id'] ?? 0);
+        $activeId = 0;
+        if ($poolId > 0) {
+            $st = $db->prepare('SELECT active_server_id FROM server_pools WHERE id = ?');
+            $st->execute([$poolId]);
+            $activeId = (int) $st->fetchColumn();
+        }
+        // Any pool member (active or standby) reports pool-wide online state: the
+        // client list on a member's page is pool-wide too, and after a manual
+        // switch clients linger on the old member until they re-resolve the
+        // domain — so "online" means "connected to SOME member of the pool".
+        // refreshHandshakes() already keeps last_handshake as the newest value
+        // seen across all members, so this reflects reality on either page.
+        // A quiet-but-connected tunnel only refreshes its handshake on rekey, so a
+        // 300s window makes idle clients flap between "online" and "active".
+        // One tunable source of truth, shared with the UI (see onlineWindow()).
+        $window = self::onlineWindow();
+        if ($poolId > 0) {
+            $stmt = $db->prepare("
+                SELECT vc.name FROM vpn_clients vc
+                JOIN vpn_servers s ON s.id = vc.server_id
+                WHERE s.pool_id = ?
+                  AND vc.status = 'active'
+                  AND vc.last_handshake IS NOT NULL
+                  AND vc.last_handshake >= DATE_SUB(NOW(), INTERVAL ? SECOND)
+            ");
+            $stmt->execute([$poolId, $window]);
+        } else {
+            $stmt = $db->prepare("
+                SELECT vc.name FROM vpn_clients vc
+                WHERE vc.server_id = ?
+                  AND vc.status = 'active'
+                  AND vc.last_handshake IS NOT NULL
+                  AND vc.last_handshake >= DATE_SUB(NOW(), INTERVAL ? SECOND)
+            ");
+            $stmt->execute([$serverData['id'], $window]);
+        }
         while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
             if (!in_array($row['name'], $result)) {
                 $result[] = $row['name'];
