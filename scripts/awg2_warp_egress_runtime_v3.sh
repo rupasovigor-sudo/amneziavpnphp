@@ -29,6 +29,8 @@ VETH_CIDR="${WARP_VETH_CIDR:-10.255.0.0/30}"
 TABLE="${WARP_ROUTE_TABLE:-51888}"
 MARK="${WARP_MARK:-0x2cf2}"
 CHAIN="AWG2_WARP_EGRESS"
+# TCP MSS for forwarded client traffic (awg0 MTU 1280 minus 40 bytes of IP+TCP).
+MSS_CLAMP="${WARP_MSS_CLAMP:-1240}"
 WG_IF="${WARP_WG_IF:-wgcf}"
 
 POOL_SIZE="${WARP_POOL_SIZE:-5}"
@@ -221,6 +223,7 @@ cleanup_runtime() {
   while iptables -D FORWARD -i "$VETH_HOST" -o eth0 -j ACCEPT 2>/dev/null; do :; done
   while iptables -D FORWARD -i eth0 -o "$VETH_HOST" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null; do :; done
   while iptables -t nat -D POSTROUTING -s "$VETH_CIDR" -o eth0 -j MASQUERADE 2>/dev/null; do :; done
+  while iptables -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss "$MSS_CLAMP" 2>/dev/null; do :; done
   iptables -t mangle -F "$CHAIN" 2>/dev/null || true
   iptables -t mangle -X "$CHAIN" 2>/dev/null || true
   while ip rule del fwmark "$MARK" table "$TABLE" 2>/dev/null; do :; done
@@ -297,6 +300,14 @@ setup_warp_namespace() {
   iptables -C FORWARD -i "$VETH_HOST" -o eth0 -j ACCEPT 2>/dev/null || iptables -I FORWARD 1 -i "$VETH_HOST" -o eth0 -j ACCEPT
   iptables -C FORWARD -i eth0 -o "$VETH_HOST" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || iptables -I FORWARD 1 -i eth0 -o "$VETH_HOST" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
   iptables -t nat -C POSTROUTING -s "$VETH_CIDR" -o eth0 -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -s "$VETH_CIDR" -o eth0 -j MASQUERADE
+  # Clamp TCP MSS on forwarded client traffic. A client packet is decapsulated
+  # from awg0 (MTU 1280) and then re-encapsulated into the WARP tunnel (also MTU
+  # 1280), so anything larger must fragment — and where PMTU discovery is
+  # filtered, which is common, those connections stall outright instead of
+  # merely slowing down. Clamping at handshake removes the dependency on PMTUD.
+  # 1240 = 1280 MTU - 20 (IP) - 20 (TCP).
+  iptables -t mangle -C FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss "$MSS_CLAMP" 2>/dev/null || \
+    iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss "$MSS_CLAMP"
 }
 
 warp_trace() {
