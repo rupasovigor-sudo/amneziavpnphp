@@ -860,6 +860,27 @@ SH;
     }
 
     /**
+     * Guarantee the worker log is writable by the current (www-data) user
+     * BEFORE spawning. The worker is launched as `nohup php ... >> LOG &`, and
+     * the shell opens that redirect BEFORE exec'ing the worker — so if LOG is
+     * owned by root (e.g. left behind by a manual `docker exec` run), the
+     * redirect fails and the worker NEVER RUNS. The job then stays 'running'
+     * with no log line until the reaper marks it failed. This is the same
+     * failure mode that silently killed every #18 update. The logs dir is
+     * www-data-owned, so a stale root-owned file inside it can be replaced.
+     */
+    public static function ensureWritableLog(string $path): void
+    {
+        if (is_file($path) && !is_writable($path)) {
+            @unlink($path);
+        }
+        if (!is_file($path)) {
+            @touch($path);
+        }
+        @chmod($path, 0664);
+    }
+
+    /**
      * Clear jobs left in 'running' by a worker that died (container restart,
      * OOM). Without this the UI would poll a job that will never finish.
      */

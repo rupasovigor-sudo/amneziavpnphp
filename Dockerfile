@@ -85,7 +85,7 @@ RUN echo '#!/bin/bash\n\
 service cron start\n\
 # Ensure writable directories exist with correct ownership\n\
 mkdir -p /var/www/html/backups /var/www/html/logs /var/www/html/storage/ssh\nchown -R www-data:www-data /var/www/html/storage\nchmod 700 /var/www/html/storage/ssh\n# Keep the cron log writable by www-data (see note above).\ntouch /var/log/cron.log\nchown root:www-data /var/log/cron.log 2>/dev/null || true\nchmod 664 /var/log/cron.log 2>/dev/null || true\n\
-chown www-data:www-data /var/www/html/backups /var/www/html/logs\n\
+chown -R www-data:www-data /var/www/html/backups /var/www/html/logs\n\
 chmod 775 /var/www/html/backups /var/www/html/logs\n\
 if [ -f /var/www/html/.env ]; then\n\
   chgrp www-data /var/www/html/.env || true\n\

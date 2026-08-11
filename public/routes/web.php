@@ -925,6 +925,7 @@ Router::post('/updates/pool/{id}', function ($params) {
         $php = is_file('/usr/local/bin/php') ? '/usr/local/bin/php' : PHP_BINARY;
         $worker = dirname(__DIR__, 2) . '/bin/server_update_worker.php';
         $log = dirname(__DIR__, 2) . '/logs/pool_update_' . $poolId . '.log';
+        ServerUpdateManager::ensureWritableLog($log);
         exec(sprintf(
             'nohup %s %s --pool-id=%d --actions=%s >> %s 2>&1 &',
             escapeshellarg($php), escapeshellarg($worker), $poolId,
@@ -1032,6 +1033,7 @@ Router::post('/servers/{id}/updates/os', function ($params) {
         $php = is_file('/usr/local/bin/php') ? '/usr/local/bin/php' : PHP_BINARY;
         $worker = dirname(__DIR__, 2) . '/bin/server_update_worker.php';
         $log = dirname(__DIR__, 2) . '/logs/server_update_' . $serverId . '.log';
+        ServerUpdateManager::ensureWritableLog($log);
         $cmd = sprintf(
             'nohup %s %s --server-id=%d --action=%s%s >> %s 2>&1 &',
             escapeshellarg($php), escapeshellarg($worker), $serverId, escapeshellarg($action),
