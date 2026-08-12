@@ -363,6 +363,10 @@ echo "after=${after:-0}"
 echo "left_docker=$(LC_ALL=C apt list --upgradable 2>/dev/null | grep -Ec '^(docker|containerd)' || true)"
 echo "left_kernel=$(LC_ALL=C apt list --upgradable 2>/dev/null | grep -Ec '^linux-' || true)"
 echo "left_phased=$(LC_ALL=C apt-get -s upgrade 2>/dev/null | sed -n '/deferred due to phasing/,/^[A-Z]/p' | grep -c '^ ' || true)"
+# "kept back" = the upgrade needs new/removed dependencies, which plain upgrade
+# refuses. Not just kernels (qemu-guest-agent, grub, etc.) — these all need
+# full-upgrade, so report them as such instead of dumping them into "other".
+echo "left_heldback=$(LC_ALL=C apt-get -s upgrade 2>/dev/null | awk '/have been kept back/{f=1;next} /^[0-9]+ upgraded/{f=0} f' | wc -w || true)"
 if [ -r /var/run/reboot-required ] || [ -r /run/reboot-required ]; then
   echo "reboot_required=1"
 else
@@ -392,6 +396,9 @@ SH;
             $leftDocker = preg_match('/^left_docker=(\d+)/m', $out, $d) ? (int) $d[1] : 0;
             $leftKernel = preg_match('/^left_kernel=(\d+)/m', $out, $k) ? (int) $k[1] : 0;
             $leftPhased = preg_match('/^left_phased=(\d+)/m', $out, $p) ? (int) $p[1] : 0;
+            $leftHeld = preg_match('/^left_heldback=(\d+)/m', $out, $h) ? (int) $h[1] : 0;
+            // Kernel packages are also "kept back"; don't count them twice.
+            $leftHeldOther = max(0, $leftHeld - $leftKernel);
             $why = [];
             if ($leftDocker) {
                 $why[] = "{$leftDocker} Docker (удерживаются намеренно — обновляйте кнопкой «Docker»)";
@@ -399,10 +406,13 @@ SH;
             if ($leftKernel) {
                 $why[] = "{$leftKernel} ядро (нужен full-upgrade — кнопка «Ядро»)";
             }
+            if ($leftHeldOther) {
+                $why[] = "{$leftHeldOther} придержаны — нужны новые зависимости (full-upgrade, кнопка «Ядро»)";
+            }
             if ($leftPhased) {
                 $why[] = "{$leftPhased} отложены Ubuntu (phased updates — станут доступны позже сами)";
             }
-            $other = max(0, $after - $leftDocker - $leftKernel - $leftPhased);
+            $other = max(0, $after - $leftDocker - $leftKernel - $leftHeldOther - $leftPhased);
             if ($other > 0) {
                 $why[] = "{$other} прочие";
             }
