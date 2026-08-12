@@ -66,11 +66,16 @@ if command -v apt-get >/dev/null 2>&1; then
   # Ubuntu deliberately withholds non-security updates from a share of machines
   # (phased rollout). Those are not actionable — counting them as "pending"
   # leaves a server looking stale for weeks with nothing to do about it.
-  ph="$(LC_ALL=C apt-get -s upgrade 2>/dev/null | sed -n '/deferred due to phasing/{n;p;}' | wc -w || true)"
+  ph="$(LC_ALL=C apt-get -s upgrade 2>/dev/null | awk '/deferred due to phasing/{f=1;next} /^[0-9]+ upgraded/{f=0} f' | wc -w || true)"
   echo "phased=${ph:-0}"
   # Kernel meta-packages need full-upgrade, not plain upgrade.
   kr="$(LC_ALL=C apt list --upgradable 2>/dev/null | grep -Ec '^linux-' || true)"
   echo "kernel_upgradable=${kr:-0}"
+  # apt-mark hold pins a package (often the cloud image pins qemu-guest-agent).
+  # Held packages cannot be installed by upgrade OR full-upgrade, so they are not
+  # actionable either.
+  oh="$(comm -12 <(apt-mark showhold 2>/dev/null | sort -u) <(LC_ALL=C apt list --upgradable 2>/dev/null | grep -v '^Listing' | cut -d/ -f1 | sort -u) 2>/dev/null | grep -c . || true)"
+  echo "on_hold=${oh:-0}"
 else
   echo "pkg_mgr=unknown"
 fi
@@ -125,8 +130,10 @@ SH;
             'docker_upgradable' => (int) ($values['docker_upgradable'] ?? 0),
             'kernel_upgradable' => (int) ($values['kernel_upgradable'] ?? 0),
             'phased'            => (int) ($values['phased'] ?? 0),
-            // What the operator can actually act on right now.
-            'actionable'        => max(0, (int) ($values['upgradable'] ?? 0) - (int) ($values['phased'] ?? 0)),
+            'on_hold'           => (int) ($values['on_hold'] ?? 0),
+            // What the operator can actually act on right now: neither phased
+            // (Ubuntu withholds them) nor held (apt-mark hold refuses them).
+            'actionable'        => max(0, (int) ($values['upgradable'] ?? 0) - (int) ($values['phased'] ?? 0) - (int) ($values['on_hold'] ?? 0)),
             'reboot_required'   => ($values['reboot_required'] ?? '0') === '1',
             'lists_age_h'       => isset($values['lists_age_h']) ? (int) $values['lists_age_h'] : null,
             'kernel'            => $values['kernel'] ?? '',
