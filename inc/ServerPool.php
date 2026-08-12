@@ -664,6 +664,52 @@ class ServerPool
      *
      * @return array{success:bool,message:string,synced?:int}
      */
+    /**
+     * True if awg2 is actually serving on this server: container running and
+     * awg0 listening on the expected port. Used to catch a rebuild that aborted
+     * but which activate() reported as success.
+     */
+    private static function awg2Healthy(VpnServer $server, int $port): bool
+    {
+        // Retry: after a fresh deploy the container needs a few seconds to run
+        // awg-quick and bind the port, so a single early probe would wrongly
+        // report failure (and trigger a needless rollback).
+        $out = (string) $server->executeCommand(
+            'for i in $(seq 1 10); do '
+            . 'R=$(docker inspect -f "{{.State.Running}}" amnezia-awg2 2>/dev/null); '
+            . 'P=$(docker exec amnezia-awg2 awg show awg0 listen-port 2>/dev/null); '
+            . 'if [ "$R" = "true" ] && [ -n "$P" ]; then echo "running=$R port=$P"; exit 0; fi; '
+            . 'sleep 2; done; echo "running=$R port=$P"',
+            true
+        );
+        return strpos($out, 'running=true') !== false
+            && preg_match('/port=' . preg_quote((string) $port, '/') . '\b/', $out) === 1;
+    }
+
+    /**
+     * Restore awg2 from the pre-rebuild snapshot and start a container from the
+     * existing image, mirroring how the installer mounts it (host
+     * /opt/amnezia/awg2 -> container /opt/amnezia/awg). Returns true if the
+     * restored container is healthy.
+     */
+    private static function restoreAwg2Snapshot(VpnServer $server, int $port): bool
+    {
+        $server->executeCommand(
+            'D=/opt/amnezia/awg2; B="$D/.rebuild-snapshot"; '
+            . '[ -f "$B/awg0.conf" ] || { echo no-snapshot; exit 0; }; '
+            . 'for f in awg0.conf wireguard_server_private_key.key wireguard_server_public_key.key wireguard_psk.key clientsTable; do '
+            . '[ -f "$B/$f" ] && cp -a "$B/$f" "$D/$f"; done; '
+            . 'docker rm -f amnezia-awg2 >/dev/null 2>&1; '
+            . 'docker run -d --name amnezia-awg2 --restart always --cap-add=NET_ADMIN --device /dev/net/tun '
+            . '-p ' . escapeshellarg($port . ':' . $port . '/udp') . ' -v /opt/amnezia/awg2:/opt/amnezia/awg amnezia-awg2 '
+            . 'sh -c "while [ ! -f /opt/amnezia/awg/awg0.conf ]; do sleep 1; done; '
+            . 'WG_QUICK_USERSPACE_IMPLEMENTATION=amneziawg-go awg-quick up /opt/amnezia/awg/awg0.conf && sleep infinity" >/dev/null 2>&1; '
+            . 'sleep 6; echo restore-done',
+            true
+        );
+        return self::awg2Healthy($server, $port);
+    }
+
     public static function redeployMember(int $serverId): array
     {
         $pool = self::getForServer($serverId);
@@ -673,8 +719,22 @@ class ServerPool
         $poolId = (int) $pool['id'];
 
         $server = new VpnServer($serverId);
-        // Wipe the local identity so the installer regenerates it from the pool
-        // instead of reusing the existing awg0.conf.
+        $port = (int) ($pool['vpn_port'] ?? 443) ?: 443;
+
+        // 1. Snapshot the CURRENT working config + keys before touching anything.
+        //    The old code wiped first and rebuilt second, so any failure in the
+        //    rebuild (a docker build abort under set -e, a transient network
+        //    error) left the member destroyed — and activate() defaults
+        //    success=true, so it even reported OK. A rebuild must be atomic:
+        //    upgrade, or leave the server exactly as it was.
+        $server->executeCommand(
+            'D=/opt/amnezia/awg2; B="$D/.rebuild-snapshot"; rm -rf "$B"; mkdir -p "$B"; '
+            . 'for f in awg0.conf wireguard_server_private_key.key wireguard_server_public_key.key wireguard_psk.key clientsTable; do '
+            . '[ -f "$D/$f" ] && cp -a "$D/$f" "$B/$f"; done; echo snap-done',
+            true
+        );
+
+        // 2. Wipe the local identity so the installer regenerates it from the pool.
         $server->executeCommand(
             'docker rm -f amnezia-awg2 >/dev/null 2>&1; rm -f /opt/amnezia/awg2/awg0.conf '
             . '/opt/amnezia/awg2/wireguard_server_private_key.key /opt/amnezia/awg2/wireguard_server_public_key.key '
@@ -682,19 +742,39 @@ class ServerPool
             true
         );
 
+        // 3. Rebuild.
         $protocol = InstallProtocolManager::getBySlug('awg2');
         $deploy = InstallProtocolManager::activate(new VpnServer($serverId), $protocol, [
             'pool_identity' => self::identityOptions($pool),
-            'server_port' => (int) ($pool['vpn_port'] ?? 443) ?: 443,
+            'server_port' => $port,
         ]);
-        if (empty($deploy['success'])) {
-            // The identity was wiped, so the member is now serving nothing. Flag
-            // it so auto-failover cannot send clients here.
+
+        // 4. Verify REAL success: a running container with awg0 listening on the
+        //    port. Do NOT trust $deploy['success'] alone — activate() returns
+        //    success=true by default even when the install aborted.
+        if (empty($deploy['success']) || !self::awg2Healthy($server, $port)) {
+            // 5. Roll back to the snapshot: restore config+keys and bring the
+            //    container back from the (still-present) image, so the member is
+            //    left running its previous identity instead of destroyed.
+            $restored = self::restoreAwg2Snapshot($server, $port);
             DB::conn()->prepare(
                 'UPDATE vpn_servers SET pool_sync_pending = 1, validated_clean = NULL, validation_note = ? WHERE id = ?'
-            )->execute(['пересборка awg2 не удалась — член пула не обслуживает клиентов', $serverId]);
-            return ['success' => false, 'message' => 'Пересборка awg2 не удалась. Член помечен рассинхронизированным и снят с failover.'];
+            )->execute([
+                $restored
+                    ? 'пересборка awg2 не удалась — восстановлена прежняя версия из снапшота; перепроверьте'
+                    : 'пересборка awg2 не удалась И откат не сработал — требуется ручное вмешательство',
+                $serverId,
+            ]);
+            return [
+                'success' => false,
+                'message' => $restored
+                    ? 'Пересборка awg2 не удалась — сервер восстановлен из снапшота (прежняя версия работает). Снят с failover, перепроверьте.'
+                    : 'Пересборка awg2 не удалась, и автоматический откат не сработал. Сервер не обслуживает клиентов — нужно ручное восстановление.',
+            ];
         }
+
+        // Success — the rebuilt container is healthy, drop the snapshot.
+        $server->executeCommand('rm -rf /opt/amnezia/awg2/.rebuild-snapshot; echo cleaned', true);
 
         $failed = 0;
         $synced = self::syncClientsToServer($poolId, $serverId, $failed);

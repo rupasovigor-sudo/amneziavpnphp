@@ -49,10 +49,9 @@ class InstallProtocolManager
 
             $script = preg_replace('/^CONTAINER=.*$/m', 'CONTAINER=' . self::shellDoubleQuotedLiteral($containerName), $script);
             $script = preg_replace('/^WG_IFACE=.*$/m', 'WG_IFACE="awg0"', $script);
-            // Pin the amneziawg-go ref so rebuilds are deliberate version bumps
-            // rather than "whatever is on master at this moment".
-            $awg2Ref = trim((string) Config::get('AWG2_PIN_REF', 'master')) ?: 'master';
-            $script = preg_replace('/^AWG2_REF=.*$/m', 'AWG2_REF=' . self::shellDoubleQuotedLiteral($awg2Ref), $script);
+            // NB: the awg2 AWG2_REF pin is exported via buildExports() into the
+            // INSTALL script's env, not here — the watchdog script has no such
+            // line, so substituting it here was a dead no-op.
             if ($vpnPort > 0) {
                 $script = preg_replace('/^UDP_PORT=.*$/m', 'UDP_PORT="' . $vpnPort . '"', $script);
             }
@@ -741,6 +740,17 @@ SWAP;
                     ? (int) $serverData['vpn_port']
                     : ''),
         ];
+
+        // Pin the amneziawg-go ref the awg2 installer builds from. The install
+        // script reads ${AWG2_REF:-master}; without this export it always took
+        // master, so a rebuild pulled whatever HEAD happened to be upstream
+        // (which can build into a non-working container) instead of the vetted
+        // commit. (An earlier attempt wrongly substituted this into the WATCHDOG
+        // script, which has no such line — so the pin was silently dead.)
+        $awg2Ref = trim((string) Config::get('AWG2_PIN_REF', ''));
+        if ($awg2Ref !== '') {
+            $pairs['AWG2_REF'] = $awg2Ref;
+        }
 
         // Shared pool identity: deploy this member with the pool's awg2 keypair /
         // PSK / obfuscation params / interface address instead of generating fresh
