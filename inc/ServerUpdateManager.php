@@ -363,10 +363,13 @@ echo "after=${after:-0}"
 echo "left_docker=$(LC_ALL=C apt list --upgradable 2>/dev/null | grep -Ec '^(docker|containerd)' || true)"
 echo "left_kernel=$(LC_ALL=C apt list --upgradable 2>/dev/null | grep -Ec '^linux-' || true)"
 echo "left_phased=$(LC_ALL=C apt-get -s upgrade 2>/dev/null | sed -n '/deferred due to phasing/,/^[A-Z]/p' | grep -c '^ ' || true)"
-# "kept back" = the upgrade needs new/removed dependencies, which plain upgrade
-# refuses. Not just kernels (qemu-guest-agent, grub, etc.) — these all need
-# full-upgrade, so report them as such instead of dumping them into "other".
+# "kept back" splits two ways, needing DIFFERENT actions:
+#  - on apt-mark hold (often the cloud image pins qemu-guest-agent): neither
+#    upgrade nor full-upgrade will touch it; only `apt-mark unhold` will.
+#  - kept back but NOT held: the upgrade needs new deps -> full-upgrade.
+# Reporting them together (or as "needs full-upgrade") is misleading, so split.
 echo "left_heldback=$(LC_ALL=C apt-get -s upgrade 2>/dev/null | awk '/have been kept back/{f=1;next} /^[0-9]+ upgraded/{f=0} f' | wc -w || true)"
+echo "left_onhold=$(comm -12 <(apt-mark showhold 2>/dev/null | sort -u) <(LC_ALL=C apt list --upgradable 2>/dev/null | grep -v '^Listing' | cut -d/ -f1 | sort -u) | grep -c . || true)"
 if [ -r /var/run/reboot-required ] || [ -r /run/reboot-required ]; then
   echo "reboot_required=1"
 else
@@ -397,8 +400,11 @@ SH;
             $leftKernel = preg_match('/^left_kernel=(\d+)/m', $out, $k) ? (int) $k[1] : 0;
             $leftPhased = preg_match('/^left_phased=(\d+)/m', $out, $p) ? (int) $p[1] : 0;
             $leftHeld = preg_match('/^left_heldback=(\d+)/m', $out, $h) ? (int) $h[1] : 0;
-            // Kernel packages are also "kept back"; don't count them twice.
-            $leftHeldOther = max(0, $leftHeld - $leftKernel);
+            $leftOnHold = preg_match('/^left_onhold=(\d+)/m', $out, $oh) ? (int) $oh[1] : 0;
+            // Kernel packages are also "kept back"; and on-hold packages show up
+            // as kept back too. Don't double-count: full-upgrade candidates are
+            // the kept-back ones that are neither kernel nor pinned by a hold.
+            $leftHeldOther = max(0, $leftHeld - $leftKernel - $leftOnHold);
             $why = [];
             if ($leftDocker) {
                 $why[] = "{$leftDocker} Docker (удерживаются намеренно — обновляйте кнопкой «Docker»)";
@@ -409,10 +415,13 @@ SH;
             if ($leftHeldOther) {
                 $why[] = "{$leftHeldOther} придержаны — нужны новые зависимости (full-upgrade, кнопка «Ядро»)";
             }
+            if ($leftOnHold) {
+                $why[] = "{$leftOnHold} на hold (закреплены — обычно провайдером; ни upgrade, ни full-upgrade не тронет, снять: apt-mark unhold)";
+            }
             if ($leftPhased) {
                 $why[] = "{$leftPhased} отложены Ubuntu (phased updates — станут доступны позже сами)";
             }
-            $other = max(0, $after - $leftDocker - $leftKernel - $leftHeldOther - $leftPhased);
+            $other = max(0, $after - $leftDocker - $leftKernel - $leftHeldOther - $leftOnHold - $leftPhased);
             if ($other > 0) {
                 $why[] = "{$other} прочие";
             }
