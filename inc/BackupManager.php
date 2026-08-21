@@ -205,8 +205,24 @@ class BackupManager
     /* DB dump / restore (PDO-based)                                       */
     /* ------------------------------------------------------------------ */
 
+    /**
+     * Tables whose DATA is dumped as schema-only. These hold ephemeral,
+     * self-regenerating metrics — hundreds of thousands of rows that bloated the
+     * dump past PHP's memory limit and stalled backups. The backup exists for
+     * disaster recovery of the control plane (servers, clients, keys, settings);
+     * losing historical graphs on restore is acceptable, they refill from live
+     * collection. The CREATE TABLE is still emitted so a restore has the schema.
+     */
+    private const SCHEMA_ONLY_TABLES = [
+        'client_metrics', 'server_metrics', 'client_metrics_hourly', 'server_metrics_hourly',
+    ];
+
     private static function dumpDatabase(): string
     {
+        // The dump is held whole in memory and copied again by base64/json/gzip,
+        // so give it headroom regardless of the schema-only skips below.
+        @ini_set('memory_limit', '512M');
+
         $pdo = DB::conn();
         $db  = (string) Config::get('DB_DATABASE');
         $sql = "-- amnezia-panel backup " . gmdate('c') . "\n";
@@ -219,6 +235,10 @@ class BackupManager
                 continue;
             }
             $sql .= "DROP TABLE IF EXISTS `{$table}`;\n{$createSql};\n";
+            if (in_array($table, self::SCHEMA_ONLY_TABLES, true)) {
+                $sql .= "-- (data skipped: ephemeral metrics, regenerated from live collection)\n\n";
+                continue;
+            }
             $rows = $pdo->query('SELECT * FROM `' . str_replace('`', '', $table) . '`');
             $cols = null;
             $batch = [];
