@@ -53,4 +53,11 @@ SYSCTLEOF
   # already enabled (chrony/systemd-timesyncd).
   timedatectl set-ntp true >/dev/null 2>&1 || true
   echo "hardening: ntp enabled"
+
+  # Coordinate with the panel's update system: never let unattended-upgrades
+  # reboot a member on its own — an active member would drop every client.
+  # Security patches still install automatically; the panel surfaces
+  # reboot_required (audit cron) and reboots safely (failover-aware).
+  echo 'Unattended-Upgrade::Automatic-Reboot "false";' > /etc/apt/apt.conf.d/99-amnezia-unattended
+  echo "hardening: unattended-upgrades auto-reboot disabled"
 ) || true
