@@ -4,7 +4,7 @@
 <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
     <div class="mb-8 flex items-center justify-between">
         <div>
-            <h1 class="text-3xl font-bold text-gray-900">{{ 'Логи приложения' | trans }}</h1>
+            <h1 class="text-2xl font-bold text-gray-900">{{ 'Логи приложения' | trans }}</h1>
             <p class="mt-2 text-sm text-gray-600">{{ 'Просмотр, поиск и управление файлами логов' | trans }}</p>
         </div>
         {% if log_files | length > 0 %}
@@ -48,7 +48,7 @@
     <div class="grid grid-cols-12 gap-6">
         <!-- Sidebar with file list -->
         <div class="col-span-12 md:col-span-3">
-            <div class="bg-white shadow rounded-lg overflow-hidden">
+            <div class="card overflow-hidden">
                 <div class="px-6 py-4 border-b border-gray-200">
                     <h2 class="text-lg font-medium text-gray-900">{{ 'Файлы логов' | trans }}</h2>
                 </div>
@@ -81,7 +81,7 @@
         <div class="col-span-12 md:col-span-9">
             {% if selected_file %}
                 <!-- File info -->
-                <div class="bg-white shadow rounded-lg mb-4">
+                <div class="card mb-4">
                     <div class="px-6 py-4 border-b border-gray-200">
                         <div class="md:flex md:items-center md:justify-between">
                             <div class="mb-2 md:mb-0">
@@ -97,7 +97,7 @@
                 </div>
 
                 <!-- Search form -->
-                <div class="bg-white shadow rounded-lg mb-4">
+                <div class="card mb-4">
                     <div class="px-6 py-4">
                         <form id="searchForm" class="md:flex md:items-center md:space-x-3">
                             <input type="hidden" name="file" value="{{ selected_file }}">
@@ -127,7 +127,7 @@
                 </div>
 
                 <!-- Statistics -->
-                <div id="statsPanel" class="hidden bg-white shadow rounded-lg mb-4">
+                <div id="statsPanel" class="hidden card mb-4">
                     <div class="px-6 py-4 border-b border-gray-200">
                         <h3 class="text-sm font-medium text-gray-900">{{ 'Статистика логов' | trans }}</h3>
                     </div>
@@ -155,7 +155,7 @@
                 </div>
 
                 <!-- Log content -->
-                <div class="bg-white shadow rounded-lg">
+                <div class="card">
                     <div class="px-6 py-3 border-b border-gray-200 flex items-center justify-between">
                         <h3 class="text-sm font-medium text-gray-900">{{ 'Содержание логов' | trans }}</h3>
                     </div>
