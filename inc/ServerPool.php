@@ -1023,15 +1023,24 @@ class ServerPool
 
         // Write awg0.conf on the host (bind-mounted into the container), then
         // apply live non-disruptively with syncconf.
+        // Decode into a scratch file and validate it is non-empty BEFORE moving
+        // it into place: a plain `base64 -d > awg0.conf` truncates the file the
+        // instant the redirect opens, so a decode failure would leave an EMPTY
+        // awg0.conf on disk — the live interface survives, but the next container
+        // restart brings up a config with no [Interface] key and no peers. The
+        // atomic mv only happens once a valid file exists; otherwise awg0.conf is
+        // left untouched and LIVE=-1 marks the member out of sync.
         $script = 'cp /opt/amnezia/awg2/awg0.conf /opt/amnezia/awg2/awg0.conf.bak-reconcile 2>/dev/null; '
-            . 'echo ' . $b64 . ' | base64 -d > /opt/amnezia/awg2/awg0.conf && '
+            . 'if echo ' . $b64 . ' | base64 -d > /opt/amnezia/awg2/awg0.conf.new && [ -s /opt/amnezia/awg2/awg0.conf.new ]; then '
+            . 'mv /opt/amnezia/awg2/awg0.conf.new /opt/amnezia/awg2/awg0.conf; '
             . 'docker exec ' . escapeshellarg($container) . ' sh -c '
             . escapeshellarg(
                 'awg-quick strip /opt/amnezia/awg/awg0.conf > /tmp/awg0.strip 2>/dev/null; '
                 . 'awg syncconf awg0 /tmp/awg0.strip 2>&1 || wg syncconf awg0 /tmp/awg0.strip 2>&1; '
                 . 'rm -f /tmp/awg0.strip; '
                 . 'echo "LIVE=$(awg show awg0 allowed-ips 2>/dev/null | grep -c /32)"'
-            );
+            )
+            . '; else rm -f /opt/amnezia/awg2/awg0.conf.new; echo "LIVE=-1"; fi';
         $out = (string) $server->executeCommand($script, true);
         $live = 0;
         if (preg_match('/LIVE=(\d+)/', $out, $m)) {

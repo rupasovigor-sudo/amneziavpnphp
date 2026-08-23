@@ -517,7 +517,12 @@ SH;
         // while the client is actually transmitting (keepalive counts), so the
         // moment it last moved is the truthful "still connected" timestamp —
         // unlike a handshake, which merely ages after a disconnect.
-        $rxMoved = !$prev || $rawSent !== (int) $prev['last_sent'];
+        // On a subsequent sight, rx moved if the RX counter changed. On the FIRST
+        // sight there is no baseline to compare against — treat it as "connected"
+        // only if the client has actually sent something (rawSent > 0). Without
+        // this, a peer that is configured but has never connected (rawSent == 0)
+        // would be booked online for a full window after the first collection.
+        $rxMoved = $prev ? ($rawSent !== (int) $prev['last_sent']) : ($rawSent > 0);
         $db->prepare(
             'INSERT INTO client_traffic_counters (client_id, server_id, last_sent, last_received, last_rx_at)
              VALUES (?, ?, ?, ?, ' . ($rxMoved ? 'NOW()' : 'NULL') . ')
@@ -1320,10 +1325,28 @@ SH);
         // collector pass), otherwise a disconnected client reads online until
         // its handshake ages out.
         $poolId = (int) ($serverData['pool_id'] ?? 0);
-        $byTraffic = self::clientsWithRecentTraffic($poolId, (int) ($serverData['id'] ?? 0));
-        $haveTrafficData = (int) DB::conn()->query(
-            'SELECT COUNT(*) FROM client_traffic_counters WHERE last_rx_at IS NOT NULL'
-        )->fetchColumn() > 0;
+        $serverId = (int) ($serverData['id'] ?? 0);
+        $byTraffic = self::clientsWithRecentTraffic($poolId, $serverId);
+        // Scope the "do we have traffic data yet?" probe to the SAME set the
+        // traffic query covers (this pool, or this standalone server). A global
+        // COUNT would flip a freshly-added member/server to the traffic signal
+        // the moment ANY client anywhere had last_rx_at — making this server's
+        // not-yet-collected clients read offline instead of falling back to the
+        // handshake window.
+        if ($poolId > 0) {
+            $stmt = DB::conn()->prepare(
+                'SELECT COUNT(*) FROM client_traffic_counters t
+                 JOIN vpn_servers s ON s.id = t.server_id
+                 WHERE s.pool_id = ? AND t.last_rx_at IS NOT NULL'
+            );
+            $stmt->execute([$poolId]);
+        } else {
+            $stmt = DB::conn()->prepare(
+                'SELECT COUNT(*) FROM client_traffic_counters WHERE server_id = ? AND last_rx_at IS NOT NULL'
+            );
+            $stmt->execute([$serverId]);
+        }
+        $haveTrafficData = (int) $stmt->fetchColumn() > 0;
         if ($haveTrafficData) {
             return $byTraffic;
         }

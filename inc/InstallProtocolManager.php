@@ -349,7 +349,7 @@ class InstallProtocolManager
                 $options['server_port'] = self::chooseServerPort($server, $metadata);
             }
             $result = self::runScript($server, $protocol, 'install', $options);
-            Logger::appendInstall($serverId, 'Scripted install finished: ' . json_encode($result));
+            Logger::appendInstall($serverId, 'Scripted install finished: ' . json_encode(self::redactForLog($result)));
 
             // A failed remote script must not mark the protocol as applied:
             // the output parser happily turns build logs into key-value pairs,
@@ -402,6 +402,23 @@ class InstallProtocolManager
             self::markServerError($serverId, $e->getMessage());
             throw $e;
         }
+    }
+
+    /**
+     * Mask cryptographic material before an install result is written to the
+     * install log. The remote script returns the WireGuard pre-shared key,
+     * server private key and obfuscation secret in its parsed output; those must
+     * not sit in a log file at rest (admin-readable, and it survives backups).
+     * Keys the panel needs for display (server_public_key, vpn_port) are kept.
+     */
+    private static function redactForLog(array $result): array
+    {
+        foreach (['preshared_key', 'secret', 'server_private_key', 'private_key'] as $k) {
+            if (isset($result[$k]) && $result[$k] !== '' && $result[$k] !== null) {
+                $result[$k] = '***redacted***';
+            }
+        }
+        return $result;
     }
 
     private static function restore(VpnServer $server, array $protocol, array $detection, array $options = []): array

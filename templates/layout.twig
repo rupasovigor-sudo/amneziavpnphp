@@ -133,9 +133,11 @@
                         <span class="text-white mr-4">
                             <i class="fas fa-user mr-1"></i>{{ user.name }}
                         </span>
-                        <a href="/logout" class="text-white hover:text-gray-200">
-                            <i class="fas fa-sign-out-alt mr-1"></i>{{ t('menu.logout') }}
-                        </a>
+                        <form method="POST" action="/logout" class="inline">
+                            <button type="submit" class="text-white hover:text-gray-200 bg-transparent border-0 p-0 cursor-pointer">
+                                <i class="fas fa-sign-out-alt mr-1"></i>{{ t('menu.logout') }}
+                            </button>
+                        </form>
                     </div>
 
                     <!-- Mobile menu button -->
@@ -172,9 +174,11 @@
                 <div class="text-white px-3 py-2">
                     <i class="fas fa-user mr-1"></i>{{ user.name }}
                 </div>
-                <a href="/logout" class="text-white hover:bg-purple-700 block px-3 py-2 rounded-md text-base font-medium">
-                    <i class="fas fa-sign-out-alt mr-1"></i>{{ t('menu.logout') }}
-                </a>
+                <form method="POST" action="/logout" class="block">
+                    <button type="submit" class="w-full text-left text-white hover:bg-purple-700 block px-3 py-2 rounded-md text-base font-medium bg-transparent border-0 cursor-pointer">
+                        <i class="fas fa-sign-out-alt mr-1"></i>{{ t('menu.logout') }}
+                    </button>
+                </form>
             </div>
         </div>
     </nav>

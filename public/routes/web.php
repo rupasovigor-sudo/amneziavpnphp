@@ -92,8 +92,9 @@ Router::post('/register', function () {
     View::render('register.twig', ['error' => 'Registration failed. Email may already be in use.']);
 });
 
-// Logout
-Router::get('/logout', function () {
+// Logout — POST only, so it is CSRF-protected (a GET /logout could be
+// triggered cross-site via <img src=/logout> to force-logout a user).
+Router::post('/logout', function () {
     Auth::logout();
     redirect('/login');
 });

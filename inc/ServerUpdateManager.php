@@ -939,8 +939,14 @@ SH;
             return ['ok' => false, 'message' => 'Проверка после обновления не отработала: ' . $e->getMessage()];
         }
 
+        // Only checks that reflect whether the UPDATE itself broke the VPN gate
+        // failover. wireguard_input_drops (a DROP rule on the VPN port) is a
+        // censorship/blocking signal, orthogonal to a package update: a legit or
+        // pre-existing firewall rule would fail every post-update verify and,
+        // because nothing sets validated_clean back to 1 automatically, would
+        // stickily drop a healthy server from failover. Keep it as an advisory.
         $critical = [];
-        foreach (['container_running', 'wireguard_interface', 'wireguard_port', 'wireguard_input_drops'] as $name) {
+        foreach (['container_running', 'wireguard_interface', 'wireguard_port'] as $name) {
             if (isset($checks[$name]) && empty($checks[$name]['ok'])) {
                 $critical[] = $checks[$name]['message'];
             }
@@ -958,6 +964,11 @@ SH;
             ];
         }
 
-        return ['ok' => true, 'message' => 'Проверка пройдена: контейнер, awg0 и порт в норме'];
+        $advisory = '';
+        if (isset($checks['wireguard_input_drops']) && empty($checks['wireguard_input_drops']['ok'])) {
+            $advisory = ' ⚠ ' . $checks['wireguard_input_drops']['message'] . ' (проверьте фаервол; на failover не влияет)';
+        }
+
+        return ['ok' => true, 'message' => 'Проверка пройдена: контейнер, awg0 и порт в норме' . $advisory];
     }
 }
