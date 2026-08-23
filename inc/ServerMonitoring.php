@@ -1010,6 +1010,17 @@ SH;
 
         $db->exec("DELETE FROM server_metrics_hourly WHERE bucket_start < DATE_SUB(NOW(), INTERVAL {$hourlyRetentionDays} DAY)");
         $db->exec("DELETE FROM client_metrics_hourly WHERE bucket_start < DATE_SUB(NOW(), INTERVAL {$hourlyRetentionDays} DAY)");
+
+        // Keep the audit trail bounded too (default 1 year, configurable).
+        $auditRetentionDays = max(30, min(3650, (int) Config::get('AMNEZIA_AUDIT_RETENTION_DAYS', '365')));
+        try {
+            do {
+                $deleted = $db->exec("DELETE FROM audit_log WHERE created_at < DATE_SUB(NOW(), INTERVAL {$auditRetentionDays} DAY) LIMIT 5000");
+            } while ($deleted === 5000);
+        } catch (Throwable $e) {
+            // audit_log may not exist on installs that skipped migration 107
+            error_log('cleanOldMetrics: audit_log prune skipped: ' . $e->getMessage());
+        }
     }
 
     /**

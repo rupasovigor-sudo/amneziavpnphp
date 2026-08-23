@@ -85,6 +85,7 @@ require_once __DIR__ . '/../inc/AlertManager.php';
 require_once __DIR__ . '/../inc/InstallProtocolManager.php';
 require_once __DIR__ . '/../inc/ProtocolService.php';
 require_once __DIR__ . '/../inc/TimewebDnsService.php';
+require_once __DIR__ . '/../inc/AuditLog.php';
 
 // Test database connection
 try {
@@ -597,6 +598,12 @@ require __DIR__ . '/routes/web.php';
 require __DIR__ . '/routes/api.php';
 require __DIR__ . '/routes/admin_settings.php';
 require __DIR__ . '/routes/backups.php';
+// Audit every state-changing request after it completes. Registered before
+// the CSRF gate so even a CSRF-rejected mutation is recorded; shutdown fires
+// regardless of how the handler exits (exit()/redirect()), and by then the
+// actor's session and the final HTTP status are both available.
+register_shutdown_function(['AuditLog', 'recordCurrentRequest']);
+
 // Dispatch router
 if (csrfProtectedRequest($_SERVER['REQUEST_METHOD'], $_SERVER['REQUEST_URI']) && !verifyCsrfRequest()) {
     rejectInvalidCsrf();

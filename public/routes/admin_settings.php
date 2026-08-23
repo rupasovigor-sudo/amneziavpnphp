@@ -379,6 +379,15 @@ Router::get('/settings', function () {
     $controller->index();
 });
 
+// Audit trail of state-changing admin actions (admin-only).
+Router::get('/audit', function () {
+    requireAdmin();
+    $page = max(1, (int) ($_GET['page'] ?? 1));
+    $perPage = 200;
+    $entries = AuditLog::recent($perPage, ($page - 1) * $perPage);
+    View::render('audit.twig', ['entries' => $entries, 'page' => $page, 'per_page' => $perPage]);
+});
+
 Router::get('/settings/protocols', function () {
     requireAdmin();
     $params = [];

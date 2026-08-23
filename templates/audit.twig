@@ -1,0 +1,59 @@
+{% extends "layout.twig" %}
+{% block title %}Журнал действий{% endblock %}
+
+{% block content %}
+<div class="max-w-7xl mx-auto px-4 py-8">
+  <div class="mb-6">
+    <h1 class="text-3xl font-bold">Журнал действий</h1>
+    <p class="text-gray-600">Изменяющие действия админов: кто, что, когда, откуда</p>
+  </div>
+
+  <div class="bg-white shadow rounded-lg overflow-x-auto">
+    <table class="min-w-full text-sm">
+      <thead class="bg-gray-50 text-gray-600">
+        <tr>
+          <th class="px-4 py-2 text-left font-medium">Время (UTC)</th>
+          <th class="px-4 py-2 text-left font-medium">Пользователь</th>
+          <th class="px-4 py-2 text-left font-medium">Действие</th>
+          <th class="px-4 py-2 text-left font-medium">Запрос</th>
+          <th class="px-4 py-2 text-left font-medium">Статус</th>
+          <th class="px-4 py-2 text-left font-medium">IP</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-gray-100">
+        {% for e in entries %}
+        <tr class="hover:bg-gray-50">
+          <td class="px-4 py-2 whitespace-nowrap text-gray-500">{{ e.created_at }}</td>
+          <td class="px-4 py-2 whitespace-nowrap">{{ e.user_email ?: '—' }}</td>
+          <td class="px-4 py-2 whitespace-nowrap font-mono text-xs">{{ e.action }}</td>
+          <td class="px-4 py-2 font-mono text-xs text-gray-600">
+            <span class="font-semibold">{{ e.method }}</span> {{ e.path }}
+          </td>
+          <td class="px-4 py-2 whitespace-nowrap">
+            {% set s = e.status|default(0) %}
+            <span class="px-2 py-0.5 rounded text-xs {{ s >= 200 and s < 400 ? 'bg-green-100 text-green-800' : (s >= 400 ? 'bg-red-100 text-red-800' : 'bg-gray-100 text-gray-600') }}">
+              {{ e.status ?: '—' }}
+            </span>
+          </td>
+          <td class="px-4 py-2 whitespace-nowrap text-gray-500">{{ e.ip ?: '—' }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6" class="px-4 py-8 text-center text-gray-400">Пока нет записей</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="mt-4 flex items-center justify-between">
+    <div class="text-sm text-gray-500">Страница {{ page }} · до {{ per_page }} записей</div>
+    <div class="flex gap-2">
+      {% if page > 1 %}
+      <a href="/audit?page={{ page - 1 }}" class="px-3 py-1.5 bg-gray-100 rounded text-sm hover:bg-gray-200">← Новее</a>
+      {% endif %}
+      {% if entries|length == per_page %}
+      <a href="/audit?page={{ page + 1 }}" class="px-3 py-1.5 bg-gray-100 rounded text-sm hover:bg-gray-200">Старее →</a>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}
