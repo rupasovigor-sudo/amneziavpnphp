@@ -47,4 +47,10 @@ net.core.wmem_max = 8388608
 SYSCTLEOF
   sysctl -p /etc/sysctl.d/99-amnezia-awg2.conf >/dev/null 2>&1
   echo "hardening: sysctl applied"
+
+  # Ensure NTP time sync is on: WireGuard handshake timestamps and correct log
+  # timestamps both depend on a roughly correct clock. Idempotent no-op if
+  # already enabled (chrony/systemd-timesyncd).
+  timedatectl set-ntp true >/dev/null 2>&1 || true
+  echo "hardening: ntp enabled"
 ) || true

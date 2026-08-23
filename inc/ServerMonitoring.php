@@ -231,6 +231,10 @@ else
   echo "warp_present=0"
 fi
 
+# Clock sync: WireGuard handshake timestamps and correct logs both depend on a
+# roughly correct clock. Report NTP sync state (yes/no); unknown => omitted.
+echo "ntp_synced=$(timedatectl show -p NTPSynchronized --value 2>/dev/null || echo unknown)"
+
 if [ "$is_wg" = "1" ]; then
   iface=""
   for candidate in awg0 wg0; do
@@ -308,6 +312,17 @@ SH;
                 'message' => $warpOk
                     ? 'WARP-egress: сервис, ip-rule и маршрут на месте'
                     : ('WARP-egress сломан: ' . implode(', ', $problems)),
+            ];
+        }
+
+        $ntp = trim((string) ($values['ntp_synced'] ?? 'unknown'));
+        if ($ntp === 'yes' || $ntp === 'no') {
+            $checks['clock_sync'] = [
+                'ok' => $ntp === 'yes',
+                'severity' => 'warning',
+                'message' => $ntp === 'yes'
+                    ? 'Часы синхронизированы по NTP'
+                    : 'Часы НЕ синхронизированы по NTP — возможны сбои handshake и неверные метки в логах',
             ];
         }
 
