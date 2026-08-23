@@ -125,12 +125,15 @@
   function refresh() { post('/backups/list').then(function (d) { if (d.success) renderList(d.backups); }); }
 
   document.getElementById('b_create').addEventListener('click', function () {
+    var btn = this;
     var m = document.getElementById('b_createMsg'); m.textContent = 'Создание бэкапа (дамп + шифрование + загрузка в S3)…';
+    setBtnLoading(btn, true, 'Создание…');
     post('/backups/create').then(function (d) {
       m.textContent = d.message || (d.success ? 'Готово' : (d.error || 'ошибка'));
       showToast(d.message || (d.success ? 'Бэкап создан' : (d.error || 'Ошибка')), d.success ? 'success' : 'error');
       refresh();
-    }).catch(function (e) { m.textContent = 'Ошибка: ' + e; });
+    }).catch(function (e) { m.textContent = 'Ошибка: ' + e; })
+      .finally(function () { setBtnLoading(btn, false); });
   });
 
   function bindRows() {

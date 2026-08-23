@@ -187,6 +187,35 @@
             try { localStorage.setItem('theme', dark ? 'dark' : 'light'); } catch (e) {}
         }
 
+        // Loading state for a button (spinner + disabled). Used by AJAX flows:
+        //   setBtnLoading(btn, true, 'Сохранение…'); ... setBtnLoading(btn, false);
+        window.setBtnLoading = function (btn, on, text) {
+            if (!btn) return;
+            if (on) {
+                if (btn.dataset._orig === undefined) btn.dataset._orig = btn.innerHTML;
+                btn.disabled = true;
+                btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>' + (text ? ' ' + text : '');
+            } else if (btn.dataset._orig !== undefined) {
+                btn.disabled = false;
+                btn.innerHTML = btn.dataset._orig;
+                delete btn.dataset._orig;
+            }
+        };
+
+        // Global: on any (valid) form submit, show a spinner on its submit
+        // button and prevent double-submit. HTML5-invalid forms don't fire
+        // 'submit', so this only triggers on real submissions; a safety timer
+        // restores the button if the page didn't navigate (e.g. an AJAX form).
+        document.addEventListener('submit', function (e) {
+            const form = e.target;
+            if (!(form instanceof HTMLFormElement) || form.dataset.noLoading !== undefined) return;
+            const btn = form.querySelector('button[type="submit"], button:not([type]), input[type="submit"]');
+            if (btn && !btn.disabled && btn.tagName === 'BUTTON') {
+                window.setBtnLoading(btn, true, btn.dataset.loadingText || '');
+                setTimeout(function () { window.setBtnLoading(btn, false); }, 8000);
+            }
+        });
+
         function toggleLanguageDropdown() {
             const dropdown = document.getElementById('languageDropdown');
             dropdown.classList.toggle('active');
