@@ -90,6 +90,13 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 EOF
 ```
 
+## Фронтенд (Tailwind CSS)
+UI собран на Tailwind, скомпилированном **standalone-бинарником** (без Node/npm) в `public/assets/app.css` — это self-hosted, без Play-CDN. Файл закоммичен (source of truth). После правки шаблонов (`templates/**/*.twig`) или `resources/input.css` пересоберите и закоммитьте CSS:
+```
+bash scripts/build_css.sh   # качает CLI в .cache/ (один раз), собирает purged+minified app.css
+```
+Chart.js тоже self-hosted (`public/assets/chart.umd.min.js`).
+
 ## Обновление серверов
 Раздел **Обновления** в меню — состояние по всему парку; действия — на карточке сервера.
 

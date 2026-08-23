@@ -1,0 +1,50 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Panel design-system components. Kept small and semantic so templates use
+ * .card / .btn / .badge rather than repeating long utility strings. Extend
+ * here, then rebuild via scripts/build_css.sh.
+ */
+@layer components {
+  /* Brand gradient used on the sidebar/login. */
+  .gradient-bg {
+    background: linear-gradient(160deg, #4f46b8 0%, #312e75 100%);
+  }
+
+  .card {
+    @apply bg-white rounded-lg shadow border border-gray-100;
+  }
+
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 px-4 py-2 rounded-md text-sm font-medium
+           transition-colors focus:outline-none focus:ring-2 focus:ring-offset-1 disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+  .btn-primary  { @apply btn bg-brand-600 text-white hover:bg-brand-700 focus:ring-brand-500; }
+  .btn-secondary{ @apply btn bg-gray-100 text-gray-800 hover:bg-gray-200 focus:ring-gray-400; }
+  .btn-danger   { @apply btn bg-red-600 text-white hover:bg-red-700 focus:ring-red-500; }
+
+  .badge { @apply inline-flex items-center px-2 py-0.5 rounded text-xs font-medium; }
+  .badge-green { @apply badge bg-green-100 text-green-800; }
+  .badge-red   { @apply badge bg-red-100 text-red-800; }
+  .badge-yellow{ @apply badge bg-yellow-100 text-yellow-800; }
+  .badge-gray  { @apply badge bg-gray-100 text-gray-700; }
+  .badge-brand { @apply badge bg-brand-100 text-brand-800; }
+
+  /* Sidebar nav item. */
+  .nav-item {
+    @apply flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium text-indigo-100
+           hover:bg-white/10 hover:text-white transition-colors;
+  }
+  .nav-item.active { @apply bg-white/15 text-white; }
+  .nav-group-label { @apply px-3 pt-4 pb-1 text-xs font-semibold uppercase tracking-wider text-indigo-300/80; }
+}
+
+/* Functional toggles (plain CSS, never purged). */
+.mobile-menu { display: none; }
+.mobile-menu.active { display: block; }
+.language-dropdown { display: none; }
+.language-dropdown.active { display: block; }
+.sidebar-drawer { transition: transform .2s ease; }
+
