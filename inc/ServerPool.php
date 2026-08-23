@@ -257,6 +257,28 @@ class ServerPool
      */
     public static function setActive(int $poolId, int $serverId, string $reason = 'manual'): array
     {
+        // Serialise the read-modify-write of active_server_id + the DNS repoint.
+        // Three callers race here — the UI, checkAndFailover (cron) and server
+        // delete — and an interleave could leave DNS pointing at one member while
+        // active_server_id in the DB names another. The shared pool identity
+        // means clients never break from that skew, but the badge/state would be
+        // inconsistent until the next cycle. A per-pool advisory lock removes it.
+        $db = DB::conn();
+        $lockName = 'amnezia_pool_active_' . $poolId;
+        $lk = $db->prepare('SELECT GET_LOCK(?, 10)');
+        $lk->execute([$lockName]);
+        if ((int) $lk->fetchColumn() !== 1) {
+            return ['success' => false, 'message' => 'Пул занят другим переключением — повторите через несколько секунд'];
+        }
+        try {
+            return self::setActiveLocked($poolId, $serverId, $reason);
+        } finally {
+            $db->prepare('SELECT RELEASE_LOCK(?)')->execute([$lockName]);
+        }
+    }
+
+    private static function setActiveLocked(int $poolId, int $serverId, string $reason): array
+    {
         $pool = self::get($poolId);
         if (!$pool) {
             return ['success' => false, 'message' => "Pool {$poolId} not found"];

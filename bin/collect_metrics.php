@@ -152,7 +152,7 @@ function collectForServer(array $server, AlertManager $alertManager, array $cfg)
 // inside VpnServer::executeCommand so a normal slow host still finishes.
 const CHILD_TIMEOUT_SECONDS = 300;
 
-function runCollectorPool(array $servers, int $limit): void
+function runCollectorPool(array $servers, int $limit, AlertManager $alertManager): void
 {
     $queue = array_values($servers);
     $running = [];
@@ -193,6 +193,20 @@ function runCollectorPool(array $servers, int $limit): void
                     . CHILD_TIMEOUT_SECONDS . "s — terminating\n";
                 @proc_terminate($r['proc'], SIGKILL);
                 $status['running'] = false;
+                // A killed child never got to record collector_exception=ok, so
+                // without this the previous alert state for the server would hang
+                // unchanged. Record the timeout explicitly.
+                try {
+                    $alertManager->recordProblem(
+                        (int) $r['server']['id'],
+                        (string) ($r['server']['name'] ?? ('#' . $r['server']['id'])),
+                        'collector_exception',
+                        'Сбор метрик прерван по таймауту (' . CHILD_TIMEOUT_SECONDS . 'с) — воркер убит',
+                        'critical'
+                    );
+                } catch (Throwable $alertError) {
+                    error_log('Failed to record collector timeout alert: ' . $alertError->getMessage());
+                }
             }
 
             if (!$status['running']) {
@@ -306,7 +320,7 @@ while (true) {
 
         $parallelism = max(1, (int) Config::get('AMNEZIA_METRICS_PARALLELISM', '4'));
         if ($parallelism > 1 && count($servers) > 1) {
-            runCollectorPool($servers, $parallelism);
+            runCollectorPool($servers, $parallelism, $alertManager);
         } else {
             foreach ($servers as $server) {
                 try {
@@ -319,7 +333,11 @@ while (true) {
                         'Сбор метрик отработал без ошибок',
                         'critical'
                     );
-                } catch (Exception $e) {
+                } catch (Throwable $e) {
+                    // Throwable, not Exception: a PHP Error in one server's
+                    // collection must not bubble to the outer handler and skip
+                    // checkAndFailover for the whole cycle (matters when
+                    // parallelism<=1, i.e. the sequential branch).
                     echo "  ERROR: " . $e->getMessage() . "\n";
                     try {
                         $alertManager->recordProblem(

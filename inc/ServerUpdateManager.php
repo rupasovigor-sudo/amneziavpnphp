@@ -798,10 +798,19 @@ SH;
         }
 
         // 2. Promote a healthy, updated standby before touching the active one.
+        // Re-read validated_clean from the DB rather than the pre-update $members
+        // snapshot: a standby's post-update verify may have reset the flag after
+        // the snapshot was taken, and promoting on a stale "clean=1" would bypass
+        // the failover-eligibility gate.
         $target = null;
         foreach ($members as $m) {
             $id = (int) $m['id'];
-            if ($id !== $activeId && (int) ($m['validated_clean'] ?? 0) === 1) {
+            if ($id === $activeId) {
+                continue;
+            }
+            $freshClean = DB::conn()->prepare('SELECT validated_clean FROM vpn_servers WHERE id = ?');
+            $freshClean->execute([$id]);
+            if ((int) ($freshClean->fetchColumn() ?: 0) === 1) {
                 $target = $id;
                 break;
             }
@@ -920,7 +929,12 @@ SH;
                AND server_update_started_at IS NOT NULL
                AND server_update_started_at < DATE_SUB(NOW(), INTERVAL ? SECOND)"
         );
-        $st->execute([max(600, $olderThanSeconds)]);
+        // Floor well above a legitimate long update: updateOs/updateKernel can
+        // wait up to LOCK_WAIT_SECONDS (600s) for the dpkg lock and THEN run a
+        // full-upgrade, so a 600s floor could mark a live worker failed. 1800s
+        // keeps the guard while leaving real long updates alone; callers use the
+        // 3600s default anyway.
+        $st->execute([max(1800, $olderThanSeconds)]);
         return $st->rowCount();
     }
 

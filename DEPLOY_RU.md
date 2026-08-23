@@ -77,6 +77,19 @@ for f in migrations/*.sql; do docker compose exec -T db mysql -u"$DB_USERNAME" -
 `check_expired_clients`, `check_traffic_limits`, `monitor_metrics` (watchdog демона метрик/failover), `backup_cron`,
 `update_audit_cron` (ежедневный read-only аудит пакетов/awg2/WARP + алерт `server_updates_pending`; ничего не применяет).
 
+### Крон-задача на ХОСТЕ (ставится отдельно)
+`bin/docker_reaper.sh` — еженедельная чистка build-кэша docker на **хосте панели** (не в контейнере:
+внутри контейнера `docker` смотрит в пустой dind-сайдкар). `docker compose build web` копит BuildKit-кэш
+на хосте (наблюдалось 5+ ГБ при 74% диска). Скрипт прунит кэш, не использованный >7 дней, и dangling-образы;
+awg2 собирается на удалённых членах пула, поэтому кэш хоста прунить безопасно. Установка на хосте:
+```
+sudo tee /etc/cron.d/amnezia-docker-reaper >/dev/null <<'EOF'
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+30 3 * * 0 root /bin/bash /opt/amnezia-panel/bin/docker_reaper.sh >> /var/log/amnezia-docker-reaper.log 2>&1
+EOF
+```
+
 ## Обновление серверов
 Раздел **Обновления** в меню — состояние по всему парку; действия — на карточке сервера.
 

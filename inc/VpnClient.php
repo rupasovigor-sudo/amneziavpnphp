@@ -651,23 +651,60 @@ class VpnClient
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ');
 
-        self::timed('create.db_insert', [
-            'server_id' => $serverId,
-            'protocol' => $slug,
-        ], fn() => $stmt->execute([
-            $serverId,
-            $userId,
-            $protocolId ?: null,
-            $loginFinal,
-            $clientIP,
-            $pub, // public_key stays plaintext (indexed + matched by the collector)
-            SecretBox::encryptNullable($priv),
-            SecretBox::encryptNullable($psk),
-            SecretBox::encryptNullable($config),
-            SecretBox::encryptNullable($qrCode),
-            'active',
-            $expiresAt
-        ]));
+        try {
+            self::timed('create.db_insert', [
+                'server_id' => $serverId,
+                'protocol' => $slug,
+            ], fn() => $stmt->execute([
+                $serverId,
+                $userId,
+                $protocolId ?: null,
+                $loginFinal,
+                $clientIP,
+                $pub, // public_key stays plaintext (indexed + matched by the collector)
+                SecretBox::encryptNullable($priv),
+                SecretBox::encryptNullable($psk),
+                SecretBox::encryptNullable($config),
+                SecretBox::encryptNullable($qrCode),
+                'active',
+                $expiresAt
+            ]));
+        } catch (Throwable $insErr) {
+            // The peer was already pushed to the home server (and every pool
+            // member) above. If the row never lands, that peer is an orphan
+            // holding $clientIP: once the IP lock releases, getNextClientIP —
+            // which derives the used-IP set from the DB — could hand the same IP
+            // to another client and collide on the shared awg0. Best-effort
+            // remove the orphan before rethrowing so the IP is genuinely free.
+            if ($pub !== '') {
+                try {
+                    self::removeClientFromServer($serverData, $pub);
+                } catch (Throwable $e2) {
+                    error_log('create rollback: home peer removal failed: ' . $e2->getMessage());
+                }
+                $rbPool = (int) ($serverData['pool_id'] ?? 0);
+                if ($rbPool > 0) {
+                    try {
+                        $stmtM = DB::conn()->prepare('SELECT id FROM vpn_servers WHERE pool_id = ? AND id <> ?');
+                        $stmtM->execute([$rbPool, $serverId]);
+                        foreach ($stmtM->fetchAll(PDO::FETCH_COLUMN) as $mid) {
+                            try {
+                                $md = (new VpnServer((int) $mid))->getData();
+                                if ($md && ($md['status'] ?? '') === 'active') {
+                                    self::removeClientFromServer($md, $pub);
+                                }
+                            } catch (Throwable $e3) {
+                                error_log("create rollback: pool peer removal failed on {$mid}: " . $e3->getMessage());
+                            }
+                        }
+                    } catch (Throwable $e4) {
+                        error_log('create rollback: member enumeration failed: ' . $e4->getMessage());
+                    }
+                }
+            }
+            DB::conn()->prepare('SELECT RELEASE_LOCK(?)')->execute([$ipLockKey]);
+            throw $insErr;
+        }
 
         $clientId = (int) $pdo->lastInsertId();
         DB::conn()->prepare('SELECT RELEASE_LOCK(?)')->execute([$ipLockKey]);
