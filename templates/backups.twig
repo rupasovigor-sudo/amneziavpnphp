@@ -3,11 +3,11 @@
 {% block title %}Бэкапы - {{ app_name }}{% endblock %}
 
 {% block content %}
-<div class="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-  <h1 class="text-3xl font-bold mb-6"><i class="fas fa-database mr-2 text-brand-600"></i>Бэкапы панели</h1>
+<div class="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
+  <h1 class="text-2xl font-bold text-gray-900 mb-6"><i class="fas fa-database mr-2 text-brand-600"></i>Бэкапы панели</h1>
 
   {# ---- Settings ---- #}
-  <div class="bg-white rounded shadow p-6 mb-6">
+  <div class="card p-6 mb-6">
     <h2 class="font-bold mb-4">Настройки бэкапа (S3)</h2>
     <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
       <label class="block">Endpoint
@@ -41,7 +41,7 @@
   </div>
 
   {# ---- Backups list ---- #}
-  <div class="bg-white rounded shadow p-6">
+  <div class="card p-6">
     <div class="flex items-center justify-between mb-4">
       <h2 class="font-bold">Копии в S3</h2>
       <button id="b_create" class="px-3 py-1.5 bg-green-600 text-white rounded text-sm"><i class="fas fa-plus mr-1"></i>Создать бэкап сейчас</button>
