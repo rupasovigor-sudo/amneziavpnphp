@@ -49,145 +49,96 @@
 </head>
 <body class="bg-gray-50">
     {% if user %}
-    <!-- Navigation -->
-    <nav class="gradient-bg shadow-lg">
-        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div class="flex justify-between h-16">
-                <div class="flex">
-                    <div class="flex-shrink-0 flex items-center">
-                        <i class="fas fa-shield-alt text-white text-2xl mr-2"></i>
-                        <span class="text-white text-xl font-bold">{{ app_name }}</span>
-                    </div>
-                    <!-- Desktop Menu -->
-                    <div class="hidden md:ml-6 md:flex md:space-x-8">
-                        <a href="/dashboard" class="text-white hover:text-gray-200 inline-flex items-center px-1 pt-1 text-sm font-medium">
-                            <i class="fas fa-tachometer-alt mr-2"></i>{{ t('menu.dashboard') }}
-                        </a>
-                        <a href="/servers" class="text-white hover:text-gray-200 inline-flex items-center px-1 pt-1 text-sm font-medium">
-                            <i class="fas fa-server mr-2"></i>{{ t('menu.servers') }}
-                        </a>
-                        {% if user.role == 'admin' %}
-                        <a href="/settings" class="text-white hover:text-gray-200 inline-flex items-center px-1 pt-1 text-sm font-medium">
-                            <i class="fas fa-cog mr-2"></i>{{ t('menu.settings') }}
-                        </a>
-                        <a href="/backups" class="text-white hover:text-gray-200 inline-flex items-center px-1 pt-1 text-sm font-medium">
-                            <i class="fas fa-database mr-2"></i>Бэкапы
-                        </a>
-                        <a href="/updates" class="text-white hover:text-gray-200 inline-flex items-center px-1 pt-1 text-sm font-medium">
-                            <i class="fas fa-box mr-2"></i>Обновления
-                        </a>
-                        <a href="/pools" class="text-white hover:text-gray-200 inline-flex items-center px-1 pt-1 text-sm font-medium">
-                            <i class="fas fa-layer-group mr-2"></i>Пулы
-                        </a>
-                        <a href="/audit" class="text-white hover:text-gray-200 inline-flex items-center px-1 pt-1 text-sm font-medium">
-                            <i class="fas fa-clipboard-list mr-2"></i>Журнал
-                        </a>
-                        {% endif %}
-                    </div>
-                </div>
-                <div class="flex items-center">
-                    <!-- Language Selector -->
-                    <div class="relative mr-4">
-                        <button onclick="toggleLanguageDropdown()" class="text-white hover:text-gray-200 flex items-center focus:outline-none">
-                            {% set currentLang = current_language %}
-                            {% for lang in languages %}
-                                {% if lang.code == currentLang %}
-                                    <span class="mr-2">{{ getFlag(lang.code) }}</span>
-                                {% endif %}
-                            {% endfor %}
-                            <i class="fas fa-chevron-down ml-1 text-xs"></i>
-                        </button>
-                        <div id="languageDropdown" class="language-dropdown absolute right-0 mt-2 w-48 bg-white rounded-md shadow-lg z-50">
-                            {% for lang in languages %}
-                            <form method="POST" action="/language/change" class="block">
-                                <input type="hidden" name="language" value="{{ lang.code }}">
-                                <input type="hidden" name="redirect" value="{{ current_uri }}">
-                                <button type="submit" class="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 flex items-center
-                                    {% if lang.code == current_language %}bg-purple-50 font-medium{% endif %}">
-                                    <span class="mr-2">{{ getFlag(lang.code) }}</span>
-                                    <span>{{ lang.name }}</span>
-                                    {% if lang.code == current_language %}
-                                    <i class="fas fa-check text-purple-600 ml-auto"></i>
-                                    {% endif %}
-                                </button>
-                            </form>
-                            {% endfor %}
-                        </div>
-                    </div>
-                    
-                    <!-- User Menu (Desktop) -->
-                    <div class="hidden md:flex items-center">
-                        <span class="text-white mr-4">
-                            <i class="fas fa-user mr-1"></i>{{ user.name }}
-                        </span>
-                        <form method="POST" action="/logout" class="inline">
-                            <button type="submit" class="text-white hover:text-gray-200 bg-transparent border-0 p-0 cursor-pointer">
-                                <i class="fas fa-sign-out-alt mr-1"></i>{{ t('menu.logout') }}
-                            </button>
-                        </form>
-                    </div>
+    {% set uri = current_uri|default('') %}
+    {% set is_admin = user.role == 'admin' %}
 
-                    <!-- Mobile menu button -->
-                    <div class="md:hidden flex items-center ml-4">
-                        <button onclick="toggleMobileMenu()" type="button" class="text-white hover:text-gray-200 focus:outline-none">
-                            <i class="fas fa-bars text-xl"></i>
-                        </button>
-                    </div>
-                </div>
-            </div>
+    <!-- Mobile drawer backdrop -->
+    <div id="sidebarBackdrop" class="fixed inset-0 bg-black/40 z-30 hidden lg:hidden" onclick="toggleSidebar()"></div>
+
+    <!-- Sidebar -->
+    <aside id="sidebar" class="sidebar-drawer gradient-bg fixed inset-y-0 left-0 z-40 w-64 flex flex-col -translate-x-full lg:translate-x-0">
+        <div class="h-16 flex items-center gap-2 px-4 border-b border-white/10 flex-shrink-0">
+            <i class="fas fa-shield-alt text-white text-2xl"></i>
+            <span class="text-white text-lg font-bold">{{ app_name }}</span>
         </div>
-
-        <!-- Mobile Menu -->
-        <div id="mobileMenu" class="mobile-menu md:hidden">
-            <div class="px-2 pt-2 pb-3 space-y-1">
-                <a href="/dashboard" class="text-white hover:bg-purple-700 block px-3 py-2 rounded-md text-base font-medium">
-                    <i class="fas fa-tachometer-alt mr-2"></i>{{ t('menu.dashboard') }}
-                </a>
-                <a href="/servers" class="text-white hover:bg-purple-700 block px-3 py-2 rounded-md text-base font-medium">
-                    <i class="fas fa-server mr-2"></i>{{ t('menu.servers') }}
-                </a>
-                {% if user.role == 'admin' %}
-                <a href="/settings" class="text-white hover:bg-purple-700 block px-3 py-2 rounded-md text-base font-medium">
-                    <i class="fas fa-cog mr-2"></i>{{ t('menu.settings') }}
-                </a>
-                <a href="/backups" class="text-white hover:bg-purple-700 block px-3 py-2 rounded-md text-base font-medium">
-                    <i class="fas fa-database mr-2"></i>Бэкапы
-                </a>
-                <a href="/updates" class="text-white hover:bg-purple-700 block px-3 py-2 rounded-md text-base font-medium">
-                    <i class="fas fa-box mr-2"></i>Обновления
-                </a>
-                <a href="/pools" class="text-white hover:bg-purple-700 block px-3 py-2 rounded-md text-base font-medium">
-                    <i class="fas fa-layer-group mr-2"></i>Пулы
-                </a>
-                <a href="/audit" class="text-white hover:bg-purple-700 block px-3 py-2 rounded-md text-base font-medium">
-                    <i class="fas fa-clipboard-list mr-2"></i>Журнал
-                </a>
-                {% endif %}
-                <div class="border-t border-purple-500 my-2"></div>
-                <div class="text-white px-3 py-2">
-                    <i class="fas fa-user mr-1"></i>{{ user.name }}
-                </div>
-                <form method="POST" action="/logout" class="block">
-                    <button type="submit" class="w-full text-left text-white hover:bg-purple-700 block px-3 py-2 rounded-md text-base font-medium bg-transparent border-0 cursor-pointer">
-                        <i class="fas fa-sign-out-alt mr-1"></i>{{ t('menu.logout') }}
-                    </button>
-                </form>
-            </div>
+        <nav class="flex-1 overflow-y-auto px-3 py-3 space-y-0.5">
+            <a href="/dashboard" class="nav-item {{ uri starts with '/dashboard' ? 'active' }}">
+                <i class="fas fa-tachometer-alt w-5 text-center"></i><span>{{ t('menu.dashboard') }}</span>
+            </a>
+            <a href="/servers" class="nav-item {{ uri starts with '/servers' or uri starts with '/clients' ? 'active' }}">
+                <i class="fas fa-server w-5 text-center"></i><span>{{ t('menu.servers') }}</span>
+            </a>
+            {% if is_admin %}
+            <a href="/pools" class="nav-item {{ uri starts with '/pools' ? 'active' }}">
+                <i class="fas fa-layer-group w-5 text-center"></i><span>Пулы</span>
+            </a>
+            <a href="/updates" class="nav-item {{ uri starts with '/updates' ? 'active' }}">
+                <i class="fas fa-box w-5 text-center"></i><span>Обновления</span>
+            </a>
+            <div class="nav-group-label">Администрирование</div>
+            <a href="/settings" class="nav-item {{ uri starts with '/settings' ? 'active' }}">
+                <i class="fas fa-cog w-5 text-center"></i><span>{{ t('menu.settings') }}</span>
+            </a>
+            <a href="/backups" class="nav-item {{ uri starts with '/backups' ? 'active' }}">
+                <i class="fas fa-database w-5 text-center"></i><span>Бэкапы</span>
+            </a>
+            <a href="/audit" class="nav-item {{ uri starts with '/audit' ? 'active' }}">
+                <i class="fas fa-clipboard-list w-5 text-center"></i><span>Журнал</span>
+            </a>
+            {% endif %}
+        </nav>
+        <div class="border-t border-white/10 p-3 flex-shrink-0">
+            <div class="text-indigo-100 text-sm px-2 mb-2 truncate"><i class="fas fa-user mr-2"></i>{{ user.name }}</div>
+            <form method="POST" action="/logout">
+                <button type="submit" class="nav-item w-full"><i class="fas fa-sign-out-alt w-5 text-center"></i><span>{{ t('menu.logout') }}</span></button>
+            </form>
         </div>
-    </nav>
-    {% endif %}
+    </aside>
 
-    <!-- Main Content -->
-    <main class="{% if user %}py-10{% endif %}">
-        {% if user and current_uri is defined and current_uri is not null and current_uri != '/' and not (current_uri starts with '/dashboard') %}
-        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mb-4">
-            <button type="button" onclick="goBack()" class="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700">
-                <i class="fas fa-arrow-left"></i> {{ t('common.back') }}
+    <!-- Content column (offset for the fixed sidebar on lg+) -->
+    <div class="lg:pl-64 flex flex-col min-h-screen">
+        <!-- Topbar -->
+        <header class="h-16 bg-white border-b border-gray-200 flex items-center justify-between px-4 sm:px-6 sticky top-0 z-20">
+            <button type="button" onclick="toggleSidebar()" class="lg:hidden text-gray-600 hover:text-gray-900 -ml-1 p-2" aria-label="Меню">
+                <i class="fas fa-bars text-xl"></i>
             </button>
-        </div>
-        {% endif %}
-        {% block content %}{% endblock %}
-    </main>
+            <div class="flex-1"></div>
+            <!-- Language Selector -->
+            <div class="relative">
+                <button onclick="toggleLanguageDropdown()" class="text-gray-600 hover:text-gray-900 flex items-center focus:outline-none">
+                    {% for lang in languages %}{% if lang.code == current_language %}<span class="mr-1">{{ getFlag(lang.code) }}</span>{% endif %}{% endfor %}
+                    <i class="fas fa-chevron-down ml-1 text-xs"></i>
+                </button>
+                <div id="languageDropdown" class="language-dropdown absolute right-0 mt-2 w-48 bg-white rounded-md shadow-lg border border-gray-100 z-50">
+                    {% for lang in languages %}
+                    <form method="POST" action="/language/change" class="block">
+                        <input type="hidden" name="language" value="{{ lang.code }}">
+                        <input type="hidden" name="redirect" value="{{ current_uri }}">
+                        <button type="submit" class="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 flex items-center {% if lang.code == current_language %}bg-brand-50 font-medium{% endif %}">
+                            <span class="mr-2">{{ getFlag(lang.code) }}</span><span>{{ lang.name }}</span>
+                            {% if lang.code == current_language %}<i class="fas fa-check text-brand-600 ml-auto"></i>{% endif %}
+                        </button>
+                    </form>
+                    {% endfor %}
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="flex-1 py-8">
+            {% if uri != '' and uri != '/' and not (uri starts with '/dashboard') %}
+            <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mb-4">
+                <button type="button" onclick="goBack()" class="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700">
+                    <i class="fas fa-arrow-left"></i> {{ t('common.back') }}
+                </button>
+            </div>
+            {% endif %}
+            {% block content %}{% endblock %}
+        </main>
+    </div>
+    {% else %}
+    <main class="min-h-screen">{{ block('content') }}</main>
+    {% endif %}
     <!-- Custom Confirmation Modal -->
     <div id="confirmModal" role="dialog" aria-modal="true" aria-labelledby="confirmModalTitle" class="fixed inset-0 bg-gray-600 bg-opacity-50 hidden overflow-y-auto w-full z-[9999] items-center justify-center p-4" style="display:none;">
         <div class="w-full max-w-sm p-5 border shadow-lg rounded-md bg-white">
@@ -216,9 +167,11 @@
 
 
     <script>
-        function toggleMobileMenu() {
-            const menu = document.getElementById('mobileMenu');
-            menu.classList.toggle('active');
+        function toggleSidebar() {
+            const sb = document.getElementById('sidebar');
+            const bd = document.getElementById('sidebarBackdrop');
+            if (sb) sb.classList.toggle('-translate-x-full');
+            if (bd) bd.classList.toggle('hidden');
         }
 
         function toggleLanguageDropdown() {
