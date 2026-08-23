@@ -992,7 +992,12 @@ SH;
     public static function cleanOldMetrics(): void
     {
         $db = DB::conn();
-        $retentionDays = max(1, min(365, (int) Config::get('AMNEZIA_METRICS_RETENTION_DAYS', '30')));
+        // Raw per-collection rows are only needed for the recent (24h/7d) charts;
+        // long-range charts read the hourly rollups (kept 180d). At ~950 raw rows
+        // per client per day, a 30d raw window bloated client_metrics to ~456k
+        // rows for just 16 clients — 7d cuts that ~4x with no loss to long-range
+        // history. Override via AMNEZIA_METRICS_RETENTION_DAYS if more raw is wanted.
+        $retentionDays = max(1, min(365, (int) Config::get('AMNEZIA_METRICS_RETENTION_DAYS', '7')));
         $hourlyRetentionDays = max($retentionDays, min(3650, (int) Config::get('AMNEZIA_METRICS_HOURLY_RETENTION_DAYS', '180')));
 
         do {
