@@ -379,6 +379,20 @@ Router::get('/settings', function () {
     $controller->index();
 });
 
+// Consolidated pool health dashboard (admin-only). Built on ServerPool::status,
+// which returns already-redacted data (no keys/PSK).
+Router::get('/pools', function () {
+    requireAdmin();
+    $pools = [];
+    foreach (ServerPool::list() as $row) {
+        $st = ServerPool::status((int) $row['id']);
+        if ($st) {
+            $pools[] = $st;
+        }
+    }
+    View::render('pools.twig', ['pools' => $pools]);
+});
+
 // Audit trail of state-changing admin actions (admin-only).
 Router::get('/audit', function () {
     requireAdmin();
