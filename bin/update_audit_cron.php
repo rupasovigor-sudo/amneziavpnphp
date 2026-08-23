@@ -12,7 +12,7 @@ $root = dirname(__DIR__);
 require $root . '/vendor/autoload.php';
 foreach ([
     'Config', 'DB', 'Logger', 'SecretBox', 'VpnServer', 'VpnClient',
-    'ServerMonitoring', 'ServerPool', 'ServerUpdateManager', 'AlertManager',
+    'ServerMonitoring', 'ServerPool', 'ServerUpdateManager', 'AlertManager', 'IpReputation',
 ] as $c) {
     @require_once $root . '/inc/' . $c . '.php';
 }
@@ -21,7 +21,7 @@ Config::load($root . '/.env');
 @set_time_limit(0);
 
 $alerts = new AlertManager();
-$servers = DB::conn()->query("SELECT id, name FROM vpn_servers WHERE status != 'deleted' ORDER BY id")
+$servers = DB::conn()->query("SELECT id, name, host FROM vpn_servers WHERE status != 'deleted' ORDER BY id")
     ->fetchAll(PDO::FETCH_ASSOC) ?: [];
 
 echo '[' . date('Y-m-d H:i:s') . '] auditing ' . count($servers) . " server(s)\n";
@@ -68,6 +68,29 @@ foreach ($servers as $s) {
             : "Обновления не требуются (пакетов: {$a['upgradable']})",
         'warning'
     );
+
+    // Ingress-IP reputation (best-effort DNSBL/AbuseIPDB proxy; a listing is an
+    // early warning that the IP may be getting throttled, not proof of it).
+    $host = trim((string) ($s['host'] ?? ''));
+    if ($host !== '' && filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false) {
+        try {
+            $rep = IpReputation::check($host);
+            IpReputation::store($id, $rep);
+            $listed = $rep['listed_on'];
+            $score = $rep['abuse_score'];
+            $bad = !empty($listed) || ($score !== null && $score >= 50);
+            $msg = $bad
+                ? ('IP ' . $host . ' в блок-листах: '
+                    . (empty($listed) ? '' : implode(', ', $listed))
+                    . ($score !== null ? " (AbuseIPDB {$score})" : ''))
+                : ('IP ' . $host . ' чист по ' . $rep['lists_checked'] . ' спискам'
+                    . ($score !== null ? ", AbuseIPDB {$score}" : ''));
+            echo "  #{$id} {$name}: reputation " . ($bad ? 'LISTED' : 'clean') . "\n";
+            $alerts->recordCheck($id, $name, 'ip_reputation', !$bad, $msg, 'warning');
+        } catch (Throwable $e) {
+            echo "  #{$id} {$name}: reputation check failed: " . $e->getMessage() . "\n";
+        }
+    }
 }
 
 echo '[' . date('Y-m-d H:i:s') . "] audit done\n";

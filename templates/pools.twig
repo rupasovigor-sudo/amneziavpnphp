@@ -39,6 +39,7 @@
             <th class="px-4 py-2 text-left font-medium">Чистый</th>
             <th class="px-4 py-2 text-left font-medium">Синхрон</th>
             <th class="px-4 py-2 text-left font-medium">Статус</th>
+            <th class="px-4 py-2 text-left font-medium">Репутация IP</th>
             <th class="px-4 py-2 text-left font-medium">Готов к failover</th>
           </tr>
         </thead>
@@ -68,6 +69,23 @@
               {% if m.sync_pending %}<span class="text-red-700">ожидает</span>{% else %}<span class="text-green-700">ок</span>{% endif %}
             </td>
             <td class="px-4 py-2">{{ m.status }}</td>
+            <td class="px-4 py-2">
+              {% set rep = reputation[m.id] %}
+              {% if rep is null %}
+                <span class="text-gray-400">— не проверялось</span>
+              {% else %}
+                {% set listed = rep.listed_on %}
+                {% set score = rep.abuse_score %}
+                {% if listed|length > 0 or (score is not null and score >= 50) %}
+                  <span class="px-2 py-0.5 rounded bg-red-100 text-red-800" title="{{ listed|join(', ') }}">
+                    в блок-листах{% if score is not null %} ({{ score }}){% endif %}
+                  </span>
+                {% else %}
+                  <span class="px-2 py-0.5 rounded bg-green-100 text-green-800">чист</span>
+                {% endif %}
+                <div class="text-xs text-gray-400">{{ rep.checked_at }}</div>
+              {% endif %}
+            </td>
             <td class="px-4 py-2">
               {% if m.role == 'active' %}
                 <span class="text-gray-400">— (активный)</span>

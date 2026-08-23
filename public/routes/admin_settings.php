@@ -390,7 +390,10 @@ Router::get('/pools', function () {
             $pools[] = $st;
         }
     }
-    View::render('pools.twig', ['pools' => $pools]);
+    View::render('pools.twig', [
+        'pools' => $pools,
+        'reputation' => IpReputation::latestByServer(),
+    ]);
 });
 
 // Audit trail of state-changing admin actions (admin-only).
