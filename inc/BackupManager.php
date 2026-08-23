@@ -272,8 +272,16 @@ class BackupManager
         $pdo->exec('SET FOREIGN_KEY_CHECKS=0');
         // Split on ";\n" boundaries; good enough for our own dumps (values are
         // single-quoted via PDO::quote, and CREATE statements end with ";\n").
+        // A value MAY legitimately contain ";\n", which splits a statement in
+        // two — so on failure we append the next chunk and retry. But a genuine
+        // SQL error must NOT be swallowed: this is a disaster-recovery restore,
+        // and silently reporting success on a half-loaded control plane is the
+        // worst outcome. Track failures and throw so restoreBackup() reports it.
         $buffer = '';
-        foreach (preg_split('/;\r?\n/', $sql) as $chunk) {
+        $errors = [];
+        $chunks = preg_split('/;\r?\n/', $sql) ?: [];
+        $last = count($chunks) - 1;
+        foreach ($chunks as $i => $chunk) {
             $stmt = trim($buffer . $chunk);
             $buffer = '';
             if ($stmt === '' || str_starts_with($stmt, '--')) {
@@ -282,12 +290,30 @@ class BackupManager
             try {
                 $pdo->exec($stmt);
             } catch (Throwable $e) {
-                // A statement may legitimately span the naive split (e.g. a value
-                // containing ";\n"); re-buffer and continue.
-                $buffer = $stmt . ";\n";
+                if ($i < $last) {
+                    // Might be a value split by the naive boundary — glue the
+                    // next chunk and retry on the following iteration.
+                    $buffer = $stmt . ";\n";
+                } else {
+                    // No more chunks to glue: this is a real failure.
+                    $errors[] = $e->getMessage();
+                }
+            }
+        }
+        // Anything still buffered never executed successfully.
+        if (trim($buffer) !== '') {
+            try {
+                $pdo->exec(trim($buffer));
+            } catch (Throwable $e) {
+                $errors[] = $e->getMessage();
             }
         }
         $pdo->exec('SET FOREIGN_KEY_CHECKS=1');
+        if ($errors) {
+            throw new Exception(
+                'restore: ' . count($errors) . ' statement(s) failed — DB may be partially loaded. First error: ' . $errors[0]
+            );
+        }
     }
 
     /* ------------------------------------------------------------------ */

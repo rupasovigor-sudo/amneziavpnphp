@@ -286,7 +286,24 @@ class Ssh
         $file = $dir . '/known_hosts';
         if (!file_exists($file)) {
             @touch($file);
-            @chmod($file, 0600);
+        }
+        // Two actors write this file: the web app (www-data) on first contact
+        // during deploy, and the metrics collector (root, via cron) on its
+        // frequent connections. Whoever creates it first owns it — and a
+        // root-owned 0600 file makes is_writable() false for www-data, which
+        // silently drops pinning back to StrictHostKeyChecking=no for every web
+        // request. Normalise on each root-run so the file (and its .old sibling
+        // that ssh rotates) is always owned by and writable to www-data.
+        if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
+            foreach ([$file, $file . '.old'] as $f) {
+                if (file_exists($f)) {
+                    @chown($f, 'www-data');
+                    @chgrp($f, 'www-data');
+                    @chmod($f, 0644);
+                }
+            }
+        } else {
+            @chmod($file, 0644);
         }
         return is_writable($file) ? $file : null;
     }

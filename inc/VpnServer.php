@@ -885,7 +885,18 @@ BASH;
     {
         $serverData['has_password'] = !empty($serverData['password']);
         $serverData['has_ssh_key'] = !empty($serverData['ssh_key']);
-        unset($serverData['password'], $serverData['ssh_key']);
+        // Strip every secret-bearing column, not just SSH creds: the WireGuard
+        // pre-shared key and server private key are cryptographic material that
+        // must never reach a client (GET /api/servers, deploy/view payloads,
+        // inline JSON). Some are stored plaintext (preshared_key), some as
+        // enc:v1: ciphertext — neither belongs in a response.
+        unset(
+            $serverData['password'],
+            $serverData['ssh_key'],
+            $serverData['preshared_key'],
+            $serverData['server_private_key'],
+            $serverData['private_key']
+        );
         return $serverData;
     }
 
