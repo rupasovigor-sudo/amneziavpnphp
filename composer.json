@@ -23,5 +23,8 @@
     "psr-4": {
       "": "inc/"
     }
+  },
+  "scripts": {
+    "test": "php tests/run.php"
   }
 }
