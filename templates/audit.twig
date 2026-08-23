@@ -1,14 +1,12 @@
 {% extends "layout.twig" %}
+{% import "components/ui.twig" as ui %}
 {% block title %}Журнал действий{% endblock %}
 
 {% block content %}
-<div class="max-w-7xl mx-auto px-4 py-8">
-  <div class="mb-6">
-    <h1 class="text-3xl font-bold">Журнал действий</h1>
-    <p class="text-gray-600">Изменяющие действия админов: кто, что, когда, откуда</p>
-  </div>
+{{ ui.page_header('Журнал действий', 'Изменяющие действия админов: кто, что, когда, откуда') }}
 
-  <div class="bg-white shadow rounded-lg overflow-x-auto">
+<div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+  <div class="card overflow-x-auto">
     <table class="min-w-full text-sm">
       <thead class="bg-gray-50 text-gray-600">
         <tr>
@@ -31,9 +29,7 @@
           </td>
           <td class="px-4 py-2 whitespace-nowrap">
             {% set s = e.status|default(0) %}
-            <span class="px-2 py-0.5 rounded text-xs {{ s >= 200 and s < 400 ? 'bg-green-100 text-green-800' : (s >= 400 ? 'bg-red-100 text-red-800' : 'bg-gray-100 text-gray-600') }}">
-              {{ e.status ?: '—' }}
-            </span>
+            <span class="badge {{ s >= 200 and s < 400 ? 'badge-green' : (s >= 400 ? 'badge-red' : 'badge-gray') }}">{{ e.status ?: '—' }}</span>
           </td>
           <td class="px-4 py-2 whitespace-nowrap text-gray-500">{{ e.ip ?: '—' }}</td>
         </tr>
@@ -47,12 +43,8 @@
   <div class="mt-4 flex items-center justify-between">
     <div class="text-sm text-gray-500">Страница {{ page }} · до {{ per_page }} записей</div>
     <div class="flex gap-2">
-      {% if page > 1 %}
-      <a href="/audit?page={{ page - 1 }}" class="px-3 py-1.5 bg-gray-100 rounded text-sm hover:bg-gray-200">← Новее</a>
-      {% endif %}
-      {% if entries|length == per_page %}
-      <a href="/audit?page={{ page + 1 }}" class="px-3 py-1.5 bg-gray-100 rounded text-sm hover:bg-gray-200">Старее →</a>
-      {% endif %}
+      {% if page > 1 %}<a href="/audit?page={{ page - 1 }}" class="btn-secondary">← Новее</a>{% endif %}
+      {% if entries|length == per_page %}<a href="/audit?page={{ page + 1 }}" class="btn-secondary">Старее →</a>{% endif %}
     </div>
   </div>
 </div>
