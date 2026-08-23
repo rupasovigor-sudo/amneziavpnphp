@@ -218,6 +218,19 @@ case "$CONTAINER" in
 esac
 echo "is_wireguard=${is_wg}"
 
+# WARP egress: pool members route ALL egress through a Cloudflare WARP netns.
+# The known silent failure is the fwmark policy-routing rule vanishing, which
+# breaks internet for every client while the tunnel still looks up. Emit cheap
+# structural signals (no network round-trip); skip entirely if not configured.
+if systemctl list-unit-files 2>/dev/null | grep -q '^awg2-warp-egress'; then
+  echo "warp_present=1"
+  echo "warp_service_active=$(systemctl is-active awg2-warp-egress.service 2>/dev/null || echo inactive)"
+  echo "warp_ip_rule=$(ip rule show 2>/dev/null | grep -c 'fwmark 0x2cf2.*51888')"
+  echo "warp_table_default=$(ip route show table 51888 2>/dev/null | grep -c '^default')"
+else
+  echo "warp_present=0"
+fi
+
 if [ "$is_wg" = "1" ]; then
   iface=""
   for candidate in awg0 wg0; do
@@ -273,6 +286,30 @@ SH;
                 ? "Контейнер {$containerName} запущен"
                 : "Контейнер {$containerName} не запущен или не найден",
         ];
+
+        if (($values['warp_present'] ?? '0') === '1') {
+            $serviceActive = ($values['warp_service_active'] ?? '') === 'active';
+            $ruleOk = (int) ($values['warp_ip_rule'] ?? 0) > 0;
+            $tableOk = (int) ($values['warp_table_default'] ?? 0) > 0;
+            $warpOk = $serviceActive && $ruleOk && $tableOk;
+            $problems = [];
+            if (!$serviceActive) {
+                $problems[] = 'сервис не активен';
+            }
+            if (!$ruleOk) {
+                $problems[] = 'нет ip-rule fwmark→51888';
+            }
+            if (!$tableOk) {
+                $problems[] = 'нет default-маршрута в таблице 51888';
+            }
+            $checks['warp_egress'] = [
+                'ok' => $warpOk,
+                'severity' => 'critical',
+                'message' => $warpOk
+                    ? 'WARP-egress: сервис, ip-rule и маршрут на месте'
+                    : ('WARP-egress сломан: ' . implode(', ', $problems)),
+            ];
+        }
 
         if (($values['is_wireguard'] ?? '0') === '1') {
             $iface = trim((string) ($values['wg_iface'] ?? ''));
@@ -984,6 +1021,23 @@ SH;
                 speed_up_kbps_max = VALUES(speed_up_kbps_max),
                 speed_down_kbps_max = VALUES(speed_down_kbps_max)
         ");
+    }
+
+    /**
+     * Auto-heal the WARP egress. The fwmark policy-routing rule occasionally
+     * vanishes, silently killing egress for every client while the tunnel still
+     * looks healthy; restarting the service re-runs the runtime plumbing and
+     * re-adds the rule. Best-effort — returns whether the restart command ran.
+     */
+    public function repairWarpEgress(): bool
+    {
+        try {
+            $out = $this->execSSH('systemctl restart awg2-warp-egress.service 2>&1 && echo __WARP_RESTARTED__');
+            return is_string($out) && str_contains($out, '__WARP_RESTARTED__');
+        } catch (Throwable $e) {
+            error_log('repairWarpEgress failed on server ' . (int) ($this->serverData['id'] ?? 0) . ': ' . $e->getMessage());
+            return false;
+        }
     }
 
     /**

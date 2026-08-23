@@ -92,7 +92,8 @@ function collectForServer(array $server, AlertManager $alertManager, array $cfg)
 
     $monitoring = new ServerMonitoring($server['id']);
 
-    foreach ($monitoring->collectHealthChecks() as $checkName => $check) {
+    $healthChecks = $monitoring->collectHealthChecks();
+    foreach ($healthChecks as $checkName => $check) {
         $alertManager->recordCheck(
             (int) $server['id'],
             (string) $server['name'],
@@ -101,6 +102,30 @@ function collectForServer(array $server, AlertManager $alertManager, array $cfg)
             (string) $check['message'],
             (string) $check['severity']
         );
+    }
+
+    // Auto-heal a broken WARP egress (the fwmark rule silently vanishing kills
+    // egress for every client). Rate-limited so a persistently broken host is
+    // not restarted every cycle; the warp_egress check above reflects/resolves
+    // the state on the next pass.
+    if (isset($healthChecks['warp_egress']) && empty($healthChecks['warp_egress']['ok'])
+        && shouldRunPeriodicTask('warp_egress_repair', (int) $server['id'], 300)) {
+        $repaired = $monitoring->repairWarpEgress();
+        echo "  WARP egress broken on #{$server['id']} — restart "
+            . ($repaired ? 'issued' : 'FAILED') . "\n";
+        try {
+            $alertManager->recordProblem(
+                (int) $server['id'],
+                (string) $server['name'],
+                'warp_egress_repair',
+                $repaired
+                    ? 'WARP-egress был сломан — выполнен авто-рестарт сервиса'
+                    : 'WARP-egress сломан — авто-рестарт сервиса не удался',
+                'critical'
+            );
+        } catch (Throwable $e) {
+            error_log('warp_egress_repair alert failed: ' . $e->getMessage());
+        }
     }
 
     // Enforce single IP per peer for AWG servers
