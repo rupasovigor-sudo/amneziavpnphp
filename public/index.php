@@ -61,9 +61,13 @@ if (in_array(strtolower((string) Config::get('AMNEZIA_SECURITY_HEADERS', '1')), 
             . "object-src 'none'; "
             . "frame-ancestors 'none'; "
             . "img-src 'self' data: blob:; "
-            . "font-src 'self' https://cdnjs.cloudflare.com data:; "
-            . "style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://cdnjs.cloudflare.com; "
-            . "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com https://cdn.jsdelivr.net; "
+            // All assets are self-hosted now (Tailwind compiled, FontAwesome and
+            // Chart.js local), so every external host is gone and 'unsafe-eval'
+            // (only the Tailwind Play CDN needed it) is dropped. 'unsafe-inline'
+            // stays for the inline <script>/style= still in the templates.
+            . "font-src 'self' data:; "
+            . "style-src 'self' 'unsafe-inline'; "
+            . "script-src 'self' 'unsafe-inline'; "
             . "connect-src 'self'; "
             . "form-action 'self'"
         );
