@@ -12,7 +12,7 @@
       <button type="button" id="fleetRefresh" class="px-4 py-2 bg-slate-600 text-white rounded-md text-sm">
         <i class="fas fa-rotate mr-1"></i>Проверить все
       </button>
-      <button type="button" id="fleetRolling" class="px-4 py-2 bg-purple-600 text-white rounded-md text-sm" style="display:none">
+      <button type="button" id="fleetRolling" class="px-4 py-2 bg-brand-600 text-white rounded-md text-sm" style="display:none">
         <i class="fas fa-arrows-rotate mr-1"></i>Обновить пул без простоя
       </button>
     </div>
@@ -69,9 +69,9 @@
         ? '<span class="px-2 py-0.5 rounded text-xs bg-green-100 text-green-700">ACTIVE</span>'
         : (r.pool_id ? '<span class="px-2 py-0.5 rounded text-xs bg-gray-200 text-gray-600">STANDBY</span>' : '<span class="text-gray-400 text-xs">—</span>');
       const running = (r.state && r.state.state === 'running')
-        ? ' <i class="fas fa-circle-notch fa-spin text-purple-600" title="идёт задача"></i>' : '';
+        ? ' <i class="fas fa-circle-notch fa-spin text-brand-600" title="идёт задача"></i>' : '';
       return `<tr class="border-t">
-        <td class="px-4 py-3"><a href="/servers/${r.id}" class="text-purple-700 hover:underline">${esc(r.name)}</a>${running}
+        <td class="px-4 py-3"><a href="/servers/${r.id}" class="text-brand-700 hover:underline">${esc(r.name)}</a>${running}
           <div class="text-gray-400 font-mono text-xs">${esc(r.host)}</div></td>
         <td class="px-4 py-3">${role}</td>
         <td class="px-4 py-3">${pkg}</td>

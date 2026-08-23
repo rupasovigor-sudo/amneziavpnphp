@@ -31,7 +31,7 @@
     <div class="mb-6 border-b border-gray-200">
         <nav class="-mb-px flex space-x-8">
             <a href="#" onclick="showTab('profile'); return false;" id="tab-profile" 
-               class="tab-link border-purple-500 text-purple-600 py-4 px-1 border-b-2 font-medium text-sm">
+               class="tab-link border-brand-500 text-brand-600 py-4 px-1 border-b-2 font-medium text-sm">
                 <i class="fas fa-user mr-2"></i>{{ t('settings.profile') }}
             </a>
             <a href="#" onclick="showTab('api'); return false;" id="tab-api"
@@ -64,7 +64,7 @@
         <div class="bg-white shadow rounded-lg mb-6">
             <div class="px-6 py-5 border-b border-gray-200">
                 <h2 class="text-lg font-medium text-gray-900">
-                    <i class="fas fa-user mr-2 text-purple-600"></i>Профиль
+                    <i class="fas fa-user mr-2 text-brand-600"></i>Профиль
                 </h2>
             </div>
             <div class="px-6 py-5">
@@ -73,9 +73,9 @@
                         <div>
                             <label class="block text-sm font-medium text-gray-700 mb-1">Отображаемое имя</label>
                             <input type="text" name="display_name" value="{{ user.display_name|default(user.name) }}"
-                                   class="block w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-purple-500 focus:border-purple-500">
+                                   class="block w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-brand-500 focus:border-brand-500">
                         </div>
-                        <button type="submit" class="px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700">
+                        <button type="submit" class="px-4 py-2 bg-brand-600 text-white rounded-md hover:bg-brand-700">
                             <i class="fas fa-save mr-2"></i>{{ t('form.save') }}
                         </button>
                     </div>
@@ -85,7 +85,7 @@
         <div class="bg-white shadow rounded-lg">
             <div class="px-6 py-5 border-b border-gray-200">
                 <h2 class="text-lg font-medium text-gray-900">
-                    <i class="fas fa-lock mr-2 text-purple-600"></i>{{ t('settings.change_password') }}
+                    <i class="fas fa-lock mr-2 text-brand-600"></i>{{ t('settings.change_password') }}
                 </h2>
             </div>
             <div class="px-6 py-5">
@@ -94,20 +94,20 @@
                         <div>
                             <label class="block text-sm font-medium text-gray-700 mb-1">{{ t('settings.current_password') }}</label>
                             <input type="password" name="current_password" required
-                                   class="block w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-purple-500 focus:border-purple-500">
+                                   class="block w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-brand-500 focus:border-brand-500">
                         </div>
                         <div>
                             <label class="block text-sm font-medium text-gray-700 mb-1">{{ t('settings.new_password') }}</label>
                             <input type="password" name="new_password" required minlength="6"
-                                   class="block w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-purple-500 focus:border-purple-500">
+                                   class="block w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-brand-500 focus:border-brand-500">
                             <p class="mt-1 text-xs text-gray-500">{{ t('settings.min_6_chars') }}</p>
                         </div>
                         <div>
                             <label class="block text-sm font-medium text-gray-700 mb-1">{{ t('settings.confirm_password') }}</label>
                             <input type="password" name="confirm_password" required minlength="6"
-                                   class="block w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-purple-500 focus:border-purple-500">
+                                   class="block w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-brand-500 focus:border-brand-500">
                         </div>
-                        <button type="submit" class="px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700">
+                        <button type="submit" class="px-4 py-2 bg-brand-600 text-white rounded-md hover:bg-brand-700">
                             <i class="fas fa-save mr-2"></i>{{ t('settings.change_password') }}
                         </button>
                     </div>
@@ -121,7 +121,7 @@
         <div class="bg-white shadow rounded-lg">
             <div class="px-6 py-5 border-b border-gray-200">
                 <h2 class="text-lg font-medium text-gray-900">
-                    <i class="fas fa-key mr-2 text-purple-600"></i>{{ t('settings.api_keys') }}
+                    <i class="fas fa-key mr-2 text-brand-600"></i>{{ t('settings.api_keys') }}
                 </h2>
             </div>
             <div class="px-6 py-5">
@@ -151,13 +151,13 @@
                         </label>
                         <input type="password" name="api_key" autocomplete="off"
                                placeholder="{{ timeweb_key ? 'Введите новый токен, чтобы заменить' : 'eyJ...' }}"
-                               class="block w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-purple-500 focus:border-purple-500">
+                               class="block w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-brand-500 focus:border-brand-500">
                         <p class="mt-2 text-xs text-gray-500">
                             <i class="fas fa-info-circle"></i> Used to create/update the endpoint domain A-record (e.g. awg.gptanalitika.com) via the Timeweb Cloud DNS API. Get it at
-                            <a href="https://timeweb.cloud/my/api-keys" target="_blank" class="text-purple-600">timeweb.cloud/my/api-keys</a>
+                            <a href="https://timeweb.cloud/my/api-keys" target="_blank" class="text-brand-600">timeweb.cloud/my/api-keys</a>
                         </p>
                         <input type="hidden" name="service" value="timeweb">
-                        <button type="submit" class="mt-4 px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700">
+                        <button type="submit" class="mt-4 px-4 py-2 bg-brand-600 text-white rounded-md hover:bg-brand-700">
                             <i class="fas fa-save mr-2"></i>{{ timeweb_key ? t('form.update') : t('form.save') }}
                         </button>
                         <p class="mt-2 text-xs text-gray-400">The token is validated against the Timeweb API (domain list) before saving.</p>
@@ -173,7 +173,7 @@
         <div class="bg-white shadow rounded-lg mb-6">
             <div class="px-6 py-5 border-b border-gray-200">
                 <h2 class="text-lg font-medium text-gray-900">
-                    <i class="fas fa-user-plus mr-2 text-purple-600"></i>{{ t('users.add_user') }}
+                    <i class="fas fa-user-plus mr-2 text-brand-600"></i>{{ t('users.add_user') }}
                 </h2>
             </div>
             <div class="px-6 py-5">
@@ -181,25 +181,25 @@
                     <div class="grid grid-cols-2 gap-4 max-w-2xl">
                         <div>
                             <label class="block text-sm font-medium text-gray-700 mb-1">{{ t('auth.name') }}</label>
-                            <input type="text" name="name" required class="block w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-purple-500 focus:border-purple-500">
+                            <input type="text" name="name" required class="block w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-brand-500 focus:border-brand-500">
                         </div>
                         <div>
                             <label class="block text-sm font-medium text-gray-700 mb-1">{{ t('auth.email') }}</label>
-                            <input type="email" name="email" required class="block w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-purple-500 focus:border-purple-500">
+                            <input type="email" name="email" required class="block w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-brand-500 focus:border-brand-500">
                         </div>
                         <div>
                             <label class="block text-sm font-medium text-gray-700 mb-1">{{ t('auth.password') }}</label>
-                            <input type="password" name="password" required minlength="6" class="block w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-purple-500 focus:border-purple-500">
+                            <input type="password" name="password" required minlength="6" class="block w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-brand-500 focus:border-brand-500">
                         </div>
                         <div>
                             <label class="block text-sm font-medium text-gray-700 mb-1">{{ t('users.role') }}</label>
-                            <select name="role" class="block w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-purple-500 focus:border-purple-500">
+                            <select name="role" class="block w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-brand-500 focus:border-brand-500">
                                 <option value="user">{{ t('users.role_user') }}</option>
                                 <option value="admin">{{ t('users.role_admin') }}</option>
                             </select>
                         </div>
                     </div>
-                    <button type="submit" class="mt-4 px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700">
+                    <button type="submit" class="mt-4 px-4 py-2 bg-brand-600 text-white rounded-md hover:bg-brand-700">
                         <i class="fas fa-user-plus mr-2"></i>{{ t('users.add_user') }}
                     </button>
                 </form>
@@ -209,7 +209,7 @@
         <div class="bg-white shadow rounded-lg overflow-hidden">
             <div class="px-6 py-5 border-b border-gray-200">
                 <h2 class="text-lg font-medium text-gray-900">
-                    <i class="fas fa-users mr-2 text-purple-600"></i>{{ t('users.all_users') }}
+                    <i class="fas fa-users mr-2 text-brand-600"></i>{{ t('users.all_users') }}
                 </h2>
             </div>
             <div class="overflow-x-auto">
@@ -235,7 +235,7 @@
                         <td class="px-6 py-4 text-sm text-gray-500">{{ u.email }}</td>
                         <td class="px-6 py-4">
                             {% if u.role == 'admin' %}
-                            <span class="px-2 py-1 text-xs font-semibold rounded-full bg-purple-100 text-purple-800">{{ t('users.role_admin') }}</span>
+                            <span class="px-2 py-1 text-xs font-semibold rounded-full bg-brand-100 text-brand-800">{{ t('users.role_admin') }}</span>
                             {% else %}
                             <span class="px-2 py-1 text-xs font-semibold rounded-full bg-gray-100 text-gray-800">{{ t('users.role_user') }}</span>
                             {% endif %}
@@ -250,7 +250,7 @@
                             </form>
                             {% else %}
                             <!-- For the current user show a Change Password action in Actions column -->
-                            <a href="#" id="self-change-password" onclick="showTab('profile'); return false;" class="text-purple-600 hover:text-purple-900">
+                            <a href="#" id="self-change-password" onclick="showTab('profile'); return false;" class="text-brand-600 hover:text-brand-900">
                                 <i class="fas fa-key mr-1"></i> {{ t('settings.change_password') }}
                             </a>
                             {% endif %}
@@ -268,7 +268,7 @@
         <div class="bg-white shadow rounded-lg mb-6">
             <div class="px-6 py-5 border-b border-gray-200">
                 <h2 class="text-lg font-medium text-gray-900">
-                    <i class="fas fa-bell mr-2 text-purple-600"></i>Оповещения
+                    <i class="fas fa-bell mr-2 text-brand-600"></i>Оповещения
                 </h2>
             </div>
             <div class="px-6 py-5">
@@ -277,23 +277,23 @@
                         <div class="space-y-4">
                             <label class="flex items-center">
                                 <input type="checkbox" name="ALERTS_ENABLED" value="1" {% if alert_settings.ALERTS_ENABLED == '1' %}checked{% endif %}
-                                       class="rounded border-gray-300 text-purple-600 focus:ring-purple-500">
+                                       class="rounded border-gray-300 text-brand-600 focus:ring-brand-500">
                                 <span class="ml-2 text-sm font-medium text-gray-700">Включить оповещения</span>
                             </label>
                             <div>
                                 <label class="block text-sm font-medium text-gray-700 mb-1">Срабатывание после ошибок подряд</label>
                                 <input type="number" name="ALERTS_FAILURE_THRESHOLD" min="1" value="{{ alert_settings.ALERTS_FAILURE_THRESHOLD }}"
-                                       class="block w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-purple-500 focus:border-purple-500">
+                                       class="block w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-brand-500 focus:border-brand-500">
                             </div>
                             <div>
                                 <label class="block text-sm font-medium text-gray-700 mb-1">CPU/RAM/Disk после циклов подряд</label>
                                 <input type="number" name="ALERT_RESOURCE_FAILURE_THRESHOLD" min="2" value="{{ alert_settings.ALERT_RESOURCE_FAILURE_THRESHOLD }}"
-                                       class="block w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-purple-500 focus:border-purple-500">
+                                       class="block w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-brand-500 focus:border-brand-500">
                             </div>
                             <div>
                                 <label class="block text-sm font-medium text-gray-700 mb-1">Пауза между повторами, сек</label>
                                 <input type="number" name="ALERTS_COOLDOWN_SECONDS" min="60" value="{{ alert_settings.ALERTS_COOLDOWN_SECONDS }}"
-                                       class="block w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-purple-500 focus:border-purple-500">
+                                       class="block w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-brand-500 focus:border-brand-500">
                             </div>
                         </div>
 
@@ -351,7 +351,7 @@
                             <div class="flex items-center justify-between">
                                 <label class="flex items-center">
                                     <input type="checkbox" name="TELEGRAM_ALERTS_ENABLED" value="1" {% if alert_settings.TELEGRAM_ALERTS_ENABLED == '1' %}checked{% endif %}
-                                           class="rounded border-gray-300 text-purple-600 focus:ring-purple-500">
+                                           class="rounded border-gray-300 text-brand-600 focus:ring-brand-500">
                                     <span class="ml-2 text-sm font-medium text-gray-700">Telegram</span>
                                 </label>
                                 {% if alert_settings.telegram_token_set %}
@@ -369,7 +369,7 @@
                             <div class="flex items-center justify-between">
                                 <label class="flex items-center">
                                     <input type="checkbox" name="EMAIL_ALERTS_ENABLED" value="1" {% if alert_settings.EMAIL_ALERTS_ENABLED == '1' %}checked{% endif %}
-                                           class="rounded border-gray-300 text-purple-600 focus:ring-purple-500">
+                                           class="rounded border-gray-300 text-brand-600 focus:ring-brand-500">
                                     <span class="ml-2 text-sm font-medium text-gray-700">Email</span>
                                 </label>
                                 {% if alert_settings.smtp_password_set %}
@@ -386,7 +386,7 @@
                                 <input type="text" name="SMTP_FROM_NAME" value="{{ alert_settings.SMTP_FROM_NAME }}" placeholder="From name" class="block w-full px-3 py-2 border border-gray-300 rounded-md">
                             </div>
                             <label class="flex items-center">
-                                <input type="checkbox" name="SMTP_TLS" value="1" {% if alert_settings.SMTP_TLS == '1' %}checked{% endif %} class="rounded border-gray-300 text-purple-600 focus:ring-purple-500">
+                                <input type="checkbox" name="SMTP_TLS" value="1" {% if alert_settings.SMTP_TLS == '1' %}checked{% endif %} class="rounded border-gray-300 text-brand-600 focus:ring-brand-500">
                                 <span class="ml-2 text-sm text-gray-700">SMTP TLS</span>
                             </label>
                             <button type="button" id="testEmailAlert" class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700">
@@ -395,7 +395,7 @@
                         </div>
                     </div>
 
-                    <button type="submit" class="px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700">
+                    <button type="submit" class="px-4 py-2 bg-brand-600 text-white rounded-md hover:bg-brand-700">
                         <i class="fas fa-save mr-2"></i>{{ t('form.save') }}
                     </button>
                 </form>
@@ -454,13 +454,13 @@
 function showTab(tab) {
     document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
     document.querySelectorAll('.tab-link').forEach(el => {
-        el.classList.remove('border-purple-500', 'text-purple-600');
+        el.classList.remove('border-brand-500', 'text-brand-600');
         el.classList.add('border-transparent', 'text-gray-500');
     });
     document.getElementById('content-' + tab).classList.remove('hidden');
     const link = document.getElementById('tab-' + tab);
     link.classList.remove('border-transparent', 'text-gray-500');
-    link.classList.add('border-purple-500', 'text-purple-600');
+    link.classList.add('border-brand-500', 'text-brand-600');
     
     // Save active tab to URL hash
     window.location.hash = tab;

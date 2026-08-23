@@ -38,7 +38,7 @@
             <a href="/settings#protocols" class="tab-link border-transparent text-gray-500 hover:text-gray-700 py-4 px-1 border-b-2 font-medium text-sm">
                 <i class="fas fa-cubes mr-2"></i>{{ t('settings.protocol_management') }}
             </a>
-            <a href="/admin/logs" class="tab-link border-purple-500 text-purple-600 py-4 px-1 border-b-2 font-medium text-sm">
+            <a href="/admin/logs" class="tab-link border-brand-500 text-brand-600 py-4 px-1 border-b-2 font-medium text-sm">
                 <i class="fas fa-file-alt mr-2"></i>{{ 'Логи' | trans }}
             </a>
         </nav>
@@ -55,7 +55,7 @@
                 <div class="max-h-[600px] overflow-y-auto">
                     {% if log_files | length > 0 %}
                         {% for file in log_files %}
-                            <a href="/admin/logs?file={{ file.path }}" class="block px-6 py-4 border-b border-gray-100 hover:bg-gray-50 {{ selected_file == file.path ? 'bg-purple-50' : '' }}">
+                            <a href="/admin/logs?file={{ file.path }}" class="block px-6 py-4 border-b border-gray-100 hover:bg-gray-50 {{ selected_file == file.path ? 'bg-brand-50' : '' }}">
                                 <div class="flex items-start justify-between">
                                     <div class="flex-1">
                                         <div class="text-sm font-medium" style="word-break: break-all;">{{ file.name }}</div>
@@ -104,13 +104,13 @@
                             <div class="flex-1 mb-3 md:mb-0">
                                 <input type="text" id="searchQuery" name="query" required
                                        placeholder="{{ 'Поиск в логе...' | trans }}"
-                                       class="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-purple-500 focus:border-purple-500">
+                                       class="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-brand-500 focus:border-brand-500">
                             </div>
                             <label class="inline-flex items-center mb-3 md:mb-0">
-                                <input type="checkbox" id="caseSensitive" name="case_sensitive" class="rounded border-gray-300 text-purple-600 focus:ring-purple-500">
+                                <input type="checkbox" id="caseSensitive" name="case_sensitive" class="rounded border-gray-300 text-brand-600 focus:ring-brand-500">
                                 <span class="ml-2 text-sm text-gray-600">{{ 'Учитывать регистр' | trans }}</span>
                             </label>
-                            <button type="submit" class="px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700">
+                            <button type="submit" class="px-4 py-2 bg-brand-600 text-white rounded-md hover:bg-brand-700">
                                 <i class="fas fa-search mr-2"></i>{{ 'Найти' | trans }}
                             </button>
                             <button type="button" class="px-4 py-2 bg-gray-100 text-gray-700 rounded-md hover:bg-gray-200" id="statsBtn">
@@ -134,7 +134,7 @@
                     <div class="px-6 py-4">
                         <div class="grid grid-cols-4 gap-4">
                             <div class="text-center p-3 border-r">
-                                <div class="text-2xl text-purple-600" id="totalLines">0</div>
+                                <div class="text-2xl text-brand-600" id="totalLines">0</div>
                                 <div class="text-xs text-gray-500">{{ 'Всего строк' | trans }}</div>
                             </div>
                             <div class="text-center p-3 border-r">

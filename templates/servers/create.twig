@@ -2,7 +2,7 @@
 {% block title %}{{ t('servers.add') }}{% endblock %}
 {% block content %}
 <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-  <h1 class="text-3xl font-bold mb-8"><i class="fas fa-plus-circle text-purple-600"></i> {{ t('servers.add_new') }}</h1>
+  <h1 class="text-3xl font-bold mb-8"><i class="fas fa-plus-circle text-brand-600"></i> {{ t('servers.add_new') }}</h1>
   {% if error %}
     <div class="mb-4 bg-red-50 border border-red-400 text-red-700 px-4 py-3 rounded">{{ error }}</div>
   {% endif %}
@@ -20,7 +20,7 @@
         {% if protocols|length == 1 %}
           <input type="hidden" name="install_protocol" data-field-manual value="{{ protocols[0].slug }}">
           <div class="mt-1 px-3 py-2 bg-gray-50 border border-gray-200 rounded-md text-sm text-gray-700">
-            <i class="fas fa-shield-halved text-purple-600 mr-1"></i>{{ protocols[0].name }}
+            <i class="fas fa-shield-halved text-brand-600 mr-1"></i>{{ protocols[0].name }}
           </div>
           {% if protocols[0].description %}<p class="mt-1 text-xs text-gray-500">{{ protocols[0].description }}</p>{% endif %}
         {% else %}
@@ -54,11 +54,11 @@
           <label class="block text-sm font-medium text-gray-700">{{ t('servers.auth_method') }}</label>
           <div class="mt-2 flex items-center gap-6">
             <label class="inline-flex items-center">
-              <input type="radio" name="auth_method" value="password" class="text-purple-600" checked onchange="toggleAuthMethod()">
+              <input type="radio" name="auth_method" value="password" class="text-brand-600" checked onchange="toggleAuthMethod()">
               <span class="ml-2 text-sm text-gray-700">{{ t('auth.password') }}</span>
             </label>
             <label class="inline-flex items-center">
-              <input type="radio" name="auth_method" value="ssh_key" class="text-purple-600" onchange="toggleAuthMethod()">
+              <input type="radio" name="auth_method" value="ssh_key" class="text-brand-600" onchange="toggleAuthMethod()">
               <span class="ml-2 text-sm text-gray-700">{{ t('servers.ssh_key') }}</span>
             </label>
           </div>
