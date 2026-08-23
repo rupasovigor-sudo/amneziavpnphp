@@ -41,6 +41,34 @@
   .nav-group-label { @apply px-3 pt-4 pb-1 text-xs font-semibold uppercase tracking-wider text-indigo-300/80; }
 }
 
+/*
+ * Dark mode via surface overrides (plain CSS, never purged).
+ * Retrofits dark mode onto the existing utility-heavy templates without adding
+ * dark: to every element: it retargets the handful of light surfaces/text/
+ * borders that dominate the pages. Coloured badges/gradients are left as-is
+ * (they read fine on dark). Toggle adds/removes .dark on <html>.
+ */
+.dark body { background-color: #0f172a; color: #e2e8f0; }
+.dark .card { background-color: #1e293b; border-color: #334155; color: #e2e8f0; }
+.dark .bg-white { background-color: #1e293b !important; }
+.dark .bg-gray-50 { background-color: #0f172a !important; }
+.dark .bg-gray-100 { background-color: #334155 !important; }
+.dark .text-gray-900 { color: #f1f5f9 !important; }
+.dark .text-gray-800 { color: #e2e8f0 !important; }
+.dark .text-gray-700 { color: #cbd5e1 !important; }
+.dark .text-gray-600 { color: #94a3b8 !important; }
+.dark .text-gray-500 { color: #94a3b8 !important; }
+.dark .border-gray-100,
+.dark .border-gray-200,
+.dark .border-gray-300 { border-color: #334155 !important; }
+.dark thead.bg-gray-50,
+.dark .bg-gray-50 { color: inherit; }
+.dark .divide-gray-100 > :not([hidden]) ~ :not([hidden]) { border-color: #334155; }
+.dark .hover\:bg-gray-50:hover { background-color: #334155 !important; }
+.dark input, .dark select, .dark textarea { background-color: #0f172a; border-color: #334155; color: #e2e8f0; }
+.dark .btn-secondary { background-color: #334155; color: #e2e8f0; }
+.dark .btn-secondary:hover { background-color: #475569; }
+
 /* Functional toggles (plain CSS, never purged). */
 .mobile-menu { display: none; }
 .mobile-menu.active { display: block; }

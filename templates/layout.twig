@@ -41,6 +41,10 @@
     </script>
     <!-- Compiled, self-hosted Tailwind (built via scripts/build_css.sh) — no
          Play CDN, so no unsafe-eval, faster loads, works offline. -->
+    <!-- Apply saved/system theme before paint to avoid a flash. -->
+    <script>
+        (function(){try{var t=localStorage.getItem('theme');if(t==='dark'||(!t&&window.matchMedia&&window.matchMedia('(prefers-color-scheme:dark)').matches)){document.documentElement.classList.add('dark');}}catch(e){}})();
+    </script>
     <link rel="stylesheet" href="/assets/app.css">
     <!-- Self-hosted FontAwesome (no external cdnjs → CSP can drop it). -->
     <link rel="stylesheet" href="/assets/fa/css/all.min.css">
@@ -103,6 +107,10 @@
                 <i class="fas fa-bars text-xl"></i>
             </button>
             <div class="flex-1"></div>
+            <!-- Theme toggle -->
+            <button onclick="toggleTheme()" class="text-gray-600 hover:text-gray-900 p-2 mr-1" aria-label="Тема" title="Светлая/тёмная тема">
+                <i class="fas fa-moon dark:hidden"></i><i class="fas fa-sun hidden dark:inline"></i>
+            </button>
             <!-- Language Selector -->
             <div class="relative">
                 <button onclick="toggleLanguageDropdown()" class="text-gray-600 hover:text-gray-900 flex items-center focus:outline-none">
@@ -172,6 +180,11 @@
             const bd = document.getElementById('sidebarBackdrop');
             if (sb) sb.classList.toggle('-translate-x-full');
             if (bd) bd.classList.toggle('hidden');
+        }
+
+        function toggleTheme() {
+            const dark = document.documentElement.classList.toggle('dark');
+            try { localStorage.setItem('theme', dark ? 'dark' : 'light'); } catch (e) {}
         }
 
         function toggleLanguageDropdown() {
