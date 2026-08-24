@@ -450,7 +450,7 @@
     {% endif %}
 </div>
 
-<script>
+<script nonce="{{ csp_nonce }}">
 // Delegated entrypoint (data-action="showTabClick" data-tab="...").
 window.showTabClick = function (e) {
     if (e) e.preventDefault();

@@ -37,10 +37,15 @@ session_set_cookie_params([
 ]);
 session_start();
 
+// Per-request CSP nonce for inline <script> blocks (all assets are self-hosted;
+// inline event handlers are gone, replaced by data-action delegation). Exposed
+// to templates as {{ csp_nonce }} and echoed in script-src below so we can drop
+// 'unsafe-inline' for scripts. (style-src keeps 'unsafe-inline' for now — inline
+// style= attributes remain; that cleanup is a separate step.)
+$cspNonce = rtrim(strtr(base64_encode(random_bytes(16)), '+/', '-_'), '=');
+
 // Security response headers. Sent early, before any output, so they apply to
-// every response (HTML, JSON, downloads). CSP intentionally allows the CDNs and
-// inline scripts the current UI depends on (Tailwind Play, Font Awesome, Chart.js,
-// inline CSRF bootstrap, data: QR images); tightening to nonces is future work.
+// every response (HTML, JSON, downloads).
 if (in_array(strtolower((string) Config::get('AMNEZIA_SECURITY_HEADERS', '1')), ['1', 'true', 'yes', 'on'], true)) {
     header('X-Frame-Options: DENY');
     header('X-Content-Type-Options: nosniff');
@@ -67,7 +72,7 @@ if (in_array(strtolower((string) Config::get('AMNEZIA_SECURITY_HEADERS', '1')), 
             // stays for the inline <script>/style= still in the templates.
             . "font-src 'self' data:; "
             . "style-src 'self' 'unsafe-inline'; "
-            . "script-src 'self' 'unsafe-inline'; "
+            . "script-src 'self' 'nonce-" . $cspNonce . "'; "
             . "connect-src 'self'; "
             . "form-action 'self'"
         );
@@ -336,6 +341,7 @@ View::init(__DIR__ . '/../templates', [
     'app_name' => $appName,
     'user' => $user,
     'csrf_token' => csrfToken(),
+    'csp_nonce' => $cspNonce,
     'current_language' => Translator::getCurrentLanguage(),
     'languages' => Translator::getSupportedLanguages(),
     'current_uri' => $_SERVER['REQUEST_URI'] ?? '/dashboard',

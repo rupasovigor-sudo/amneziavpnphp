@@ -175,7 +175,7 @@
   {% endif %}
 </div>
 
-<script>
+<script nonce="{{ csp_nonce }}">
 function toggleExpirationEdit() {
   const select = document.getElementById('expirationSelect');
   const input = document.getElementById('expirationSeconds');

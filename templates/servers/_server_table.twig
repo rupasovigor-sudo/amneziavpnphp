@@ -114,7 +114,7 @@
   </table>
 </div>
 
-<script>
+<script nonce="{{ csp_nonce }}">
 (function() {
   if (window.__serverMetricsInit) { return; }
   window.__serverMetricsInit = true;
@@ -172,7 +172,7 @@
   }
 })();
 </script>
-<script>
+<script nonce="{{ csp_nonce }}">
 (function() {
   // While a server is joining a pool in the background, auto-refresh the list so
   // the "в пул…" badge flips to STANDBY/active once the worker finishes.

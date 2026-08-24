@@ -83,7 +83,7 @@
   </form>
 </div>
 
-<script>
+<script nonce="{{ csp_nonce }}">
 {% set protocol_map = {} %}
 {% for protocol in protocols %}
   {% set protocol_map = protocol_map | merge({ (protocol.slug): (protocol.description ?? '') }) %}

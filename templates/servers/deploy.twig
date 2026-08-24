@@ -13,7 +13,7 @@
     <i id="btnSpinner" class="fas fa-spinner fa-spin ml-2 hidden"></i>
   </button>
 </div>
-<script>
+<script nonce="{{ csp_nonce }}">
 let pendingDecisionToken = null;
 
 function setButtonState(isProcessing, label) {

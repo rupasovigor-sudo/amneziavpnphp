@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}{{ app_name }}{% endblock %}</title>
     <meta name="csrf-token" content="{{ csrf_token }}">
-    <script>
+    <script nonce="{{ csp_nonce }}">
         window.AMNEZIA_CSRF_TOKEN = {{ csrf_token|json_encode|raw }};
         (() => {
             const token = window.AMNEZIA_CSRF_TOKEN;
@@ -42,7 +42,7 @@
     <!-- Compiled, self-hosted Tailwind (built via scripts/build_css.sh) — no
          Play CDN, so no unsafe-eval, faster loads, works offline. -->
     <!-- Apply saved/system theme before paint to avoid a flash. -->
-    <script>
+    <script nonce="{{ csp_nonce }}">
         (function(){try{var t=localStorage.getItem('theme');if(t==='dark'||(!t&&window.matchMedia&&window.matchMedia('(prefers-color-scheme:dark)').matches)){document.documentElement.classList.add('dark');}}catch(e){}})();
     </script>
     <link rel="stylesheet" href="/assets/app.css">
@@ -174,7 +174,7 @@
     <div id="toastContainer" class="fixed top-4 right-4 z-[10000] flex flex-col gap-2 w-80 max-w-[calc(100vw-2rem)]"></div>
 
 
-    <script>
+    <script nonce="{{ csp_nonce }}">
         function toggleSidebar() {
             const sb = document.getElementById('sidebar');
             const bd = document.getElementById('sidebarBackdrop');

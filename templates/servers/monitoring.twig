@@ -259,7 +259,7 @@
 {% endblock %}
 
 {% block scripts %}
-<script>
+<script nonce="{{ csp_nonce }}">
 const serverId = {{ server.id }};
 let charts = {};
 
