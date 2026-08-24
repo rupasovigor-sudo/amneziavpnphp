@@ -92,11 +92,10 @@
     </script>
 
       <div class="card p-6 mb-8">
-      <div class="p-3 border rounded-lg bg-gray-50">
-        <div class="flex items-center justify-between mb-2">
-          <span class="text-sm font-semibold text-gray-700"><i class="fas fa-globe mr-1 text-brand-600"></i>Домен и пул серверов</span>
-          <span id="poolBadge" class="px-2 py-0.5 rounded text-sm bg-gray-200 text-gray-600">…</span>
-        </div>
+        <h3 class="section-title justify-between">
+          <span class="flex items-center gap-2"><i class="fas fa-globe"></i>Домен и пул серверов</span>
+          <span id="poolBadge" class="badge-gray">…</span>
+        </h3>
         <div class="mb-2 flex items-center gap-2">
           <span class="text-sm text-gray-600"><i class="fas fa-signal mr-1 text-brand-600"></i>Живые клиенты:</span>
           <span id="liveClientsVal" class="text-sm text-gray-500">…</span>
@@ -166,11 +165,10 @@
             </details>
           </div>
           <div class="mt-2 pt-2 border-t">
-            <button type="button" id="poolDeleteBtn" class="px-2 py-1 bg-red-600 hover:bg-red-700 hover:bg-red-800 text-white rounded text-sm"><i class="fas fa-trash mr-1"></i>Удалить пул</button>
+            <button type="button" id="poolDeleteBtn" class="px-2 py-1 bg-red-600 hover:bg-red-700 text-white rounded text-sm"><i class="fas fa-trash mr-1"></i>Удалить пул</button>
             <span class="text-sm text-gray-400 ml-1">распустит членов (станут standalone) и удалит DNS-запись домена</span>
           </div>
         </div>
-      </div>
       </div>
       <script nonce="{{ csp_nonce }}">
       (function () {
@@ -775,7 +773,7 @@
               </div>
               {% if sp.slug == 'cf-warp' %}
               {# ── WARP Status Widget ── #}
-              <div id="warpStatusWidget" class="mt-3 p-3 rounded-lg" style="background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);">
+              <div id="warpStatusWidget" class="mt-3 p-3 rounded-lg warp-panel">
                 <div class="flex items-center justify-between mb-2">
                   <div class="flex items-center gap-2">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -814,16 +812,16 @@
                 </div>
 
                 <div class="flex gap-2 mt-3">
-                  <button id="warpBtnRotate" data-action="warpAction" data-warp="rotate" class="flex-1 px-2 py-1 rounded text-xs font-medium text-white" style="background:#8b5cf6;opacity:0.9" disabled>
+                  <button id="warpBtnRotate" data-action="warpAction" data-warp="rotate" class="flex-1 px-2 py-1 rounded text-xs font-medium text-white bg-brand-600 hover:bg-brand-700 disabled:opacity-50" disabled>
                     <i class="fas fa-random mr-1"></i>Ротация
                   </button>
-                  <button id="warpBtnReconnect" data-action="warpAction" data-warp="reconnect" class="flex-1 px-2 py-1 rounded text-xs font-medium text-white" style="background:#3b82f6;opacity:0.9" disabled>
+                  <button id="warpBtnReconnect" data-action="warpAction" data-warp="reconnect" class="flex-1 px-2 py-1 rounded text-xs font-medium text-white bg-brand-600 hover:bg-brand-700 disabled:opacity-50" disabled>
                     <i class="fas fa-sync-alt mr-1"></i>Reconnect
                   </button>
-                  <button id="warpBtnDisconnect" data-action="warpAction" data-warp="disconnect" class="flex-1 px-2 py-1 rounded text-xs font-medium text-white" style="background:#ef4444;opacity:0.9" disabled>
+                  <button id="warpBtnDisconnect" data-action="warpAction" data-warp="disconnect" class="flex-1 px-2 py-1 rounded text-xs font-medium text-white bg-red-600 hover:bg-red-700 disabled:opacity-50" disabled>
                     <i class="fas fa-stop mr-1"></i>Stop
                   </button>
-                  <button id="warpBtnConnect" data-action="warpAction" data-warp="connect" class="flex-1 px-2 py-1 rounded text-xs font-medium text-white" style="background:#22c55e;opacity:0.9" disabled>
+                  <button id="warpBtnConnect" data-action="warpAction" data-warp="connect" class="flex-1 px-2 py-1 rounded text-xs font-medium text-white bg-green-600 hover:bg-green-700 disabled:opacity-50" disabled>
                     <i class="fas fa-play mr-1"></i>Start
                   </button>
                 </div>
@@ -1255,9 +1253,9 @@ function updateWarpWidget(data) {
   }
 
   if (data.connected) {
-    badge.innerHTML = '<span class="px-2 py-0.5 rounded text-xs text-white" style="background:#22c55e"><i class="fas fa-check-circle mr-1"></i>Connected</span>';
+    badge.innerHTML = '<span class="px-2 py-0.5 rounded text-xs text-white bg-green-600"><i class="fas fa-check-circle mr-1"></i>Connected</span>';
   } else {
-    badge.innerHTML = '<span class="px-2 py-0.5 rounded text-xs text-white" style="background:#ef4444"><i class="fas fa-times-circle mr-1"></i>Disconnected</span>';
+    badge.innerHTML = '<span class="px-2 py-0.5 rounded text-xs text-white bg-red-600"><i class="fas fa-times-circle mr-1"></i>Disconnected</span>';
   }
 
   if (exitIp) exitIp.textContent = data.warp_ip || '—';
