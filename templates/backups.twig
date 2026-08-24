@@ -8,7 +8,7 @@
 
   {# ---- Settings ---- #}
   <div class="card p-6 mb-6">
-    <h2 class="font-bold mb-4">Настройки бэкапа (S3)</h2>
+    <h3 class="section-title"><i class="fas fa-gear"></i>Настройки бэкапа (S3)</h3>
     <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
       <label class="block">Endpoint
         <input id="b_endpoint" class="mt-1 w-full px-2 py-1 border rounded" value="{{ cfg.s3_endpoint }}" placeholder="s3.ru-7.storage.selcloud.ru"></label>
@@ -43,7 +43,7 @@
   {# ---- Backups list ---- #}
   <div class="card p-6">
     <div class="flex items-center justify-between mb-4">
-      <h2 class="font-bold">Копии в S3</h2>
+      <h2 class="text-base font-semibold text-gray-900">Копии в S3</h2>
       <button id="b_create" class="px-3 py-1.5 bg-green-600 text-white rounded text-sm"><i class="fas fa-plus mr-1"></i>Создать бэкап сейчас</button>
     </div>
     <div id="b_createMsg" class="text-sm text-gray-600 mb-2"></div>
@@ -60,7 +60,7 @@
             <td class="px-3 py-2 text-right">{{ b.size_h }}</td>
             <td class="px-3 py-2 text-right whitespace-nowrap">
               <button data-act="info" class="px-2 py-0.5 bg-gray-500 text-white rounded text-xs" title="Дата и APP_ENCRYPTION_KEY">Инфо</button>
-              <button data-act="restore" class="px-2 py-0.5 bg-blue-600 text-white rounded text-xs">Восстановить</button>
+              <button data-act="restore" class="px-2 py-0.5 bg-brand-600 text-white rounded text-xs">Восстановить</button>
               <button data-act="delete" class="px-2 py-0.5 bg-red-600 text-white rounded text-xs">Удалить</button>
             </td>
           </tr>
@@ -115,7 +115,7 @@
         '<td class="px-3 py-2 text-right">' + (b.size_h || '') + '</td>' +
         '<td class="px-3 py-2 text-right whitespace-nowrap">' +
           '<button data-act="info" class="px-2 py-0.5 bg-gray-500 text-white rounded text-xs">Инфо</button> ' +
-          '<button data-act="restore" class="px-2 py-0.5 bg-blue-600 text-white rounded text-xs">Восстановить</button> ' +
+          '<button data-act="restore" class="px-2 py-0.5 bg-brand-600 text-white rounded text-xs">Восстановить</button> ' +
           '<button data-act="delete" class="px-2 py-0.5 bg-red-600 text-white rounded text-xs">Удалить</button>' +
         '</td></tr>';
     }).join('');

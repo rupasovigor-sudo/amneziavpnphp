@@ -2,13 +2,13 @@
 {% block title %}{{ t('servers.deploy') }} {{ server.name }}{% endblock %}
 {% block content %}
 <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-  <h1 class="text-2xl font-bold mb-1">{{ t('status.deploying') }}: {{ server.name }}</h1>
+  <h1 class="text-2xl font-bold text-gray-900 mb-1">{{ t('status.deploying') }}: {{ server.name }}</h1>
   <p class="text-sm text-gray-400 mb-6">{{ t('deploy.protocol') }}: {{ server.install_protocol ?? 'awg2' }}</p>
   <div id="deployLog" class="bg-gray-900 text-green-400 p-4 rounded font-mono text-sm h-96 overflow-y-auto mb-4">
     <div>{{ t('deploy.ready') }}</div>
   </div>
   <div id="deployActions" class="flex gap-3 mb-4 hidden"></div>
-  <button id="deployBtn" data-action="deploy" class="gradient-bg text-white px-6 py-2 rounded hover:opacity-90 transition-all disabled:opacity-50 disabled:cursor-not-allowed">
+  <button id="deployBtn" data-action="deploy" class="bg-brand-600 hover:bg-brand-700 text-white px-6 py-2 rounded hover:opacity-90 transition-all disabled:opacity-50 disabled:cursor-not-allowed">
     <span id="btnText">{{ t('deploy.start') }}</span>
     <i id="btnSpinner" class="fas fa-spinner fa-spin ml-2 hidden"></i>
   </button>

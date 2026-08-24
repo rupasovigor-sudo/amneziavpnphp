@@ -2,7 +2,7 @@
 {% block title %}{{ t('servers.add') }}{% endblock %}
 {% block content %}
 <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-  <h1 class="text-2xl font-bold mb-8"><i class="fas fa-plus-circle text-brand-600"></i> {{ t('servers.add_new') }}</h1>
+  <h1 class="text-2xl font-bold text-gray-900 mb-8"><i class="fas fa-plus-circle text-brand-600"></i> {{ t('servers.add_new') }}</h1>
   {% if error %}
     <div class="mb-4 bg-red-50 border border-red-400 text-red-700 px-4 py-3 rounded">{{ error }}</div>
   {% endif %}
@@ -77,7 +77,7 @@
       </div>
     </div>
 
-    <button type="submit" class="w-full gradient-bg text-white py-2 px-4 rounded-md hover:opacity-90">
+    <button type="submit" class="w-full bg-brand-600 hover:bg-brand-700 text-white py-2 px-4 rounded-md hover:opacity-90">
       <i class="fas fa-save mr-2"></i>{{ t('servers.create_server') }}
     </button>
   </form>

@@ -9,7 +9,7 @@
       <p class="text-gray-600">Состояние пакетов, awg2 и WARP по всему парку</p>
     </div>
     <div class="flex items-center gap-2 flex-wrap">
-      <button type="button" id="fleetRefresh" class="px-4 py-2 bg-slate-600 text-white rounded-md text-sm">
+      <button type="button" id="fleetRefresh" class="px-4 py-2 bg-gray-600 text-white rounded-md text-sm">
         <i class="fas fa-rotate mr-1"></i>Проверить все
       </button>
       <button type="button" id="fleetRolling" class="px-4 py-2 bg-brand-600 text-white rounded-md text-sm" style="display:none">
@@ -79,7 +79,7 @@
         <td class="px-4 py-3">${yes(a.awg2_update_available, 'актуален', 'обновить')}</td>
         <td class="px-4 py-3">${yes(a.warp_update_available, 'актуальны', 'обновить')}</td>
         <td class="px-4 py-3 text-gray-500">${esc((a.audited_at || '').slice(0, 16))}</td>
-        <td class="px-4 py-3"><a href="/servers/${r.id}" class="px-2 py-1 bg-slate-600 text-white rounded text-xs">Открыть</a></td>
+        <td class="px-4 py-3"><a href="/servers/${r.id}" class="px-2 py-1 bg-gray-600 text-white rounded text-xs">Открыть</a></td>
       </tr>`;
     }).join('');
   }

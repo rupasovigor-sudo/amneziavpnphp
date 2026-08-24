@@ -5,7 +5,7 @@
 {% block content %}
 <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
     <div class="mb-8">
-        <h1 class="text-2xl font-bold text-gray-900 text-gray-900">{{ t('menu.settings') }}</h1>
+        <h1 class="text-2xl font-bold text-gray-900">{{ t('menu.settings') }}</h1>
         <p class="mt-2 text-sm text-gray-600">{{ t('settings.description') }}</p>
     </div>
 
@@ -360,7 +360,7 @@
                             </div>
                             <input type="password" name="TELEGRAM_BOT_TOKEN" autocomplete="new-password" placeholder="Новый bot token, если нужно заменить" class="block w-full px-3 py-2 border border-gray-300 rounded-md">
                             <input type="text" name="TELEGRAM_CHAT_ID" value="{{ alert_settings.TELEGRAM_CHAT_ID }}" placeholder="Chat ID" class="block w-full px-3 py-2 border border-gray-300 rounded-md">
-                            <button type="button" id="testTelegramAlert" class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700">
+                            <button type="button" id="testTelegramAlert" class="px-4 py-2 bg-brand-600 text-white rounded-md hover:bg-brand-700">
                                 <i class="fas fa-paper-plane mr-2"></i>Тест Telegram
                             </button>
                         </div>
@@ -389,7 +389,7 @@
                                 <input type="checkbox" name="SMTP_TLS" value="1" {% if alert_settings.SMTP_TLS == '1' %}checked{% endif %} class="rounded border-gray-300 text-brand-600 focus:ring-brand-500">
                                 <span class="ml-2 text-sm text-gray-700">SMTP TLS</span>
                             </label>
-                            <button type="button" id="testEmailAlert" class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700">
+                            <button type="button" id="testEmailAlert" class="px-4 py-2 bg-brand-600 text-white rounded-md hover:bg-brand-700">
                                 <i class="fas fa-envelope mr-2"></i>Тест Email
                             </button>
                         </div>
