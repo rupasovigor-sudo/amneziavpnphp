@@ -682,7 +682,7 @@
         <button type="button" id="uninstallAllBtn" class="px-3 py-1 bg-gray-600 text-white rounded text-sm">Удалить все протоколы</button>
         <form method="POST" action="/servers/{{ server.id }}/delete" class="inline" id="deleteServerForm">
           <button type="button" class="px-3 py-1 bg-red-600 text-white rounded text-sm"
-            onclick="showConfirmModal('Контейнер будет остановлен. Это действие необратимо.', 'Удалить сервер {{ server.name }}?', 'Удалить').then(function(ok){ if(ok) document.getElementById('deleteServerForm').submit(); })">
+            data-confirm="Контейнер будет остановлен. Это действие необратимо." data-confirm-title="Удалить сервер {{ server.name }}?" data-confirm-ok="Удалить" data-confirm-target="#deleteServerForm">
             <i class="fas fa-trash mr-1"></i>Удалить сервер
           </button>
         </form>
@@ -760,16 +760,16 @@
                 </div>
 
                 <div class="flex gap-2 mt-3">
-                  <button id="warpBtnRotate" onclick="warpAction('rotate')" class="flex-1 px-2 py-1 rounded text-xs font-medium text-white" style="background:#8b5cf6;opacity:0.9" disabled>
+                  <button id="warpBtnRotate" data-action="warpAction" data-warp="rotate" class="flex-1 px-2 py-1 rounded text-xs font-medium text-white" style="background:#8b5cf6;opacity:0.9" disabled>
                     <i class="fas fa-random mr-1"></i>Ротация
                   </button>
-                  <button id="warpBtnReconnect" onclick="warpAction('reconnect')" class="flex-1 px-2 py-1 rounded text-xs font-medium text-white" style="background:#3b82f6;opacity:0.9" disabled>
+                  <button id="warpBtnReconnect" data-action="warpAction" data-warp="reconnect" class="flex-1 px-2 py-1 rounded text-xs font-medium text-white" style="background:#3b82f6;opacity:0.9" disabled>
                     <i class="fas fa-sync-alt mr-1"></i>Reconnect
                   </button>
-                  <button id="warpBtnDisconnect" onclick="warpAction('disconnect')" class="flex-1 px-2 py-1 rounded text-xs font-medium text-white" style="background:#ef4444;opacity:0.9" disabled>
+                  <button id="warpBtnDisconnect" data-action="warpAction" data-warp="disconnect" class="flex-1 px-2 py-1 rounded text-xs font-medium text-white" style="background:#ef4444;opacity:0.9" disabled>
                     <i class="fas fa-stop mr-1"></i>Stop
                   </button>
-                  <button id="warpBtnConnect" onclick="warpAction('connect')" class="flex-1 px-2 py-1 rounded text-xs font-medium text-white" style="background:#22c55e;opacity:0.9" disabled>
+                  <button id="warpBtnConnect" data-action="warpAction" data-warp="connect" class="flex-1 px-2 py-1 rounded text-xs font-medium text-white" style="background:#22c55e;opacity:0.9" disabled>
                     <i class="fas fa-play mr-1"></i>Start
                   </button>
                 </div>
@@ -827,7 +827,7 @@
         </div>
         <div>
           <label class="block text-sm text-gray-600 mb-1">{{ t('clients.expiration') }}</label>
-          <select name="expires_in_days" class="w-full px-3 py-2 border rounded mb-2" id="expirationSelect" onchange="toggleExpirationInput()">
+          <select name="expires_in_days" class="w-full px-3 py-2 border rounded mb-2" id="expirationSelect" data-action="toggleExpirationInput" data-on="change">
             <option value="" selected>{{ t('clients.never_expires') }}</option>
             <option value="7">7 {{ t('common.days') }}</option>
             <option value="30">30 {{ t('common.days') }}</option>
@@ -841,7 +841,7 @@
         </div>
         <div>
           <label class="block text-sm text-gray-600 mb-1">{{ t('clients.traffic_limit') }}</label>
-          <select name="traffic_limit_gb" class="w-full px-3 py-2 border rounded mb-2" id="trafficSelect" onchange="toggleTrafficInput()">
+          <select name="traffic_limit_gb" class="w-full px-3 py-2 border rounded mb-2" id="trafficSelect" data-action="toggleTrafficInput" data-on="change">
             <option value="" selected>{{ t('clients.unlimited') }}</option>
             <option value="1">1 GB</option>
             <option value="5">5 GB</option>
@@ -870,7 +870,7 @@
       {% if clients|length > 0 %}
       <div class="relative">
         <i class="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm"></i>
-        <input id="clientSearch" type="text" oninput="filterClients()" placeholder="Поиск по имени или IP"
+        <input id="clientSearch" type="text" data-action="filterClients" data-on="input" placeholder="Поиск по имени или IP"
                class="pl-9 pr-3 py-2 border rounded text-sm w-56">
       </div>
       {% endif %}
@@ -955,10 +955,10 @@
           </td>
           <td class="px-4 py-3 text-right whitespace-nowrap">
             <a href="/clients/{{ client.id }}" class="text-brand-600 hover:text-brand-800 px-1.5" title="{{ t('servers.view') }}" aria-label="{{ t('servers.view') }}"><i class="fas fa-eye"></i></a>
-            <button type="button" class="text-blue-600 hover:text-blue-800 px-1.5" onclick="diagnoseClient({{ client.id }})" title="Диагностика" aria-label="Диагностика"><i class="fas fa-stethoscope"></i></button>
+            <button type="button" class="text-blue-600 hover:text-blue-800 px-1.5" data-action="diagnoseClient" data-client-id="{{ client.id }}" title="Диагностика" aria-label="Диагностика"><i class="fas fa-stethoscope"></i></button>
             {% if client.status == 'active' %}
               <form method="POST" action="/clients/{{ client.id }}/revoke" style="display:inline;">
-                <button type="button" class="text-orange-600 hover:text-orange-800 px-1.5" onclick="confirmAction(this, '{{ t('clients.revoke_confirm') }}')" title="{{ t('clients.revoke') }}" aria-label="{{ t('clients.revoke') }}"><i class="fas fa-user-slash"></i></button>
+                <button type="button" class="text-orange-600 hover:text-orange-800 px-1.5" data-confirm="{{ t('clients.revoke_confirm') }}" title="{{ t('clients.revoke') }}" aria-label="{{ t('clients.revoke') }}"><i class="fas fa-user-slash"></i></button>
               </form>
             {% else %}
               <form method="POST" action="/clients/{{ client.id }}/restore" style="display:inline;">
@@ -966,7 +966,7 @@
               </form>
             {% endif %}
             <form method="POST" action="/clients/{{ client.id }}/delete" style="display:inline;">
-              <button type="button" class="text-red-600 hover:text-red-800 px-1.5" onclick="confirmAction(this, '{{ t('clients.delete_confirm') }}')" title="{{ t('clients.delete') }}" aria-label="{{ t('clients.delete') }}"><i class="fas fa-trash"></i></button>
+              <button type="button" class="text-red-600 hover:text-red-800 px-1.5" data-confirm="{{ t('clients.delete_confirm') }}" title="{{ t('clients.delete') }}" aria-label="{{ t('clients.delete') }}"><i class="fas fa-trash"></i></button>
             </form>
           </td>
         </tr>
@@ -1258,7 +1258,8 @@ async function loadWarpStatus() {
   }
 }
 
-async function warpAction(action) {
+async function warpAction() {
+  const action = this.dataset.warp;
   const btnConnect = document.getElementById('warpBtnConnect');
   const btnDisconnect = document.getElementById('warpBtnDisconnect');
   const btnReconnect = document.getElementById('warpBtnReconnect');
@@ -1593,7 +1594,8 @@ if (document.querySelector('#clientsTableBody .client-row')) {
   setInterval(refreshLiveStatus, 45000);
 }
 
-async function diagnoseClient(clientId) {
+async function diagnoseClient() {
+  const clientId = this.dataset.clientId;
   try {
     const response = await fetch(`/api/clients/${clientId}/diagnostics`, {
       credentials: 'same-origin'

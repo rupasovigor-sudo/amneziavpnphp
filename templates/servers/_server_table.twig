@@ -105,7 +105,7 @@
           <a href="/servers/{{ server.id }}" class="text-brand-600 hover:text-brand-800 px-1.5" title="{{ t('servers.view') }}" aria-label="{{ t('servers.view') }}"><i class="fas fa-eye"></i></a>
           <a href="/servers/{{ server.id }}/monitoring" class="text-blue-600 hover:text-blue-800 px-1.5" title="{{ t('monitoring.title') }}" aria-label="{{ t('monitoring.title') }}"><i class="fas fa-chart-line"></i></a>
           <form method="POST" action="/servers/{{ server.id }}/delete" class="inline" id="delete-form-{{ server.id }}">
-            <button type="button" class="text-red-600 hover:text-red-800 px-1.5" title="{{ t('servers.delete') }}" aria-label="{{ t('servers.delete') }}" onclick="showConfirmModal('Сервер {{ server.name }} будет удалён. Контейнер будет остановлен.', 'Удалить сервер?', '{{ t('servers.delete') }}').then(function(ok){ if(ok) document.getElementById('delete-form-{{ server.id }}').submit(); })"><i class="fas fa-trash"></i></button>
+            <button type="button" class="text-red-600 hover:text-red-800 px-1.5" title="{{ t('servers.delete') }}" aria-label="{{ t('servers.delete') }}" data-confirm="Сервер {{ server.name }} будет удалён. Контейнер будет остановлен." data-confirm-title="Удалить сервер?" data-confirm-ok="{{ t('servers.delete') }}" data-confirm-target="#delete-form-{{ server.id }}"><i class="fas fa-trash"></i></button>
           </form>
         </td>
       </tr>

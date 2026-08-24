@@ -30,24 +30,24 @@
     <!-- Tabs -->
     <div class="mb-6 border-b border-gray-200">
         <nav class="-mb-px flex space-x-8">
-            <a href="#" onclick="showTab('profile'); return false;" id="tab-profile" 
+            <a href="#" data-action="showTabClick" data-tab="profile" id="tab-profile" 
                class="tab-link border-brand-500 text-brand-600 py-4 px-1 border-b-2 font-medium text-sm">
                 <i class="fas fa-user mr-2"></i>{{ t('settings.profile') }}
             </a>
-            <a href="#" onclick="showTab('api'); return false;" id="tab-api"
+            <a href="#" data-action="showTabClick" data-tab="api" id="tab-api"
                class="tab-link border-transparent text-gray-500 hover:text-gray-700 py-4 px-1 border-b-2 font-medium text-sm">
                 <i class="fas fa-key mr-2"></i>{{ t('settings.api_keys') }}
             </a>
             {% if user.role == 'admin' %}
-            <a href="#" onclick="showTab('users'); return false;" id="tab-users"
+            <a href="#" data-action="showTabClick" data-tab="users" id="tab-users"
                class="tab-link border-transparent text-gray-500 hover:text-gray-700 py-4 px-1 border-b-2 font-medium text-sm">
                 <i class="fas fa-users mr-2"></i>{{ t('settings.users') }}
             </a>
-            <a href="#" onclick="showTab('alerts'); return false;" id="tab-alerts"
+            <a href="#" data-action="showTabClick" data-tab="alerts" id="tab-alerts"
                class="tab-link border-transparent text-gray-500 hover:text-gray-700 py-4 px-1 border-b-2 font-medium text-sm">
                 <i class="fas fa-bell mr-2"></i>Оповещения
             </a>
-            <a href="#" onclick="showTab('protocols'); return false;" id="tab-protocols"
+            <a href="#" data-action="showTabClick" data-tab="protocols" id="tab-protocols"
                class="tab-link border-transparent text-gray-500 hover:text-gray-700 py-4 px-1 border-b-2 font-medium text-sm">
                 <i class="fas fa-cubes mr-2"></i>{{ t('settings.protocol_management') }}
             </a>
@@ -243,14 +243,14 @@
                         <td class="px-6 py-4 text-sm text-gray-500">{{ u.created_at|date('Y-m-d') }}</td>
                         <td class="px-6 py-4 text-sm">
                             {% if u.id != user.id %}
-                            <form method="POST" action="/settings/delete-user/{{ u.id }}" class="inline" onsubmit="var f=this; showConfirmModal('{{ t('users.delete_confirm', [u.name]) }}', 'Подтверждение', 'Удалить').then(function(ok){ if(ok) f.submit(); }); return false;">
-                                <button type="submit" class="text-red-600 hover:text-red-900">
+                            <form method="POST" action="/settings/delete-user/{{ u.id }}" class="inline">
+                                <button type="button" data-confirm="{{ t('users.delete_confirm', [u.name]) }}" data-confirm-ok="Удалить" class="text-red-600 hover:text-red-900">
                                     <i class="fas fa-trash"></i> {{ t('clients.delete') }}
                                 </button>
                             </form>
                             {% else %}
                             <!-- For the current user show a Change Password action in Actions column -->
-                            <a href="#" id="self-change-password" onclick="showTab('profile'); return false;" class="text-brand-600 hover:text-brand-900">
+                            <a href="#" id="self-change-password" data-action="showTabClick" data-tab="profile" class="text-brand-600 hover:text-brand-900">
                                 <i class="fas fa-key mr-1"></i> {{ t('settings.change_password') }}
                             </a>
                             {% endif %}
@@ -451,6 +451,11 @@
 </div>
 
 <script>
+// Delegated entrypoint (data-action="showTabClick" data-tab="...").
+window.showTabClick = function (e) {
+    if (e) e.preventDefault();
+    showTab(this.getAttribute('data-tab'));
+};
 function showTab(tab) {
     document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
     document.querySelectorAll('.tab-link').forEach(el => {

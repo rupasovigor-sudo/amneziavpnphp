@@ -57,7 +57,7 @@
     {% set is_admin = user.role == 'admin' %}
 
     <!-- Mobile drawer backdrop -->
-    <div id="sidebarBackdrop" class="fixed inset-0 bg-black/40 z-30 hidden lg:hidden" onclick="toggleSidebar()"></div>
+    <div id="sidebarBackdrop" class="fixed inset-0 bg-black/40 z-30 hidden lg:hidden" data-action="toggleSidebar"></div>
 
     <!-- Sidebar -->
     <aside id="sidebar" class="sidebar-drawer gradient-bg fixed inset-y-0 left-0 z-40 w-64 flex flex-col -translate-x-full lg:translate-x-0">
@@ -103,17 +103,17 @@
     <div class="lg:pl-64 flex flex-col min-h-screen">
         <!-- Topbar -->
         <header class="h-16 bg-white border-b border-gray-200 flex items-center justify-between px-4 sm:px-6 sticky top-0 z-20">
-            <button type="button" onclick="toggleSidebar()" class="lg:hidden text-gray-600 hover:text-gray-900 -ml-1 p-2" aria-label="Меню">
+            <button type="button" data-action="toggleSidebar" class="lg:hidden text-gray-600 hover:text-gray-900 -ml-1 p-2" aria-label="Меню">
                 <i class="fas fa-bars text-xl"></i>
             </button>
             <div class="flex-1"></div>
             <!-- Theme toggle -->
-            <button onclick="toggleTheme()" class="text-gray-600 hover:text-gray-900 p-2 mr-1" aria-label="Тема" title="Светлая/тёмная тема">
+            <button data-action="toggleTheme" class="text-gray-600 hover:text-gray-900 p-2 mr-1" aria-label="Тема" title="Светлая/тёмная тема">
                 <i class="fas fa-moon dark:hidden"></i><i class="fas fa-sun hidden dark:inline"></i>
             </button>
             <!-- Language Selector -->
             <div class="relative">
-                <button onclick="toggleLanguageDropdown()" class="text-gray-600 hover:text-gray-900 flex items-center focus:outline-none">
+                <button data-action="toggleLanguageDropdown" class="text-gray-600 hover:text-gray-900 flex items-center focus:outline-none">
                     {% for lang in languages %}{% if lang.code == current_language %}<span class="mr-1">{{ getFlag(lang.code) }}</span>{% endif %}{% endfor %}
                     <i class="fas fa-chevron-down ml-1 text-xs"></i>
                 </button>
@@ -136,7 +136,7 @@
         <main class="flex-1 py-8">
             {% if uri != '' and uri != '/' and not (uri starts with '/dashboard') %}
             <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mb-4">
-                <button type="button" onclick="goBack()" class="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700">
+                <button type="button" data-action="goBack" class="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700">
                     <i class="fas fa-arrow-left"></i> {{ t('common.back') }}
                 </button>
             </div>
@@ -202,6 +202,41 @@
             }
         };
 
+        // Event delegation replacing inline on* handlers (CSP: no
+        // unsafe-inline). Markup uses data-action="fnName" [data-on="change|
+        // submit|input"]; the named window function is called with `this` = the
+        // element and the event. Functions read any args from data-* on the
+        // element.
+        function _amnDispatch(e) {
+            const el = e.target.closest('[data-action]');
+            if (!el) return;
+            if ((el.getAttribute('data-on') || 'click') !== e.type) return;
+            const fn = el.getAttribute('data-action');
+            if (typeof window[fn] === 'function') window[fn].call(el, e);
+        }
+        ['click', 'change', 'submit', 'input'].forEach(function (evt) {
+            document.addEventListener(evt, _amnDispatch);
+        });
+
+        // Generic confirm-then-submit: data-confirm="msg" [data-confirm-title]
+        // [data-confirm-ok] on an element; submits its closest form (or
+        // data-confirm-target selector) when confirmed.
+        document.addEventListener('click', function (e) {
+            const el = e.target.closest('[data-confirm]');
+            if (!el) return;
+            e.preventDefault();
+            const target = el.getAttribute('data-confirm-target');
+            showConfirmModal(
+                el.getAttribute('data-confirm'),
+                el.getAttribute('data-confirm-title') || 'Подтверждение',
+                el.getAttribute('data-confirm-ok') || 'Подтвердить'
+            ).then(function (ok) {
+                if (!ok) return;
+                const form = target ? document.querySelector(target) : el.closest('form');
+                if (form) form.submit();
+            });
+        });
+
         // Global: on any (valid) form submit, show a spinner on its submit
         // button and prevent double-submit. HTML5-invalid forms don't fire
         // 'submit', so this only triggers on real submissions; a safety timer
@@ -233,7 +268,7 @@
 
         // Close dropdown when clicking outside
         document.addEventListener('click', function(event) {
-            const languageButton = event.target.closest('button[onclick="toggleLanguageDropdown()"]');
+            const languageButton = event.target.closest('button[data-action="toggleLanguageDropdown"]');
             const dropdown = document.getElementById('languageDropdown');
             const isInsideDropdown = dropdown && dropdown.contains(event.target);
             
