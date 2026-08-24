@@ -39,6 +39,10 @@
   }
   .nav-item.active { @apply bg-white/15 text-white; }
   .nav-group-label { @apply px-3 pt-4 pb-1 text-xs font-semibold uppercase tracking-wider text-indigo-300/80; }
+
+  /* Section heading inside a card: icon + title + subtle divider. */
+  .section-title { @apply flex items-center gap-2 text-base font-semibold text-gray-900 mb-4 pb-3 border-b border-gray-100; }
+  .section-title i { @apply text-brand-600; }
 }
 
 /*
