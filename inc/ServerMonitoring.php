@@ -292,27 +292,39 @@ SH;
         ];
 
         if (($values['warp_present'] ?? '0') === '1') {
-            $serviceActive = ($values['warp_service_active'] ?? '') === 'active';
-            $ruleOk = (int) ($values['warp_ip_rule'] ?? 0) > 0;
-            $tableOk = (int) ($values['warp_table_default'] ?? 0) > 0;
-            $warpOk = $serviceActive && $ruleOk && $tableOk;
-            $problems = [];
-            if (!$serviceActive) {
-                $problems[] = 'сервис не активен';
+            $svcState = $values['warp_service_active'] ?? '';
+            // 'activating' = mid-start (e.g. the ExecStart is waiting on the
+            // apt/dpkg lock right after a reboot) — in progress, not broken; do
+            // not flag it (which would trigger a restart loop on a booting host).
+            if ($svcState === 'activating') {
+                $checks['warp_egress'] = [
+                    'ok' => true,
+                    'severity' => 'critical',
+                    'message' => 'WARP-egress запускается…',
+                ];
+            } else {
+                $serviceActive = $svcState === 'active';
+                $ruleOk = (int) ($values['warp_ip_rule'] ?? 0) > 0;
+                $tableOk = (int) ($values['warp_table_default'] ?? 0) > 0;
+                $warpOk = $serviceActive && $ruleOk && $tableOk;
+                $problems = [];
+                if (!$serviceActive) {
+                    $problems[] = 'сервис не активен';
+                }
+                if (!$ruleOk) {
+                    $problems[] = 'нет ip-rule fwmark→51888';
+                }
+                if (!$tableOk) {
+                    $problems[] = 'нет default-маршрута в таблице 51888';
+                }
+                $checks['warp_egress'] = [
+                    'ok' => $warpOk,
+                    'severity' => 'critical',
+                    'message' => $warpOk
+                        ? 'WARP-egress: сервис, ip-rule и маршрут на месте'
+                        : ('WARP-egress сломан: ' . implode(', ', $problems)),
+                ];
             }
-            if (!$ruleOk) {
-                $problems[] = 'нет ip-rule fwmark→51888';
-            }
-            if (!$tableOk) {
-                $problems[] = 'нет default-маршрута в таблице 51888';
-            }
-            $checks['warp_egress'] = [
-                'ok' => $warpOk,
-                'severity' => 'critical',
-                'message' => $warpOk
-                    ? 'WARP-egress: сервис, ip-rule и маршрут на месте'
-                    : ('WARP-egress сломан: ' . implode(', ', $problems)),
-            ];
         }
 
         $ntp = trim((string) ($values['ntp_synced'] ?? 'unknown'));
@@ -1047,8 +1059,14 @@ SH;
     public function repairWarpEgress(): bool
     {
         try {
-            $out = $this->execSSH('systemctl restart awg2-warp-egress.service 2>&1 && echo __WARP_RESTARTED__');
-            return is_string($out) && str_contains($out, '__WARP_RESTARTED__');
+            // --no-block: never wait for the unit to finish activating. The WARP
+            // ExecStart can legitimately block for a while at boot (it waits on
+            // the apt/dpkg lock held by unattended-upgrades); a plain
+            // `systemctl restart` would block the SSH call — and thus the metrics
+            // collector / panel — for that whole time. Queue the restart and let
+            // the next health cycle confirm the result.
+            $out = $this->execSSH('systemctl restart --no-block awg2-warp-egress.service 2>&1; echo __WARP_RESTART_QUEUED__');
+            return is_string($out) && str_contains($out, '__WARP_RESTART_QUEUED__');
         } catch (Throwable $e) {
             error_log('repairWarpEgress failed on server ' . (int) ($this->serverData['id'] ?? 0) . ': ' . $e->getMessage());
             return false;
