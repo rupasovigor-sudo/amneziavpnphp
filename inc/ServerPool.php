@@ -986,6 +986,95 @@ class ServerPool
     }
 
     /**
+     * Force connected clients toward the active member. WireGuard pins the IP it
+     * resolved for the endpoint domain, so already-connected clients keep hitting
+     * whichever member they first landed on until they reconnect. This drops
+     * every client peer from the LIVE awg0 of each NON-active member, so those
+     * members stop answering pinned clients — their tunnels die and clients with
+     * auto-reconnect re-handshake, re-resolve the domain, and land on the active.
+     *
+     * Best-effort: clients without auto-reconnect migrate only on a manual
+     * reconnect. The removal is live-only (awg0.conf keeps the peers), and the
+     * members are flagged pool_sync_pending so a later Ре-синк restores the live
+     * peers and their failover-readiness. Refuses if the active cannot actually
+     * serve everyone, so clients are not kicked toward a member that would drop
+     * them.
+     *
+     * @return array{success:bool, kicked?:array<int,string>, message:string}
+     */
+    public static function forceMigrateToActive(int $poolId): array
+    {
+        $pool = self::get($poolId);
+        if (!$pool) {
+            return ['success' => false, 'message' => "Pool {$poolId} not found"];
+        }
+        $activeId = (int) ($pool['active_server_id'] ?? 0);
+        if ($activeId <= 0) {
+            return ['success' => false, 'message' => 'В пуле нет активного сервера — сначала выберите активный.'];
+        }
+
+        $members = self::members($poolId);
+        $memberIds = array_map(static fn($m) => (int) $m['id'], $members);
+
+        // Safety: the active must be able to serve everyone before we kick clients
+        // off the others (mirror the setActive live-peer guard).
+        $expected = 0;
+        if (!empty($memberIds)) {
+            $in = implode(',', array_fill(0, count($memberIds), '?'));
+            $st = DB::conn()->prepare(
+                "SELECT COUNT(DISTINCT public_key) FROM vpn_clients
+                 WHERE server_id IN ($in) AND status = 'active' AND public_key <> '' AND client_ip <> ''"
+            );
+            $st->execute($memberIds);
+            $expected = (int) $st->fetchColumn();
+        }
+        if ($expected > 0) {
+            $ad = (new VpnServer($activeId))->getData();
+            $ac = (string) ($ad['container_name'] ?? '') ?: 'amnezia-awg2';
+            $live = (int) trim((string) (new VpnServer($activeId))->executeCommand(
+                'docker exec ' . escapeshellarg($ac) . ' awg show awg0 allowed-ips 2>/dev/null | grep -c "/32"',
+                true
+            ));
+            if ($live < $expected) {
+                return [
+                    'success' => false,
+                    'message' => "Активный #{$activeId} обслуживает {$live}/{$expected} пиров — сначала «Ре-синк» активного, иначе согнанные клиенты не подключатся.",
+                ];
+            }
+        }
+
+        $kicked = [];
+        foreach ($members as $m) {
+            $id = (int) $m['id'];
+            if ($id === $activeId || ($m['status'] ?? '') !== 'active') {
+                continue;
+            }
+            try {
+                $md = (new VpnServer($id))->getData();
+                $c = (string) ($md['container_name'] ?? '') ?: 'amnezia-awg2';
+                (new VpnServer($id))->executeCommand(
+                    'C=' . escapeshellarg($c) . '; for p in $(docker exec "$C" awg show awg0 peers 2>/dev/null); do '
+                    . 'docker exec "$C" awg set awg0 peer "$p" remove 2>/dev/null; done; echo kicked',
+                    true
+                );
+                DB::conn()->prepare('UPDATE vpn_servers SET pool_sync_pending = 1 WHERE id = ?')->execute([$id]);
+                $kicked[] = (string) ($m['name'] ?? ('#' . $id));
+            } catch (Throwable $e) {
+                error_log("forceMigrateToActive: kick failed on server {$id}: " . $e->getMessage());
+            }
+        }
+
+        return [
+            'success' => true,
+            'kicked' => $kicked,
+            'message' => $kicked
+                ? ('Клиенты согнаны с ' . count($kicked) . ' резервных (' . implode(', ', $kicked) . '): их туннели разорваны — при переподключении попадут на активный. '
+                    . 'Клиенты без авто-reconnect переедут только после ручного переподключения. Резервные помечены на «Ре-синк» — синхронизируйте их, когда клиенты мигрируют.')
+                : 'Нет резервных членов для сгона (в пуле только активный).',
+        ];
+    }
+
+    /**
      * Authoritatively rebuild a member's peer set from the DB (source of truth),
      * so peers survive an awg2 container restart and drift is corrected.
      *

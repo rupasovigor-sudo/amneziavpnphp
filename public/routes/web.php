@@ -1354,6 +1354,26 @@ Router::post('/servers/{id}/pool/activate', function ($params) {
     }
 });
 
+// Force connected clients toward the active member (kick them off the standbys).
+Router::post('/servers/{id}/pool/force-migrate', function ($params) {
+    requireAdmin();
+    @set_time_limit(120);
+    header('Content-Type: application/json');
+    $serverId = (int) $params['id'];
+    try {
+        $poolId = (int) ((new VpnServer($serverId))->getData()['pool_id'] ?? 0);
+        if ($poolId <= 0) {
+            http_response_code(400);
+            echo json_encode(['success' => false, 'error' => 'Server is not in a pool']);
+            return;
+        }
+        echo json_encode(ServerPool::forceMigrateToActive($poolId), JSON_UNESCAPED_SLASHES);
+    } catch (Exception $e) {
+        http_response_code(500);
+        echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+    }
+});
+
 // Re-sync a pool member's client peers (clears the pool_sync_pending flag so the
 // member can serve as a failover target again).
 Router::post('/servers/{id}/pool/resync', function ($params) {

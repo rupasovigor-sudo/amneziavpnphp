@@ -145,6 +145,10 @@
           <p id="poolMsg" class="mt-2 text-sm text-gray-500 leading-tight">
             Конфиг клиента <b>единый для всего пула</b> (домен + общие ключи) и синхронизируется на все серверы автоматически — неважно, на каком сервере создавать клиента. <b>ACTIVE</b> — сюда указывает домен и идут клиенты; <b>STANDBY</b> — синхронизирован и готов к переключению.
           </p>
+          <div class="mt-2 flex items-center gap-2 flex-wrap">
+            <button type="button" id="forceMigrateBtn" class="px-2 py-1 rounded text-sm bg-red-600 hover:bg-red-700 text-white" title="Разорвать туннели на резервных, чтобы клиенты переподключились на активный (лечит «клиент завис на старом сервере»)"><i class="fas fa-users-line mr-1"></i>Согнать клиентов на активный</button>
+            <span class="text-sm text-gray-400 leading-tight">снимает клиентские пиры с резервных → их туннели рвутся; при переподключении клиент попадёт на активный. Без авто-reconnect — только после ручного переподключения. Резервные пометятся на «Ре-синк».</span>
+          </div>
           <div class="mt-2 pt-2 border-t">
             <details>
               <summary class="text-sm text-gray-700 cursor-pointer"><i class="fas fa-route mr-1"></i>AllowedIPs для роутера (full-tunnel, исключает все IP пула)</summary>
@@ -428,6 +432,21 @@
               } else { showToast(d.error || 'Ошибка', 'error'); }
             }).catch(e => showToast('Ошибка: ' + e, 'error'))
             .finally(() => { poolEditSave.disabled = false; });
+        });
+
+        const forceMigrateBtn = document.getElementById('forceMigrateBtn');
+        if (forceMigrateBtn) forceMigrateBtn.addEventListener('click', async function () {
+          const ok = await showConfirmModal(
+            'Клиентские туннели на всех РЕЗЕРВНЫХ серверах будут разорваны, чтобы клиенты переподключились на активный. Клиенты без авто-reconnect переедут только после ручного переподключения. Резервные пометятся на «Ре-синк». Продолжить?',
+            'Согнать клиентов на активный?', 'Согнать');
+          if (!ok) return;
+          forceMigrateBtn.disabled = true;
+          fetch('/servers/' + SID + '/pool/force-migrate', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' })
+            .then(r => r.json()).then(d => {
+              showToast(d.message || (d.success ? 'Готово' : (d.error || 'Ошибка')), d.success ? 'success' : 'error');
+              load();
+            }).catch(e => showToast('Ошибка: ' + e, 'error'))
+            .finally(() => { forceMigrateBtn.disabled = false; });
         });
 
         const poolDeleteBtn = document.getElementById('poolDeleteBtn');
