@@ -274,14 +274,24 @@
         }
 
         function probeMember(memberId, btn) {
+          const orig = btn ? btn.textContent : 'Проверить';
           if (btn) { btn.disabled = true; btn.textContent = '…'; }
-          document.getElementById('poolMsg').textContent = 'Пробник доступности (handshake с активного сервера, до ~30с)…';
+          const pm = document.getElementById('poolMsg');
+          if (pm) pm.textContent = 'Пробник доступности (handshake с активного сервера, до ~30с)…';
           fetch('/servers/' + memberId + '/pool/probe', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' })
             .then(r => r.json()).then(d => {
               const ok = d.success && d.reachable;
-              showToast(d.message || (d.success ? (d.reachable ? 'Доступен' : 'Недоступен') : (d.error || 'Ошибка')), ok ? 'success' : 'error');
-              load();
-            }).catch(e => { showToast('Ошибка: ' + e, 'error'); load(); });
+              const msg = d.message || (d.success ? (d.reachable ? 'Доступен' : 'Недоступен') : (d.error || 'Ошибка'));
+              // Persist the result in poolMsg — a read-only probe must NOT call
+              // load() (it re-renders the list and overwrites poolMsg with the
+              // static help text, so the result vanished — "showed nothing").
+              if (pm) pm.textContent = msg;
+              if (window.showToast) showToast(msg, ok ? 'success' : 'error');
+            }).catch(e => {
+              const msg = 'Ошибка пробника: ' + e;
+              if (pm) pm.textContent = msg;
+              if (window.showToast) showToast(msg, 'error');
+            }).finally(() => { if (btn) { btn.disabled = false; btn.textContent = orig; } });
         }
 
         function markClean(memberId, clean, btn) {
