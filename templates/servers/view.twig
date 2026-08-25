@@ -212,7 +212,7 @@
             const act = [
               m.role !== 'active' ? `<button data-probe="${m.id}" class="px-2 py-0.5 rounded text-sm bg-brand-600 hover:bg-brand-700 text-white" title="Handshake-пробник с активного сервера: проверяет, что ingress жив/проброшен (не проверяет прожиг)">Проверить</button>` : '',
               m.role !== 'active' ? `<button data-activate="${m.id}" class="px-2 py-0.5 rounded text-sm bg-brand-600 hover:bg-brand-700 text-white">Сделать активным</button>` : '',
-              m.sync_pending ? `<button data-resync="${m.id}" class="px-2 py-0.5 rounded text-sm bg-yellow-600 text-white">Ре-синк</button>` : '',
+              m.role !== 'active' ? `<button data-resync="${m.id}" class="px-2 py-0.5 rounded text-sm ${m.sync_pending ? 'bg-yellow-600 hover:bg-yellow-700' : 'bg-gray-600 hover:bg-gray-700'} text-white" title="Пересобрать список пиров из БД на живой интерфейс (нужно, если пиры слетели после рестарта контейнера)">Ре-синк</button>` : '',
               (m.validated_clean === 1
                 ? `<button data-markclean="0" data-mid="${m.id}" class="px-2 py-0.5 rounded text-sm bg-gray-600 hover:bg-gray-700 text-white" title="Снять пометку годности">Снять годность</button>`
                 : `<button data-markclean="1" data-mid="${m.id}" class="px-2 py-0.5 rounded text-sm bg-green-600 hover:bg-green-700 text-white" title="Пометить проверенным — станет доступен для авто-failover">Пометить годным</button>`),
@@ -257,9 +257,20 @@
           if (btn) { btn.disabled = true; btn.textContent = '…'; }
           fetch('/servers/' + memberId + '/pool/activate', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' })
             .then(r => r.json()).then(d => {
-              document.getElementById('poolMsg').textContent = d.message || (d.dns && d.dns.message) || (d.success ? 'Переключено' : (d.error || 'Ошибка'));
+              const msg = d.message || (d.dns && d.dns.message) || (d.success ? 'Переключено' : (d.error || 'Ошибка'));
+              document.getElementById('poolMsg').textContent = msg;
+              // Surface the outcome immediately — a refusal (e.g. target has no
+              // live peers) otherwise only lands quietly in poolMsg and reads as
+              // "the button did nothing".
+              if (window.showToast) showToast(msg, d.success ? 'success' : 'error');
               load();
-            }).catch(e => { document.getElementById('poolMsg').textContent = 'Ошибка: ' + e; load(); });
+            }).catch(e => {
+              const msg = 'Ошибка: ' + e;
+              document.getElementById('poolMsg').textContent = msg;
+              if (window.showToast) showToast(msg, 'error');
+              if (btn) { btn.disabled = false; btn.textContent = 'Сделать активным'; }
+              load();
+            });
         }
 
         function probeMember(memberId, btn) {
