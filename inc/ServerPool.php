@@ -66,6 +66,12 @@ class ServerPool
                 $memberIps[] = $host . '/32';
             }
         }
+        // The pool's front (entry relay) is an endpoint too — a full-tunnel
+        // peer pointed at it must not route the tunnel packets back inside.
+        $front = PoolFront::forPool($poolId);
+        if ($front && filter_var((string) $front['server_host'], FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false) {
+            $memberIps[] = $front['server_host'] . '/32';
+        }
         $memberIps = array_values(array_unique($memberIps));
 
         $extra = [];
@@ -164,6 +170,17 @@ class ServerPool
             'members' => $members,
             'resolved_ips' => $resolved,
             'provider_configured' => DnsManager::isConfigured(),
+            // Entry relay, if any. When dns_mode = front the domain resolves to
+            // the front, so no member will show dns_points_here — that's expected.
+            'front' => ($f = PoolFront::forPool($poolId)) ? [
+                'name' => $f['server_name'],
+                'host' => $f['server_host'],
+                'enabled' => (int) $f['enabled'] === 1,
+                'dns_mode' => $f['dns_mode'],
+                'dns_points_here' => in_array($f['server_host'], $resolved, true),
+                'tier' => $f['tier'],
+                'backends' => json_decode((string) ($f['backends_json'] ?? ''), true) ?: [],
+            ] : null,
         ];
     }
 
@@ -342,7 +359,13 @@ class ServerPool
         // active_server_id in that case — leave it so the next failover cycle
         // (or a manual retry after fixing the token) tries the repoint again.
         $dnsOk = true;
-        if ($domain !== '') {
+        if ($domain !== '' && PoolFront::domainOnFront($poolId)) {
+            // The domain points at the pool's front (entry relay), which already
+            // balances across healthy members. Repointing it at one member here
+            // would bypass the front for everyone — so only the active marker
+            // (the fallback target if the front goes down) moves.
+            $response['dns'] = ['success' => true, 'action' => 'skipped', 'message' => 'Домен на RU-фронте — не перенаправляется; активный = цель фолбэка'];
+        } elseif ($domain !== '') {
             if (!DnsManager::isConfigured()) {
                 $response['dns'] = ['success' => false, 'message' => 'DNS provider token not configured — A-record not updated'];
                 $dnsOk = false;
@@ -618,6 +641,46 @@ class ServerPool
         );
         $stmt->execute($params);
         return (int) $stmt->fetchColumn() > 0;
+    }
+
+    /**
+     * Where the pool domain should point when it cannot point at the front:
+     * the active member if it is up, else the best healthy standby.
+     */
+    public static function healthyTarget(int $poolId, int $threshold = 1): ?int
+    {
+        $pool = self::get($poolId);
+        if (!$pool) {
+            return null;
+        }
+        $activeId = (int) ($pool['active_server_id'] ?? 0);
+        if ($activeId > 0 && !self::memberCriticalDown($activeId, $threshold)) {
+            return $activeId;
+        }
+        return self::pickHealthyStandby($poolId, $activeId, $threshold);
+    }
+
+    /**
+     * Members that should be re-synced by the monitoring loop: flagged
+     * pool_sync_pending, or whose live peer count is short (pool_peers check
+     * open for 2+ cycles). Members whose peers were dropped on purpose
+     * (force-migrate) are left alone for $graceMinutes so kicked clients have
+     * time to reconnect elsewhere.
+     *
+     * @return int[]
+     */
+    public static function membersNeedingResync(int $graceMinutes = 10): array
+    {
+        $st = DB::conn()->prepare(
+            "SELECT s.id FROM vpn_servers s
+             WHERE s.pool_id IS NOT NULL AND s.status = 'active' AND COALESCE(s.role, 'vpn') = 'vpn'
+               AND (s.pool_sync_pending_at IS NULL OR s.pool_sync_pending_at < DATE_SUB(NOW(), INTERVAL ? MINUTE))
+               AND (s.pool_sync_pending = 1 OR EXISTS (
+                      SELECT 1 FROM alert_states a
+                      WHERE a.alert_key = CONCAT('server:', s.id, ':pool_peers') AND a.status = 'open' AND a.fail_count >= 2))"
+        );
+        $st->execute([max(1, $graceMinutes)]);
+        return array_map('intval', $st->fetchAll(PDO::FETCH_COLUMN));
     }
 
     /** Lowest-priority member (excluding $excludeId) that is active and not down. */
@@ -1012,6 +1075,11 @@ class ServerPool
         if ($activeId <= 0) {
             return ['success' => false, 'message' => 'В пуле нет активного сервера — сначала выберите активный.'];
         }
+        if (PoolFront::domainOnFront($poolId)) {
+            // Behind a front every member serves clients; kicking "non-active"
+            // members would cut the front's own backends.
+            return ['success' => false, 'message' => 'Домен пула на RU-фронте — распределением клиентов управляет фронт, сгонять не нужно.'];
+        }
 
         $members = self::members($poolId);
         $memberIds = array_map(static fn($m) => (int) $m['id'], $members);
@@ -1057,7 +1125,9 @@ class ServerPool
                     . 'docker exec "$C" awg set awg0 peer "$p" remove 2>/dev/null; done; echo kicked',
                     true
                 );
-                DB::conn()->prepare('UPDATE vpn_servers SET pool_sync_pending = 1 WHERE id = ?')->execute([$id]);
+                // pool_sync_pending_at starts the auto-resync grace period (the
+                // monitoring loop restores the peers once it has elapsed).
+                DB::conn()->prepare('UPDATE vpn_servers SET pool_sync_pending = 1, pool_sync_pending_at = NOW() WHERE id = ?')->execute([$id]);
                 $kicked[] = (string) ($m['name'] ?? ('#' . $id));
             } catch (Throwable $e) {
                 error_log("forceMigrateToActive: kick failed on server {$id}: " . $e->getMessage());
@@ -1069,7 +1139,7 @@ class ServerPool
             'kicked' => $kicked,
             'message' => $kicked
                 ? ('Клиенты согнаны с ' . count($kicked) . ' резервных (' . implode(', ', $kicked) . '): их туннели разорваны — при переподключении попадут на активный. '
-                    . 'Клиенты без авто-reconnect переедут только после ручного переподключения. Резервные помечены на «Ре-синк» — синхронизируйте их, когда клиенты мигрируют.')
+                    . 'Клиенты без авто-reconnect переедут только после ручного переподключения. Резервные вернут пиры автоматически через ~' . max(1, (int) Config::get('AMNEZIA_POOL_RESYNC_GRACE_MINUTES', '10')) . ' мин (или «Ре-синк» вручную).')
                 : 'Нет резервных членов для сгона (в пуле только активный).',
         ];
     }
@@ -1160,8 +1230,9 @@ class ServerPool
         $expected = count($peerRows);
         $ok = $live === $expected;
         // Keep the failover-eligibility flag honest.
-        DB::conn()->prepare('UPDATE vpn_servers SET pool_sync_pending = ? WHERE id = ?')
-            ->execute([$ok ? 0 : 1, $serverId]);
+        // A successful rebuild also ends any force-migrate grace period.
+        DB::conn()->prepare('UPDATE vpn_servers SET pool_sync_pending = ?, pool_sync_pending_at = IF(? = 0, NULL, pool_sync_pending_at) WHERE id = ?')
+            ->execute([$ok ? 0 : 1, $ok ? 0 : 1, $serverId]);
 
         return [
             'success' => $ok,

@@ -12,7 +12,7 @@ $root = dirname(__DIR__);
 require $root . '/vendor/autoload.php';
 foreach ([
     'Config', 'DB', 'Logger', 'SecretBox', 'VpnServer', 'VpnClient',
-    'ServerMonitoring', 'ServerPool', 'ServerUpdateManager', 'AlertManager', 'IpReputation',
+    'ServerMonitoring', 'ServerPool', 'ServerUpdateManager', 'AlertManager', 'IpReputation', 'PoolFront',
 ] as $c) {
     @require_once $root . '/inc/' . $c . '.php';
 }
@@ -90,6 +90,19 @@ foreach ($servers as $s) {
         } catch (Throwable $e) {
             echo "  #{$id} {$name}: reputation check failed: " . $e->getMessage() . "\n";
         }
+    }
+}
+
+// Egress country per pool member (WARP exit follows the server's location but
+// can drift) — the RU front groups backends by it, so keep it fresh.
+try {
+    $poolIds = DB::conn()->query('SELECT pool_id FROM pool_fronts WHERE enabled = 1')->fetchAll(PDO::FETCH_COLUMN) ?: [];
+} catch (Throwable $e) {
+    $poolIds = [];
+}
+foreach ($poolIds as $pid) {
+    foreach (PoolFront::detectAll((int) $pid) as $sid => $r) {
+        echo "  pool {$pid} #{$sid}: egress " . ($r['country'] ?? '?') . ($r['warp'] ? ' (warp)' : '') . "\n";
     }
 }
 

@@ -78,7 +78,7 @@ class VpnServer
      * Normalize SSH private key: fix line endings, trim whitespace, ensure trailing newline.
      * Fixes "error in libcrypto" when keys are pasted from Windows or browsers.
      */
-    private static function normalizeSshKey(string $key): string
+    public static function normalizeSshKey(string $key): string
     {
         // Remove \r (Windows line endings)
         $key = str_replace("\r\n", "\n", $key);
@@ -654,6 +654,12 @@ BASH;
         $pdo = DB::conn();
         $serverId = (int) $this->serverId;
 
+        // An entry relay still attached to a pool may be what the pool domain
+        // resolves to — deleting it would strand every client. Detach first.
+        if (($this->data['role'] ?? 'vpn') === 'front' && PoolFront::forServer($serverId)) {
+            throw new Exception('Это RU-фронт пула — сначала отвяжите его на странице «Пулы»');
+        }
+
         // Drop the pinned host key: the IP is very likely to be reused by a new
         // machine, and a stale pin would make every future connection to it look
         // like a MITM and be refused.
@@ -738,14 +744,16 @@ BASH;
             }
         }
 
-        // Stop and remove the container (best effort).
-        try {
-            $containerName = $this->data['container_name'];
-            $this->executeCommand("docker stop {$containerName} 2>/dev/null || true", true);
-            $this->executeCommand("docker rm -fv {$containerName} 2>/dev/null || true", true);
-            $this->executeCommand("rm -rf /opt/amnezia/amnezia-awg", true);
-        } catch (Exception $e) {
-            // Ignore errors during cleanup
+        // Stop and remove the container (best effort). Fronts have none.
+        if (($this->data['role'] ?? 'vpn') !== 'front') {
+            try {
+                $containerName = $this->data['container_name'];
+                $this->executeCommand("docker stop {$containerName} 2>/dev/null || true", true);
+                $this->executeCommand("docker rm -fv {$containerName} 2>/dev/null || true", true);
+                $this->executeCommand("rm -rf /opt/amnezia/amnezia-awg", true);
+            } catch (Exception $e) {
+                // Ignore errors during cleanup
+            }
         }
 
         // Belt-and-suspenders: clear any pool still pointing here (non-pool path

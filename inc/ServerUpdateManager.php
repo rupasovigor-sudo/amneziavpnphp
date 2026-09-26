@@ -851,6 +851,12 @@ SH;
     /** Dispatch a single maintenance action by name. */
     public static function runAction(int $serverId, string $action, bool $force = false): array
     {
+        // A pool front (entry relay) has no awg2/WARP/docker — building awg2
+        // there would even grab the relay's UDP port. OS/kernel/reboot are fine.
+        if (in_array($action, ['awg2', 'warp', 'docker'], true)
+            && PoolFront::isFrontServer((new VpnServer($serverId))->getData())) {
+            return ['success' => false, 'message' => 'Это RU-фронт (relay): awg2/WARP/Docker на нём не используются.'];
+        }
         switch ($action) {
             case 'kernel': return self::updateKernel($serverId, $force);
             case 'docker': return self::updateDocker($serverId, $force);

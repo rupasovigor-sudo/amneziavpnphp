@@ -194,6 +194,27 @@ SH;
             'message' => $sshOk ? 'SSH доступен' : 'SSH недоступен или команда не вернула ответ',
         ];
 
+        // A pool front (entry relay) runs no VPN container — check the relay.
+        if ($sshOk && ($this->serverData['role'] ?? 'vpn') === 'front') {
+            $out = (string) $this->execSSH(
+                'echo relay_table=$(nft list table ip amnezia_relay >/dev/null 2>&1 && echo 1 || echo 0); '
+                . 'echo ip_forward=$(sysctl -n net.ipv4.ip_forward 2>/dev/null); '
+                . 'echo dnat_rules=$(nft list chain ip amnezia_relay prerouting 2>/dev/null | grep -c dnat)'
+            );
+            $v = $this->parseHealthOutput($out);
+            $table = ($v['relay_table'] ?? '0') === '1';
+            $fwd = ($v['ip_forward'] ?? '0') === '1';
+            $dnat = (int) ($v['dnat_rules'] ?? 0);
+            $checks['front_relay'] = [
+                'ok' => $table && $fwd,
+                'severity' => 'critical',
+                'message' => ($table && $fwd)
+                    ? ('Relay активен' . ($dnat > 0 ? '' : ' (бэкендов нет — ждёт push панели)'))
+                    : ('Relay не работает: ' . (!$table ? 'нет таблицы nftables amnezia_relay' : 'выключен ip_forward')),
+            ];
+            return $checks;
+        }
+
         if (!$sshOk || $containerName === '') {
             return $checks;
         }
@@ -370,6 +391,32 @@ SH;
 
             $peerCount = (int) ($values['wg_peer_count'] ?? 0);
             $recentPeerCount = (int) ($values['wg_recent_peer_count'] ?? 0);
+
+            // Pool members must carry every pool client's peer on the LIVE
+            // interface: a member missing them black-holes the clients a front
+            // (or a failover) sends there, and pool_sync_pending can be stale
+            // (e.g. peers lost on a container restart). The collector re-syncs a
+            // member that stays short, and PoolFront excludes it as a backend.
+            $ppPool = (int) ($this->serverData['pool_id'] ?? 0);
+            if ($ppPool > 0 && $iface !== '') {
+                $ppSt = DB::conn()->prepare(
+                    "SELECT COUNT(DISTINCT vc.public_key) FROM vpn_clients vc
+                     JOIN vpn_servers s ON s.id = vc.server_id
+                     WHERE s.pool_id = ? AND vc.status = 'active' AND vc.public_key <> '' AND vc.client_ip <> ''"
+                );
+                $ppSt->execute([$ppPool]);
+                $ppExpected = (int) $ppSt->fetchColumn();
+                if ($ppExpected > 0) {
+                    $checks['pool_peers'] = [
+                        'ok' => $peerCount >= $ppExpected,
+                        'severity' => 'warning',
+                        'message' => $peerCount >= $ppExpected
+                            ? "Пиры пула на месте: {$peerCount}/{$ppExpected}"
+                            : "Неполный набор пиров пула: {$peerCount}/{$ppExpected} — нужен ре-синк (панель сделает его автоматически)",
+                    ];
+                }
+            }
+
             $minPeers = max(1, (int) Config::get('ALERT_HANDSHAKE_MIN_PEERS', '3'));
             $stalePercentThreshold = max(1, min(100, (float) Config::get('ALERT_HANDSHAKE_STALE_PERCENT', '70')));
             // Pool-aware: a single member's peer dump is NOT a health signal for a

@@ -390,10 +390,85 @@ Router::get('/pools', function () {
             $pools[] = $st;
         }
     }
+    $fronts = [];
+    foreach ($pools as $p) {
+        $pid = (int) $p['pool']['id'];
+        $fronts[$pid] = PoolFront::uiStatus($pid);
+    }
     View::render('pools.twig', [
         'pools' => $pools,
+        'fronts' => $fronts,
         'reputation' => IpReputation::latestByServer(),
+        'flash_error' => $_SESSION['error_message'] ?? null,
     ]);
+    unset($_SESSION['error_message']);
+});
+
+// ---- Pool front (entry relay) API (admin, JSON) ----------------------------
+function poolFrontJson(callable $fn): void
+{
+    requireAdmin();
+    header('Content-Type: application/json');
+    try {
+        $in = json_decode(file_get_contents('php://input'), true) ?: [];
+        $res = $fn($in);
+        if (empty($res['success'])) {
+            http_response_code(400);
+        }
+        echo json_encode($res, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+    } catch (Throwable $e) {
+        http_response_code(500);
+        echo json_encode(['success' => false, 'message' => $e->getMessage()], JSON_UNESCAPED_UNICODE);
+    }
+}
+
+Router::post('/pools/{id}/front/register', function ($params) {
+    @set_time_limit(420);
+    @ignore_user_abort(true); // apt install on the front can take minutes
+    poolFrontJson(fn($in) => PoolFront::register((int) $params['id'], (int) (Auth::user()['id'] ?? 0), $in));
+});
+Router::post('/pools/{id}/front/sync', function ($params) {
+    poolFrontJson(fn($in) => PoolFront::sync((int) $params['id'], true));
+});
+Router::post('/pools/{id}/front/detect', function ($params) {
+    @set_time_limit(180);
+    poolFrontJson(function ($in) use ($params) {
+        $det = PoolFront::detectAll((int) $params['id']);
+        $sync = PoolFront::sync((int) $params['id'], true);
+        $parts = [];
+        foreach ($det as $sid => $d) {
+            $parts[] = "#{$sid}: " . ($d['country'] ?? '?');
+        }
+        return ['success' => true, 'message' => 'Страны выхода: ' . implode(', ', $parts) . '. ' . ($sync['message'] ?? '')];
+    });
+});
+Router::post('/pools/{id}/front/domain', function ($params) {
+    poolFrontJson(fn($in) => ($in['target'] ?? '') === 'front'
+        ? PoolFront::pointDomainToFront((int) $params['id'])
+        : PoolFront::pointDomainToMember((int) $params['id'], 'manual_ui'));
+});
+Router::post('/pools/{id}/front/country', function ($params) {
+    poolFrontJson(fn($in) => PoolFront::setPrimaryCountry((int) $params['id'], (string) ($in['country'] ?? '')));
+});
+Router::post('/pools/{id}/front/group', function ($params) {
+    poolFrontJson(fn($in) => PoolFront::setRelayGroup((int) ($in['server_id'] ?? 0), (string) ($in['group'] ?? '')));
+});
+Router::post('/pools/{id}/front/reinstall', function ($params) {
+    @set_time_limit(420);
+    poolFrontJson(function ($in) use ($params) {
+        $f = PoolFront::forPool((int) $params['id']);
+        if (!$f) {
+            return ['success' => false, 'message' => 'Фронт не подключён'];
+        }
+        $r = PoolFront::install((int) $f['server_id']);
+        if (!empty($r['success'])) {
+            PoolFront::sync((int) $params['id'], true);
+        }
+        return $r;
+    });
+});
+Router::post('/pools/{id}/front/remove', function ($params) {
+    poolFrontJson(fn($in) => PoolFront::remove((int) $params['id']));
 });
 
 // Audit trail of state-changing admin actions (admin-only).

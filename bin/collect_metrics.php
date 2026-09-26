@@ -414,6 +414,35 @@ while (true) {
             }
         }
 
+        // Pool peer self-heal: re-sync members flagged pool_sync_pending or
+        // whose live peer count stays short (pool_peers check). Members whose
+        // peers were dropped on purpose (force-migrate) wait out a grace period
+        // first. Rate-limited per server so a broken member isn't hammered.
+        try {
+            $grace = max(1, (int) Config::get('AMNEZIA_POOL_RESYNC_GRACE_MINUTES', '10'));
+            foreach (ServerPool::membersNeedingResync($grace) as $sid) {
+                if (!shouldRunPeriodicTask('pool_peer_resync', $sid, 300)) {
+                    continue;
+                }
+                $rs = ServerPool::reconcilePeers($sid);
+                echo "[" . date('Y-m-d H:i:s') . "] POOL PEER RESYNC #{$sid}: " . ($rs['message'] ?? '') . "\n";
+            }
+        } catch (Throwable $e) {
+            error_log('Pool peer resync failed: ' . $e->getMessage());
+        }
+
+        // Pool fronts (entry relays): keep each front's backend set in step with
+        // member health; fall the domain back to a member if a front is down.
+        try {
+            $frontThreshold = max(1, (int) Config::get('AMNEZIA_FRONT_FAILURE_THRESHOLD', '2'));
+            foreach (PoolFront::syncAll($frontThreshold) as $fr) {
+                echo "[" . date('Y-m-d H:i:s') . "] POOL FRONT {$fr['action']} pool {$fr['pool']}: "
+                    . ($fr['ok'] ? 'ok' : 'FAILED') . ' — ' . ($fr['message'] ?? '') . "\n";
+            }
+        } catch (Throwable $e) {
+            error_log('Pool front sync failed: ' . $e->getMessage());
+        }
+
         // Calculate sleep time
         $executionTime = microtime(true) - $startTime;
         $sleepTime = max(0, $collectionInterval - $executionTime);

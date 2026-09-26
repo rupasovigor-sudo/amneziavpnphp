@@ -306,6 +306,9 @@ Router::post('/servers/{id}/deploy', function ($params) {
     // in status='deploying' (the deploy sets status active/error at the end).
     @ignore_user_abort(true);
     header('Content-Type: application/json');
+    if (rejectFrontServer((int) $params['id'])) {
+        return;
+    }
 
     $serverId = (int) $params['id'];
     $rawBody = file_get_contents('php://input');
@@ -360,6 +363,12 @@ Router::post('/servers/{id}/deploy', function ($params) {
             } elseif ($memberPoolId > 0) {
                 $poolRow = ServerPool::get($memberPoolId);
                 $mayRepoint = $poolRow && (int) ($poolRow['active_server_id'] ?? 0) === $serverId;
+            }
+            // While the pool domain points at its front (entry relay), a member
+            // redeploy must not pull it back onto one server.
+            $repointPoolId = $owningPool ? (int) $owningPool['id'] : $memberPoolId;
+            if ($repointPoolId > 0 && PoolFront::domainOnFront($repointPoolId)) {
+                $mayRepoint = false;
             }
         }
         if (!empty($result['success']) && $domain !== '' && $mayRepoint && DnsManager::isConfigured()) {
@@ -497,6 +506,9 @@ Router::post('/servers/{id}/protocols/activate', function ($params) {
     header('Content-Type: application/json');
 
     $serverId = (int) $params['id'];
+    if (rejectFrontServer($serverId)) {
+        return;
+    }
     $protocolId = isset($_POST['protocol_id']) ? (int) $_POST['protocol_id'] : 0;
     Logger::appendInstall($serverId, 'HTTP activate requested protocol_id=' . $protocolId);
 
@@ -699,8 +711,14 @@ Router::post('/servers/{id}/dns/update', function ($params) {
             if (!DnsManager::isConfigured()) {
                 $response['dns'] = ['success' => false, 'message' => 'DNS provider token is not configured (Settings → API)'];
             } else {
-                $response['dns'] = DnsManager::upsertARecord($domain, (string) ($serverData['host'] ?? ''));
-                $response['success'] = (bool) $response['dns']['success'];
+                $frontPool = ServerPool::findByDomain($domain);
+                if ($frontPool && PoolFront::domainOnFront((int) $frontPool['id'])) {
+                    $response['success'] = false;
+                    $response['dns'] = ['success' => false, 'message' => 'Этот домен принадлежит пулу и сейчас указывает на RU-фронт — перенаправление на отдельный сервер заблокировано.'];
+                } else {
+                    $response['dns'] = DnsManager::upsertARecord($domain, (string) ($serverData['host'] ?? ''));
+                    $response['success'] = (bool) $response['dns']['success'];
+                }
             }
         }
 
@@ -747,6 +765,9 @@ Router::post('/servers/{id}/pool/create', function ($params) {
     requireAdmin();
     header('Content-Type: application/json');
     $serverId = (int) $params['id'];
+    if (rejectFrontServer($serverId)) {
+        return;
+    }
     $input = json_decode(file_get_contents('php://input'), true) ?: [];
     $name = trim((string) ($input['name'] ?? ''));
     if ($name === '') {
@@ -1086,6 +1107,9 @@ Router::post('/servers/{id}/pool/join', function ($params) {
     @ignore_user_abort(true);
     header('Content-Type: application/json');
     $serverId = (int) $params['id'];
+    if (rejectFrontServer($serverId)) {
+        return;
+    }
     $input = json_decode(file_get_contents('php://input'), true) ?: [];
     $poolId = (int) ($input['pool_id'] ?? 0);
     if ($poolId <= 0) {
@@ -1208,6 +1232,11 @@ Router::post('/servers/{id}/pool/update', function ($params) {
                     $activeHost = '';
                     foreach (ServerPool::members($poolId) as $m) {
                         if ((int) $m['id'] === $activeId) { $activeHost = (string) $m['host']; break; }
+                    }
+                    // Behind a front the domain belongs on the front, not a member.
+                    $poolFront = PoolFront::forPool($poolId);
+                    if ($poolFront && PoolFront::domainOnFront($poolId)) {
+                        $activeHost = (string) $poolFront['server_host'];
                     }
                     if ($activeHost !== '') {
                         $response['dns'] = DnsManager::upsertARecord($domain, $activeHost);
@@ -1448,6 +1477,10 @@ Router::get('/servers/{id}', function ($params) {
             echo 'Forbidden';
             return;
         }
+        // A pool front has no VPN page — it is managed from the pools page.
+        if (PoolFront::isFrontServer($serverData)) {
+            redirect('/pools');
+        }
 
         $pdo = DB::conn();
         $serverProtocols = [];
@@ -1560,6 +1593,9 @@ Router::get('/servers/{id}/monitoring', function ($params) {
 Router::post('/servers/{id}/clients/create', function ($params) {
     requireAuth();
     $serverId = (int) $params['id'];
+    if (rejectFrontServer($serverId, false)) {
+        return;
+    }
     $clientName = trim($_POST['name'] ?? '');
     $username = isset($_POST['username']) ? trim($_POST['username']) : '';
     $login = isset($_POST['login']) ? trim($_POST['login']) : '';

@@ -376,6 +376,34 @@ function requireAdmin(): void
     }
 }
 
+/**
+ * A pool front (entry relay) runs no VPN: deploying awg2 there would grab the
+ * relay's UDP port, and clients/protocols/pool membership don't apply. Returns
+ * true (response already sent) when $serverId is a front.
+ */
+function rejectFrontServer(int $serverId, bool $json = true): bool
+{
+    try {
+        $st = DB::conn()->prepare('SELECT role FROM vpn_servers WHERE id = ?');
+        $st->execute([$serverId]);
+        if ($st->fetchColumn() !== 'front') {
+            return false;
+        }
+    } catch (Throwable $e) {
+        return false; // role column not migrated yet
+    }
+    $msg = 'Это RU-фронт (relay): VPN-протоколы, клиенты и пулы на нём не используются — управление на странице «Пулы».';
+    if ($json) {
+        http_response_code(400);
+        header('Content-Type: application/json');
+        echo json_encode(['success' => false, 'error' => $msg, 'message' => $msg], JSON_UNESCAPED_UNICODE);
+    } else {
+        $_SESSION['error_message'] = $msg;
+        redirect('/pools');
+    }
+    return true;
+}
+
 function debugRoutesEnabled(): bool
 {
     $val = strtolower((string) (getenv('ENABLE_DEBUG_ROUTES') ?: ''));
