@@ -266,6 +266,23 @@ class BackupManager
     }
 
     /** Execute a dump SQL string statement-by-statement. */
+    /** True if $sql ends inside a single-quoted literal (PDO::quote escapes with backslashes). */
+    private static function hasOpenQuote(string $sql): bool
+    {
+        return substr_count((string) preg_replace('/\\\\./s', '', $sql), "'") % 2 === 1;
+    }
+
+    /** Drop whole-line "-- ..." comments at the start of a chunk (they precede real statements). */
+    private static function stripLeadingComments(string $sql): string
+    {
+        $sql = trim($sql);
+        while (str_starts_with($sql, '--')) {
+            $nl = strpos($sql, "\n");
+            $sql = $nl === false ? '' : trim(substr($sql, $nl + 1));
+        }
+        return $sql;
+    }
+
     private static function loadDatabase(string $sql): void
     {
         $pdo = DB::conn();
@@ -273,31 +290,28 @@ class BackupManager
         // Split on ";\n" boundaries; good enough for our own dumps (values are
         // single-quoted via PDO::quote, and CREATE statements end with ";\n").
         // A value MAY legitimately contain ";\n", which splits a statement in
-        // two — so on failure we append the next chunk and retry. But a genuine
-        // SQL error must NOT be swallowed: this is a disaster-recovery restore,
-        // and silently reporting success on a half-loaded control plane is the
-        // worst outcome. Track failures and throw so restoreBackup() reports it.
+        // two — detect that by an unterminated quote and glue the next chunk.
+        // A genuine SQL error must NOT be swallowed (nor glued onto every later
+        // statement): this is a disaster-recovery restore, and silently loading
+        // half a control plane is the worst outcome — collect and throw.
         $buffer = '';
         $errors = [];
         $chunks = preg_split('/;\r?\n/', $sql) ?: [];
-        $last = count($chunks) - 1;
-        foreach ($chunks as $i => $chunk) {
-            $stmt = trim($buffer . $chunk);
+        foreach ($chunks as $chunk) {
+            $stmt = $buffer . $chunk;
+            if (self::hasOpenQuote($stmt)) {
+                $buffer = $stmt . ";\n";
+                continue;
+            }
             $buffer = '';
-            if ($stmt === '' || str_starts_with($stmt, '--')) {
+            $stmt = self::stripLeadingComments($stmt);
+            if ($stmt === '') {
                 continue;
             }
             try {
                 $pdo->exec($stmt);
             } catch (Throwable $e) {
-                if ($i < $last) {
-                    // Might be a value split by the naive boundary — glue the
-                    // next chunk and retry on the following iteration.
-                    $buffer = $stmt . ";\n";
-                } else {
-                    // No more chunks to glue: this is a real failure.
-                    $errors[] = $e->getMessage();
-                }
+                $errors[] = $e->getMessage() . ' [' . substr(preg_replace('/\s+/', ' ', $stmt), 0, 80) . ']';
             }
         }
         // Anything still buffered never executed successfully.
