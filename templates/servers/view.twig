@@ -189,8 +189,13 @@
           document.getElementById('poolName').textContent = d.pool.name;
           document.getElementById('poolDomain').textContent = d.pool.domain || '(не задан)';
           document.getElementById('poolEndpoint').textContent = (d.pool.domain || '?') + ':' + (d.pool.vpn_port || 443);
+          const onFront = !!(d.front && d.front.dns_mode === 'front');
           const activeUp = (d.members.find(m => m.role === 'active') || {}).dns_points_here;
-          setBadge(activeUp ? 'домен → активный' : 'домен ≠ активный', activeUp ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700');
+          if (onFront) {
+            setBadge('домен → RU-фронт ' + (d.front.host || ''), 'bg-brand-100 text-brand-800');
+          } else {
+            setBadge(activeUp ? 'домен → активный' : 'домен ≠ активный', activeUp ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700');
+          }
           const rows = d.members.map(m => {
             const roleBadge = m.role === 'active'
               ? '<span class="px-1.5 py-0.5 rounded text-sm bg-green-100 text-green-700">ACTIVE</span>'
@@ -208,7 +213,9 @@
                   : (probedOk
                       ? `<span title="${esc(m.validation_note)} — инфра доступна; чистоту для цензурируемых сетей подтвердит канарейка" class="px-1.5 py-0.5 rounded text-sm bg-sky-100 text-sky-700"><i class="fas fa-plug"></i> инфра ок</span>`
                       : `<span title="ещё не проверялся handshake-пробником" class="px-1.5 py-0.5 rounded text-sm bg-gray-100 text-gray-500">не проверен</span>`));
-            const dnsMismatch = (m.dns_points_here && m.role !== 'active')
+            const inRelay = onFront && (d.front.backends || []).includes(m.host);
+            const relayBadge = inRelay ? '<span title="принимает клиентов через RU-фронт" class="px-1.5 py-0.5 rounded text-sm bg-brand-100 text-brand-800">relay</span>' : '';
+            const dnsMismatch = onFront ? '' : (m.dns_points_here && m.role !== 'active')
               ? `<span title="домен резолвится сюда, но активным в пуле числится другой сервер — рассинхрон DNS↔пул" class="px-1.5 py-0.5 rounded text-sm bg-orange-100 text-orange-800"><i class="fas fa-triangle-exclamation"></i> домен ведёт сюда (не активный)</span>`
               : ((!m.dns_points_here && m.role === 'active')
                   ? `<span title="числится активным, но домен резолвится не сюда" class="px-1.5 py-0.5 rounded text-sm bg-orange-100 text-orange-800"><i class="fas fa-triangle-exclamation"></i> активный, но домен не здесь</span>`
@@ -222,7 +229,7 @@
                 : `<button data-markclean="1" data-mid="${m.id}" class="px-2 py-0.5 rounded text-sm bg-green-600 hover:bg-green-700 text-white" title="Пометить проверенным — станет доступен для авто-failover">Пометить годным</button>`),
             ].join(' ');
             return `<div class="flex items-center justify-between border rounded px-2 py-1 bg-white">
-              <div class="text-sm">${dnsMark} <b>${esc(m.name)}</b>${here} <span class="text-gray-400 font-mono">${esc(m.host)}</span> ${roleBadge} ${syncBadge} ${valBadge} <span class="text-sm text-gray-400">pri ${m.priority}·${esc(m.status)}</span></div>
+              <div class="text-sm">${dnsMark} <b>${esc(m.name)}</b>${here} <span class="text-gray-400 font-mono">${esc(m.host)}</span> ${roleBadge} ${relayBadge} ${syncBadge} ${valBadge} <span class="text-sm text-gray-400">pri ${m.priority}·${esc(m.status)}</span></div>
               <div class="flex gap-1">${act}</div>
             </div>`;
           }).join('');

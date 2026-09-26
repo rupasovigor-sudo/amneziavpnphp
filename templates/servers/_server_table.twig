@@ -53,7 +53,9 @@
           <div class="text-xs text-gray-400 font-mono truncate">{{ server.host }}</div>
         </td>
         <td class="px-4 py-3">
-          {% if server.pool_name %}
+          {% if server.role is defined and server.role == 'front' %}
+            <span class="inline-flex items-center gap-1 px-2 py-0.5 bg-brand-100 text-brand-800 rounded text-xs"><i class="fas fa-right-to-bracket"></i>RU-фронт</span>
+          {% elseif server.pool_name %}
             <div class="text-xs text-gray-500 truncate mb-1">{{ server.pool_name }}</div>
             {% if server.pool_role == 'active' %}
               <span class="inline-flex items-center gap-1 px-2 py-0.5 bg-green-100 text-green-800 rounded text-xs"><i class="fas fa-circle text-[7px]"></i>ACTIVE</span>

@@ -6,6 +6,9 @@
 {{ ui.page_header('Здоровье пулов', 'Активный/резерв, DNS, готовность к failover — по всем пулам одним экраном') }}
 
 <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+  {% if flash_error %}
+  <div class="mb-4 bg-red-50 border-l-4 border-red-400 p-4 rounded text-sm text-red-700"><i class="fas fa-exclamation-circle mr-2"></i>{{ flash_error }}</div>
+  {% endif %}
   {% for p in pools %}
   {% set pool = p.pool %}
   <div class="card mb-6 overflow-hidden">
@@ -88,9 +91,190 @@
         </tbody>
       </table>
     </div>
+
+    {# ── RU-фронт (entry relay) ── #}
+    {% set fs = fronts[pool.id] ?? null %}
+    {% set countries = ['DE','US','FI','SE','NL','GB','FR','PL','EE','LV','LT','TR','KZ'] %}
+    <div class="border-t border-gray-100 px-5 py-4">
+      <h3 class="section-title justify-between">
+        <span class="flex items-center gap-2"><i class="fas fa-right-to-bracket"></i>RU-фронт — вход через российский IP</span>
+        {% if fs %}
+          {% if fs.down %}<span class="badge-red">фронт недоступен</span>{% else %}<span class="badge-green">relay работает</span>{% endif %}
+        {% endif %}
+      </h3>
+
+      {% if not fs %}
+        <p class="text-sm text-gray-500 mb-3 leading-snug">
+          Клиенты подключаются к серверу-фронту (например, в РФ), а он прозрачно пересылает трафик на серверы этого пула — выход в интернет остаётся через пул и WARP.
+          Ключи на фронте не хранятся. Подойдёт чистый Ubuntu: панель сама поставит relay. Домен пула не переключается, пока вы не нажмёте кнопку.
+        </p>
+        <form class="js-front-register grid grid-cols-1 md:grid-cols-3 gap-3 text-sm" data-pool="{{ pool.id }}">
+          <label class="block">Название <input name="name" class="mt-1 w-full px-2 py-1.5 border rounded" placeholder="ru-front-1"></label>
+          <label class="block">IPv4 фронта <input name="host" required class="mt-1 w-full px-2 py-1.5 border rounded font-mono" placeholder="85.192.56.6"></label>
+          <label class="block">Основная страна выхода
+            <select name="primary_country" class="mt-1 w-full px-2 py-1.5 border rounded">
+              {% for c in countries %}<option value="{{ c }}">{{ c }}</option>{% endfor %}
+            </select></label>
+          <label class="block">SSH-порт <input name="port" type="number" value="22" class="mt-1 w-full px-2 py-1.5 border rounded"></label>
+          <label class="block">Пользователь <input name="username" value="root" class="mt-1 w-full px-2 py-1.5 border rounded"></label>
+          <label class="block">Пароль <input name="password" type="password" autocomplete="new-password" class="mt-1 w-full px-2 py-1.5 border rounded"></label>
+          <div class="md:col-span-3">
+            <button type="submit" class="btn-primary"><i class="fas fa-plug"></i>Подключить фронт</button>
+            <span class="text-xs text-gray-400 ml-2">установка занимает до пары минут</span>
+          </div>
+        </form>
+      {% else %}
+        {% set f = fs.front %}
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-4 text-sm mb-4">
+          <div>
+            <div class="text-xs uppercase tracking-wide text-gray-400 mb-1">Фронт</div>
+            <div class="font-medium">{{ f.server_name }}</div>
+            <div class="font-mono text-gray-500">{{ f.server_host }}</div>
+            <div class="text-xs mt-1">
+              SSH {{ fs.health.ssh ? '✓' : '✗' }} · relay {{ fs.health.front_relay ? '✓' : '✗' }}
+            </div>
+          </div>
+          <div>
+            <div class="text-xs uppercase tracking-wide text-gray-400 mb-1">Домен пула указывает на</div>
+            {% if f.dns_mode == 'front' %}
+              <span class="badge-brand">RU-фронт</span>
+              <div class="mt-2"><button type="button" class="btn-secondary js-front-act" data-pool="{{ pool.id }}" data-act="domain" data-body='{"target":"member"}' data-confirm-text="Вернуть домен пула напрямую на активный сервер? Клиенты перестанут входить через фронт (после переподключения).">Вернуть на сервер</button></div>
+            {% else %}
+              <span class="badge-gray">активный сервер</span>
+              <div class="mt-2"><button type="button" class="btn-primary js-front-act" data-pool="{{ pool.id }}" data-act="domain" data-body='{"target":"front"}' data-confirm-text="Переключить домен пула на RU-фронт {{ f.server_host }}? Клиенты начнут входить через него после переподключения. Конфиги менять не нужно.">Направить домен на фронт</button></div>
+            {% endif %}
+          </div>
+          <div>
+            <div class="text-xs uppercase tracking-wide text-gray-400 mb-1">Основная страна выхода</div>
+            <div class="flex items-center gap-2">
+              <select class="js-front-country px-2 py-1 border rounded" data-pool="{{ pool.id }}">
+                {% set cl = countries|merge([f.primary_country])|merge(fs.calc.members|map(m => m.egress_country)|filter(c => c))|reduce((acc, c) => c in acc ? acc : acc|merge([c]), []) %}
+                {% for c in cl %}<option value="{{ c }}" {{ c == f.primary_country ? 'selected' }}>{{ c }}</option>{% endfor %}
+              </select>
+            </div>
+            <div class="text-xs text-gray-400 mt-1">серверы этой страны балансируются, остальные — резерв</div>
+          </div>
+          <div>
+            <div class="text-xs uppercase tracking-wide text-gray-400 mb-1">Сейчас в работе</div>
+            {% if fs.calc.tier == 'primary' %}<span class="badge-green">основная группа</span>
+            {% elseif fs.calc.tier == 'reserve' %}<span class="badge-yellow">резерв (другая страна)</span>
+            {% else %}<span class="badge-red">нет здоровых серверов</span>{% endif %}
+            <div class="text-xs text-gray-400 mt-1">{{ f.last_push_msg }}{% if f.last_push_at %} · {{ f.last_push_at }}{% endif %}</div>
+          </div>
+        </div>
+
+        <div class="overflow-x-auto">
+          <table class="min-w-full text-sm">
+            <thead class="bg-gray-50 text-gray-600">
+              <tr>
+                <th class="px-3 py-2 text-left font-medium">Сервер пула</th>
+                <th class="px-3 py-2 text-left font-medium">Страна выхода</th>
+                <th class="px-3 py-2 text-left font-medium">Группа</th>
+                <th class="px-3 py-2 text-left font-medium">В ротации</th>
+                <th class="px-3 py-2 text-left font-medium">Примечание</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-100">
+              {% for m in fs.calc.members %}
+              <tr class="hover:bg-gray-50">
+                <td class="px-3 py-2"><div class="font-medium">{{ m.name }}</div><div class="text-xs text-gray-500 font-mono">{{ m.host }}</div></td>
+                <td class="px-3 py-2">
+                  {% if m.egress_country %}<span class="font-medium">{{ m.egress_country }}</span>{% else %}<span class="text-gray-400">не определена</span>{% endif %}
+                  {% if m.egress_ip %}<div class="text-xs text-gray-400 font-mono">{{ m.egress_ip }}</div>{% endif %}
+                </td>
+                <td class="px-3 py-2">
+                  <select class="js-front-group px-2 py-1 border rounded" data-pool="{{ pool.id }}" data-server="{{ m.id }}">
+                    <option value="auto" {{ m.relay_group is null ? 'selected' }}>авто ({{ m.group == 'primary' ? 'основная' : 'резерв' }})</option>
+                    <option value="primary" {{ m.relay_group == 'primary' ? 'selected' }}>основная</option>
+                    <option value="reserve" {{ m.relay_group == 'reserve' ? 'selected' }}>резерв</option>
+                    <option value="off" {{ m.relay_group == 'off' ? 'selected' }}>выключен</option>
+                  </select>
+                </td>
+                <td class="px-3 py-2">{% if m.in_rotation %}<span class="badge-green">да</span>{% else %}<span class="badge-gray">нет</span>{% endif %}</td>
+                <td class="px-3 py-2 text-xs text-gray-500">{{ m.reason }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+
+        <div class="mt-3 flex items-center gap-2 flex-wrap">
+          <button type="button" class="btn-secondary js-front-act" data-pool="{{ pool.id }}" data-act="sync"><i class="fas fa-rotate"></i>Синхронизировать</button>
+          <button type="button" class="btn-secondary js-front-act" data-pool="{{ pool.id }}" data-act="detect"><i class="fas fa-earth-europe"></i>Определить страны</button>
+          <button type="button" class="btn-secondary js-front-act" data-pool="{{ pool.id }}" data-act="reinstall" data-confirm-text="Переустановить relay на фронте (идемпотентно)?"><i class="fas fa-screwdriver-wrench"></i>Переустановить relay</button>
+          <button type="button" class="btn-danger js-front-act" data-pool="{{ pool.id }}" data-act="remove" data-confirm-text="Отвязать фронт от пула? Relay на нём будет очищен. Домен должен уже указывать на сервер."><i class="fas fa-link-slash"></i>Отвязать фронт</button>
+        </div>
+        <p class="mt-2 text-xs text-gray-400 leading-snug">
+          Панель каждую минуту пересчитывает бэкенды: упавший или не синхронизированный сервер выбывает, его сессии перекидываются на живые. Если недоступен сам фронт, домен автоматически уходит напрямую на здоровый сервер (обратно — кнопкой).
+        </p>
+      {% endif %}
+    </div>
   </div>
   {% else %}
   {{ ui.empty_state('fa-layer-group', 'Пулов пока нет', '') }}
   {% endfor %}
 </div>
+
+<script nonce="{{ csp_nonce }}">
+(function () {
+  function post(poolId, act, body) {
+    return fetch('/pools/' + poolId + '/front/' + act, {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body || {})
+    }).then(function (r) { return r.json(); });
+  }
+  function done(d, reload) {
+    var ok = d && d.success;
+    showToast((d && (d.message || d.error)) || (ok ? 'Готово' : 'Ошибка'), ok ? 'success' : 'error');
+    if (ok && reload) setTimeout(function () { location.reload(); }, 1200);
+  }
+
+  document.querySelectorAll('.js-front-register').forEach(function (form) {
+    form.addEventListener('submit', function (e) {
+      e.preventDefault();
+      var btn = form.querySelector('button[type="submit"]');
+      var body = {};
+      new FormData(form).forEach(function (v, k) { body[k] = v; });
+      setBtnLoading(btn, true, 'Установка relay…');
+      post(form.dataset.pool, 'register', body)
+        .then(function (d) { done(d, true); })
+        .catch(function (err) { showToast('Ошибка: ' + err, 'error'); })
+        .finally(function () { setBtnLoading(btn, false); });
+    });
+  });
+
+  document.querySelectorAll('.js-front-act').forEach(function (btn) {
+    btn.addEventListener('click', async function () {
+      var confirmText = btn.dataset.confirmText;
+      if (confirmText && !(await showConfirmModal(confirmText, 'Подтверждение', 'Да'))) return;
+      var body = {};
+      try { body = btn.dataset.body ? JSON.parse(btn.dataset.body) : {}; } catch (e) {}
+      setBtnLoading(btn, true);
+      post(btn.dataset.pool, btn.dataset.act, body)
+        .then(function (d) { done(d, true); })
+        .catch(function (err) { showToast('Ошибка: ' + err, 'error'); })
+        .finally(function () { setBtnLoading(btn, false); });
+    });
+  });
+
+  document.querySelectorAll('.js-front-group').forEach(function (sel) {
+    sel.addEventListener('change', function () {
+      sel.disabled = true;
+      post(sel.dataset.pool, 'group', {server_id: Number(sel.dataset.server), group: sel.value})
+        .then(function (d) { done(d, true); })
+        .catch(function (err) { showToast('Ошибка: ' + err, 'error'); })
+        .finally(function () { sel.disabled = false; });
+    });
+  });
+
+  document.querySelectorAll('.js-front-country').forEach(function (sel) {
+    sel.addEventListener('change', function () {
+      sel.disabled = true;
+      post(sel.dataset.pool, 'country', {country: sel.value})
+        .then(function (d) { done(d, true); })
+        .catch(function (err) { showToast('Ошибка: ' + err, 'error'); })
+        .finally(function () { sel.disabled = false; });
+    });
+  });
+})();
+</script>
 {% endblock %}
