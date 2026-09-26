@@ -1053,13 +1053,17 @@ SWAP;
     }
     public static function activate(VpnServer $server, array $protocol, array $options = []): array
     {
-        // A deploy is an explicit "I am provisioning this host" action, so a
-        // changed host key here is expected (fresh OS on a reused IP) rather
-        // than suspicious. Clear the pin so accept-new can record the new one;
-        // steady-state operations keep the strict check.
+        // A first deploy is an explicit "I am provisioning this host" action, so
+        // a changed host key there is expected (fresh OS on a reused IP) rather
+        // than suspicious. Clear the pin so accept-new can record the new one.
+        // Routine activations on a live server (WARP reinstall, awg2 rebuild,
+        // pool join) keep the strict check — re-trusting on every one of them
+        // opened a MITM window for the root password.
         try {
             $sd = $server->getData();
-            if (!empty($sd['host'])) {
+            $provisioning = in_array((string) ($sd['status'] ?? ''), ['deploying', 'error'], true)
+                || !empty($options['reprovision']);
+            if (!empty($sd['host']) && $provisioning) {
                 Ssh::forgetHost((string) $sd['host'], (int) ($sd['port'] ?? 22));
             }
         } catch (Throwable $e) {

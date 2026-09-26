@@ -123,7 +123,9 @@ register_pool() {
         read -r peer endpoint v4 cid <<<"$out"
         if [ -n "$peer" ] && [ -n "$endpoint" ] && [ -n "$v4" ]; then
           mkdir -p "$PROFILE_DIR/$slot"
-          # setconf-ready (no Address/DNS/MTU — those go on the interface)
+          # setconf-ready (no Address/DNS/MTU — those go on the interface).
+          # Holds the profile's private key: create it 0600, not umask 022.
+          install -m 600 /dev/null "$PROFILE_DIR/$slot/profile.setconf"
           {
             echo "[Interface]"
             echo "PrivateKey = $priv"
@@ -386,6 +388,9 @@ start_egress() {
   local ips vpn_port
   need_awg2_container
   mkdir -p "$STATE_DIR" "$PROFILE_DIR"
+  # Profiles registered by older versions were world-readable (0644).
+  chmod 700 "$PROFILE_DIR" 2>/dev/null || true
+  find "$PROFILE_DIR" -name profile.setconf -exec chmod 600 {} + 2>/dev/null || true
   cleanup_runtime
   install_packages
   register_pool

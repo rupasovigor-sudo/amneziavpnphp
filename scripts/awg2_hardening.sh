@@ -11,6 +11,8 @@
 #    banaction=iptables-allports blocks a hitting IP on every port, so no
 #    SSH-port detection is needed (also keeps this file quote-free, which
 #    matters because it is embedded verbatim into a SQL migration).
+#    ignoreip includes ${SSH_CLIENT%% *} — the panel's own address, since
+#    this runs over the panel's SSH session — so the panel is never banned.
 # 2. UDP socket buffers — amneziawg-go (userspace) asks for a ~7MB socket
 #    buffer but is clamped at the 4MB default, dropping packets under
 #    CPU-bound bursts on a 1-vCPU box. Raising the max lets it use the
@@ -32,6 +34,7 @@ maxretry = 5
 findtime = 600
 bantime = 3600
 banaction = iptables-allports
+ignoreip = 127.0.0.1/8 ::1 ${SSH_CLIENT%% *}
 F2BEOF
     systemctl enable fail2ban >/dev/null 2>&1
     systemctl restart fail2ban >/dev/null 2>&1 || service fail2ban restart >/dev/null 2>&1
@@ -47,6 +50,7 @@ net.core.wmem_max = 8388608
 SYSCTLEOF
   sysctl -p /etc/sysctl.d/99-amnezia-awg2.conf >/dev/null 2>&1
   echo "hardening: sysctl applied"
+  chmod 600 ${HOST_CONFIG_DIR:-/opt/amnezia/awg2}/*.key >/dev/null 2>&1; echo "hardening: key files 0600"
 
   # Ensure NTP time sync is on: WireGuard handshake timestamps and correct log
   # timestamps both depend on a roughly correct clock. Idempotent no-op if
