@@ -100,6 +100,23 @@ class VpnServer
     /**
      * Create new VPN server in database
      */
+    /**
+     * Canonical endpoint domain: lowercase, no surrounding dots/"@". Returns null
+     * for empty, throws on anything that isn't a hostname — the value is used
+     * as a DNS record name and in the DNS provider's URL path.
+     */
+    public static function normalizeDomain(?string $domain): ?string
+    {
+        $domain = strtolower(trim(ltrim(trim((string) $domain), '@'), ". \t\n"));
+        if ($domain === '') {
+            return null;
+        }
+        if (!preg_match('/^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/', $domain)) {
+            throw new Exception('Invalid domain name');
+        }
+        return $domain;
+    }
+
     public static function create(array $data): int
     {
         $pdo = DB::conn();
@@ -115,6 +132,29 @@ class VpnServer
         if (empty($data['password']) && empty($data['ssh_key'])) {
             throw new Exception("Either password or SSH key is required");
         }
+        $data['host'] = trim((string) $data['host']);
+        $data['username'] = trim((string) $data['username']);
+        if (!Ssh::isValidHost($data['host'])) {
+            throw new Exception('Invalid host: expected an IP address or hostname');
+        }
+        if (!Ssh::isValidUsername($data['username'])) {
+            throw new Exception('Invalid SSH username');
+        }
+        $port = (int) $data['port'];
+        if ($port < 1 || $port > 65535) {
+            throw new Exception('Invalid SSH port');
+        }
+        $data['port'] = $port;
+        // The subnet is templated into install scripts run as root remotely.
+        if (isset($data['vpn_subnet']) && $data['vpn_subnet'] !== '') {
+            $subnet = trim((string) $data['vpn_subnet']);
+            [$net, $bits] = array_pad(explode('/', $subnet, 2), 2, '');
+            if (filter_var($net, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) === false
+                || !ctype_digit($bits) || (int) $bits < 8 || (int) $bits > 30) {
+                throw new Exception('Invalid VPN subnet (expected e.g. 10.8.1.0/24)');
+            }
+            $data['vpn_subnet'] = $net . '/' . (int) $bits;
+        }
 
         $protocolSlug = trim((string) ($data['install_protocol'] ?? ''));
         if ($protocolSlug === '') {
@@ -128,8 +168,7 @@ class VpnServer
             $installOptions = trim($installOptions) === '' ? null : $installOptions;
         }
 
-        $domain = isset($data['domain']) ? trim((string) $data['domain']) : '';
-        $domain = $domain !== '' ? ltrim($domain, '@') : null;
+        $domain = self::normalizeDomain(isset($data['domain']) ? (string) $data['domain'] : null);
 
         $stmt = $pdo->prepare('
             INSERT INTO vpn_servers

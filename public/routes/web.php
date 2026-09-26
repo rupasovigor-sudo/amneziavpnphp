@@ -22,12 +22,9 @@ Router::get('/login', function () {
 });
 
 Router::post('/login', function () {
-    $email = trim($_POST['email'] ?? '');
-    $password = $_POST['password'] ?? '';
-    $rateIdentity = strtolower($email) . '|' . clientIp();
-    $rateWindow = configInt('LOGIN_RATE_LIMIT_WINDOW_SECONDS', 300);
-    $rateLimit = configInt('LOGIN_RATE_LIMIT_ATTEMPTS', 10);
-    $rate = rateLimitExceeded('login', $rateIdentity, $rateLimit, $rateWindow);
+    $email = is_string($_POST['email'] ?? null) ? trim($_POST['email']) : '';
+    $password = is_string($_POST['password'] ?? null) ? $_POST['password'] : '';
+    $rate = authThrottleCheck($email);
 
     if ($rate['limited']) {
         http_response_code(429);
@@ -36,11 +33,11 @@ Router::post('/login', function () {
     }
 
     if (Auth::login($email, $password)) {
-        clearRateLimit('login', $rateIdentity);
+        authThrottleSuccess($email);
         redirect('/dashboard');
     }
 
-    recordRateLimitFailure('login', $rateIdentity, $rateWindow);
+    authThrottleFail($email);
     View::render('login.twig', ['error' => 'Invalid credentials']);
 });
 
@@ -351,8 +348,10 @@ Router::post('/servers/{id}/deploy', function ($params) {
         // active member — or a standalone server — updates the A-record.
         $domain = trim((string) ($serverData['domain'] ?? ''));
         $memberPoolId = (int) ($serverData['pool_id'] ?? 0);
-        $mayRepoint = true;
-        if ($domain !== '') {
+        // The DNS token belongs to the panel owner: only an admin's deploy may
+        // write A-records (a user could otherwise repoint any name in the zone).
+        $mayRepoint = Auth::isAdmin();
+        if ($domain !== '' && $mayRepoint) {
             // Never let a non-active node hijack a pool's shared domain. This must
             // catch a STANDALONE server that merely carries the same domain (e.g.
             // a freshly provisioned server before it is deliberately made active),
@@ -1592,7 +1591,9 @@ Router::get('/servers/{id}/monitoring', function ($params) {
 
         View::render('servers/monitoring.twig', [
             'server' => VpnServer::redactServerSecrets($serverData),
-            'clients' => $clients,
+            // Only what the speed widget needs — the full rows carried key
+            // material, configs and QR blobs into the page source.
+            'clients' => array_map(static fn($c) => ['id' => (int) $c['id'], 'name' => (string) $c['name']], $clients),
         ]);
     } catch (Exception $e) {
         http_response_code(404);

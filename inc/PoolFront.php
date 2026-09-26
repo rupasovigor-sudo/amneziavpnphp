@@ -101,6 +101,9 @@ class PoolFront
         $username = trim((string) ($in['username'] ?? 'root')) ?: 'root';
         $password = (string) ($in['password'] ?? '');
         $sshKey = trim((string) ($in['ssh_key'] ?? ''));
+        if (!Ssh::isValidUsername($username) || $port < 1 || $port > 65535) {
+            return ['success' => false, 'message' => 'Неверный SSH-пользователь или порт'];
+        }
         if ($password === '' && $sshKey === '') {
             return ['success' => false, 'message' => 'Нужен пароль или SSH-ключ'];
         }

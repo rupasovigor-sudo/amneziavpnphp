@@ -69,6 +69,7 @@ class Ssh
         $mergeStderr = ($opts['stderr'] ?? 'merge') !== 'discard';
 
         [$argv, $env, $keyFile] = self::buildClientArgv('ssh', $server, $timeout);
+        $argv[] = '--';
         $argv[] = self::destination($server);
         $argv[] = $command;
 
@@ -93,6 +94,7 @@ class Ssh
         chmod($localFile, 0600);
 
         [$argv, $env, $keyFile] = self::buildClientArgv('scp', $server, 300);
+        $argv[] = '--';
         $argv[] = $localFile;
         $argv[] = self::destination($server) . ':' . $remotePath;
 
@@ -343,7 +345,29 @@ class Ssh
 
     private static function destination(array $server): string
     {
-        return $server['username'] . '@' . $server['host'];
+        // Defense in depth: a value starting with "-" would be parsed by ssh as
+        // an option (-oProxyCommand=... runs a local command in the panel).
+        $user = (string) ($server['username'] ?? '');
+        $host = (string) ($server['host'] ?? '');
+        if (!self::isValidUsername($user) || !self::isValidHost($host)) {
+            throw new RuntimeException('Invalid SSH username or host');
+        }
+        return $user . '@' . $host;
+    }
+
+    /** POSIX-ish login name: no leading dash, no shell/ssh metacharacters. */
+    public static function isValidUsername(string $user): bool
+    {
+        return (bool) preg_match('/^[a-z_][a-z0-9_.-]{0,31}$/i', $user);
+    }
+
+    /** IPv4/IPv6 literal or a DNS hostname (no leading dash). */
+    public static function isValidHost(string $host): bool
+    {
+        if (filter_var($host, FILTER_VALIDATE_IP) !== false) {
+            return true;
+        }
+        return (bool) preg_match('/^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/i', $host);
     }
 
     private static function runProcess(array $argv, ?array $env, bool $mergeStderr): SshResult

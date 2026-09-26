@@ -104,11 +104,12 @@ class ServerPool
      */
     public static function findByDomain(string $domain): ?array
     {
-        $domain = trim($domain);
+        // Compare canonically: "Pool.Example.com." must still match the pool.
+        $domain = strtolower(trim(ltrim(trim($domain), '@'), ". \t\n"));
         if ($domain === '') {
             return null;
         }
-        $stmt = DB::conn()->prepare('SELECT * FROM server_pools WHERE domain = ? LIMIT 1');
+        $stmt = DB::conn()->prepare("SELECT * FROM server_pools WHERE LOWER(TRIM(BOTH '.' FROM domain)) = ? LIMIT 1");
         $stmt->execute([$domain]);
         $pool = $stmt->fetch(PDO::FETCH_ASSOC);
         return $pool ? self::decryptPool($pool) : null;
