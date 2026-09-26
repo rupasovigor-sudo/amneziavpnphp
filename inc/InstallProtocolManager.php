@@ -235,6 +235,12 @@ class InstallProtocolManager
             }
 
             $installMode = $options['install_mode'] ?? null;
+            // Only an explicit restore/reinstall decision may skip detection; any
+            // other value (e.g. a serialized browser event) must not force a
+            // clean install over an existing configuration.
+            if (!in_array($installMode, ['restore', 'reinstall'], true)) {
+                $installMode = null;
+            }
             $decisionToken = $options['decision_token'] ?? null;
             $serverId = $server->getId();
             $detectionPayload = null;

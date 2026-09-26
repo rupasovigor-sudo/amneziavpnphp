@@ -67,6 +67,9 @@ function showActions(options) {
 }
 
 function deploy(mode) {
+  // The data-action dispatcher calls deploy(event): only a string is a mode —
+  // anything else would skip existing-install detection and force a clean install.
+  if (typeof mode !== 'string') mode = '';
   const payload = {};
   if (mode) {
     payload.install_mode = mode;
