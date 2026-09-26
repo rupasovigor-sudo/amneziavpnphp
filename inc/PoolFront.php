@@ -270,7 +270,9 @@ SH;
                 $reason = 'ждёт ре-синка пиров';
             } elseif (self::checksOpen($id, self::MEMBER_DOWN_CHECKS, 2)) {
                 $reason = 'health-проверки падают';
-            } elseif (self::checksOpen($id, ['pool_peers'], 1)) {
+            } elseif (self::checksOpen($id, ['pool_peers'], 2)) {
+                // 2, not 1: client create writes the DB row before pushing the
+                // peer member by member, so one short count is a benign race.
                 $reason = 'неполный набор пиров';
             }
 
@@ -361,8 +363,17 @@ SH;
                 $flush .= 'conntrack -D -p udp --reply-src ' . $ip . ' >/dev/null 2>&1; ';
             }
         }
-        $cmd = 'set -e; mkdir -p /etc/amnezia; echo ' . $b64 . ' | base64 -d > /etc/amnezia/relay.nft.new; '
-            . 'nft -c -f /etc/amnezia/relay.nft.new; mv /etc/amnezia/relay.nft.new /etc/amnezia/relay.nft; '
+        if (!$old && $new) {
+            // While there were no backends, client retries created un-NATed
+            // flows to the front itself; NAT only applies to a flow's first
+            // packet and the ~5s retries keep those entries alive, so without
+            // this the clients stay blackholed after members come back.
+            $flush .= 'conntrack -D -p udp --orig-port-dst ' . $port . ' >/dev/null 2>&1; ';
+        }
+        // mktemp: the web "sync" button and the collector may push concurrently.
+        $cmd = 'set -e; mkdir -p /etc/amnezia; T=$(mktemp /etc/amnezia/relay.nft.XXXXXX); '
+            . 'echo ' . $b64 . ' | base64 -d > "$T"; '
+            . 'nft -c -f "$T"; mv "$T" /etc/amnezia/relay.nft; chmod 644 /etc/amnezia/relay.nft; '
             . 'nft -f /etc/amnezia/relay.nft; set +e; ' . $flush . 'echo PUSH_OK';
 
         try {
@@ -411,7 +422,7 @@ SH;
      * Monitoring-cycle pass for every front: keep the backend set current, and
      * fall the pool domain back to a healthy member when the front is down.
      */
-    public static function syncAll(int $threshold = 2): array
+    public static function syncAll(int $threshold = 2, bool $autoFallback = true): array
     {
         $results = [];
         try {
@@ -420,35 +431,52 @@ SH;
             return $results;
         }
         foreach ($fronts as $poolId) {
-            $poolId = (int) $poolId;
-            $front = self::forPool($poolId);
-            if (!$front) {
-                continue;
-            }
-            $sid = (int) $front['server_id'];
-            if (self::frontDown($sid, $threshold)) {
-                if ($front['dns_mode'] === 'front') {
-                    $fb = self::pointDomainToMember($poolId, 'auto_front_down');
-                    self::event($front, 'pool_front_fallback', $fb['success']
-                        ? "RU-фронт {$front['server_name']} недоступен — домен пула переключён напрямую на сервер: " . ($fb['message'] ?? '')
-                        : "RU-фронт {$front['server_name']} недоступен, и переключить домен на сервер не удалось: " . ($fb['message'] ?? ''), 'critical');
-                    $results[] = ['pool' => $poolId, 'action' => 'front_fallback', 'ok' => $fb['success'], 'message' => $fb['message'] ?? ''];
+            // One pool's failure (SSH throw, DB hiccup) must not skip the rest.
+            try {
+                $r = self::syncOne((int) $poolId, $threshold, $autoFallback);
+                if ($r !== null) {
+                    $results[] = $r;
                 }
-                continue;
-            }
-            $res = self::sync($poolId);
-            if (!empty($res['changed'])) {
-                $results[] = ['pool' => $poolId, 'action' => 'front_push', 'ok' => $res['success'], 'message' => $res['message']];
-                if (($res['calc']['tier'] ?? '') === 'none' && $front['dns_mode'] === 'front') {
-                    self::event($front, 'pool_front_no_backends',
-                        "RU-фронт {$front['server_name']}: нет ни одного здорового сервера пула — клиенты не подключатся.", 'critical');
-                } elseif (($res['calc']['tier'] ?? '') === 'reserve') {
-                    self::event($front, 'pool_front_reserve',
-                        "RU-фронт {$front['server_name']}: серверов основной страны {$front['primary_country']} нет в строю — клиенты идут через резерв (другая страна выхода).", 'warning');
-                }
+            } catch (Throwable $e) {
+                $results[] = ['pool' => (int) $poolId, 'action' => 'front_error', 'ok' => false, 'message' => $e->getMessage()];
             }
         }
         return $results;
+    }
+
+    /** One front's monitoring pass; returns a log row when something happened. */
+    private static function syncOne(int $poolId, int $threshold, bool $autoFallback): ?array
+    {
+        $front = self::forPool($poolId);
+        if (!$front) {
+            return null;
+        }
+        if (self::frontDown((int) $front['server_id'], $threshold)) {
+            if ($front['dns_mode'] !== 'front') {
+                return null;
+            }
+            if (!$autoFallback) {
+                self::event($front, 'pool_front_down', "RU-фронт {$front['server_name']} недоступен, а авто-failover выключен — домен остаётся на фронте, переключите вручную.", 'critical');
+                return ['pool' => $poolId, 'action' => 'front_down', 'ok' => false, 'message' => 'auto-failover disabled'];
+            }
+            $fb = self::pointDomainToMember($poolId, 'auto_front_down');
+            self::event($front, 'pool_front_fallback', $fb['success']
+                ? "RU-фронт {$front['server_name']} недоступен — домен пула переключён напрямую на сервер: " . ($fb['message'] ?? '')
+                : "RU-фронт {$front['server_name']} недоступен, и переключить домен на сервер не удалось: " . ($fb['message'] ?? ''), 'critical');
+            return ['pool' => $poolId, 'action' => 'front_fallback', 'ok' => $fb['success'], 'message' => $fb['message'] ?? ''];
+        }
+        $res = self::sync($poolId);
+        if (empty($res['changed'])) {
+            return null;
+        }
+        if (($res['calc']['tier'] ?? '') === 'none' && $front['dns_mode'] === 'front') {
+            self::event($front, 'pool_front_no_backends',
+                "RU-фронт {$front['server_name']}: нет ни одного здорового сервера пула — клиенты не подключатся.", 'critical');
+        } elseif (($res['calc']['tier'] ?? '') === 'reserve') {
+            self::event($front, 'pool_front_reserve',
+                "RU-фронт {$front['server_name']}: серверов основной страны {$front['primary_country']} нет в строю — клиенты идут через резерв (другая страна выхода).", 'warning');
+        }
+        return ['pool' => $poolId, 'action' => 'front_push', 'ok' => $res['success'], 'message' => $res['message']];
     }
 
     // ------------------------------------------------------------ DNS target
@@ -475,11 +503,24 @@ SH;
         if (empty($sync['success']) || empty($sync['calc']['backends'])) {
             return ['success' => false, 'message' => 'Нет здоровых бэкендов для фронта: ' . ($sync['message'] ?? '')];
         }
-        $dns = DnsManager::upsertARecord($domain, (string) $front['server_host']);
-        if (empty($dns['success'])) {
-            return ['success' => false, 'message' => 'DNS не обновился: ' . ($dns['message'] ?? '')];
+        // Same per-pool lock as ServerPool::setActive(): a concurrent failover
+        // must not repoint DNS to a member between our upsert and the mode flip.
+        $db = DB::conn();
+        $lockName = 'amnezia_pool_active_' . $poolId;
+        $lk = $db->prepare('SELECT GET_LOCK(?, 10)');
+        $lk->execute([$lockName]);
+        if ((int) $lk->fetchColumn() !== 1) {
+            return ['success' => false, 'message' => 'Пул занят другим переключением — повторите через несколько секунд'];
         }
-        DB::conn()->prepare("UPDATE pool_fronts SET dns_mode = 'front' WHERE id = ?")->execute([(int) $front['id']]);
+        try {
+            $dns = DnsManager::upsertARecord($domain, (string) $front['server_host']);
+            if (empty($dns['success'])) {
+                return ['success' => false, 'message' => 'DNS не обновился: ' . ($dns['message'] ?? '')];
+            }
+            $db->prepare("UPDATE pool_fronts SET dns_mode = 'front' WHERE id = ?")->execute([(int) $front['id']]);
+        } finally {
+            $db->prepare('SELECT RELEASE_LOCK(?)')->execute([$lockName]);
+        }
         self::event($front, 'pool_domain_front', "Домен {$domain} переключён на RU-фронт {$front['server_name']} ({$front['server_host']}). " . $sync['message'], 'warning');
         return ['success' => true, 'message' => "Домен {$domain} → фронт {$front['server_host']}. " . $sync['message'] . ' Клиенты переедут при переподключении.'];
     }
@@ -499,11 +540,19 @@ SH;
             return ['success' => false, 'message' => 'Нет здорового сервера пула для переключения домена'];
         }
         // Flip first so setActive() repoints DNS (it skips DNS while on the front).
-        DB::conn()->prepare("UPDATE pool_fronts SET dns_mode = 'member' WHERE id = ?")->execute([(int) $front['id']]);
-        $res = ServerPool::setActive($poolId, $target, $reason);
-        if (empty($res['success'])) {
-            // Keep "front" so the next cycle retries instead of forgetting.
-            DB::conn()->prepare("UPDATE pool_fronts SET dns_mode = ? WHERE id = ?")->execute([$front['dns_mode'], (int) $front['id']]);
+        // On ANY failure — including an exception from SSH inside setActive —
+        // restore the previous mode: "member" with DNS still on a dead front
+        // would never be retried by the collector.
+        $db = DB::conn();
+        $db->prepare("UPDATE pool_fronts SET dns_mode = 'member' WHERE id = ?")->execute([(int) $front['id']]);
+        try {
+            $res = ServerPool::setActive($poolId, $target, $reason);
+        } catch (Throwable $e) {
+            $res = ['success' => false, 'message' => $e->getMessage()];
+        }
+        $dnsOk = !empty($res['success']) && (($res['dns']['action'] ?? '') !== 'skipped');
+        if (!$dnsOk) {
+            $db->prepare("UPDATE pool_fronts SET dns_mode = ? WHERE id = ?")->execute([$front['dns_mode'], (int) $front['id']]);
             return ['success' => false, 'message' => $res['message'] ?? 'setActive failed'];
         }
         return ['success' => true, 'message' => $res['message'] ?? 'ok'];

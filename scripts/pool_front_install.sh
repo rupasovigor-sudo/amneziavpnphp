@@ -64,10 +64,23 @@ WantedBy=multi-user.target
 UNITEOF
 systemctl daemon-reload
 systemctl enable amnezia-relay.service >/dev/null 2>&1
-nft -f /etc/amnezia/relay.nft 2>&1 | head -3
+# Load through the unit so it also reports "active"; the ruleset file begins
+# with add+delete table, so reloading is idempotent.
+if ! systemctl restart amnezia-relay.service; then
+    nft -c -f /etc/amnezia/relay.nft 2>&1 | head -5
+    echo "FRONT_FAIL: relay ruleset did not load"
+    exit 1
+fi
 
-if [ "$(sysctl -n net.ipv4.ip_forward)" = "1" ] && command -v nft >/dev/null 2>&1; then
+# A FORWARD DROP policy (ufw, docker) silently eats relayed packets.
+if command -v iptables >/dev/null 2>&1 && iptables -S FORWARD 2>/dev/null | grep -q '^-P FORWARD DROP'; then
+    echo "FRONT_FAIL: iptables FORWARD policy is DROP (ufw/docker?) - relay would forward nothing"
+    exit 1
+fi
+
+if [ "$(sysctl -n net.ipv4.ip_forward)" = "1" ] && nft list table ip amnezia_relay >/dev/null 2>&1; then
     echo "FRONT_OK"
 else
-    echo "FRONT_FAIL"
+    echo "FRONT_FAIL: ip_forward off or relay table missing"
+    exit 1
 fi

@@ -766,7 +766,18 @@ BASH;
         }
 
         $stmt = $pdo->prepare('DELETE FROM vpn_servers WHERE id = ?');
-        return $stmt->execute([$serverId]);
+        $ok = $stmt->execute([$serverId]);
+
+        // Drop the deleted member from the pool's entry relay now rather than
+        // on the next collector cycle (its container is already gone).
+        if ($ok && $poolId > 0) {
+            try {
+                PoolFront::sync($poolId);
+            } catch (Throwable $e) {
+                error_log('delete: front resync failed: ' . $e->getMessage());
+            }
+        }
+        return $ok;
     }
 
     /**

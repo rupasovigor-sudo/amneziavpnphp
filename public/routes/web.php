@@ -1272,6 +1272,17 @@ Router::post('/servers/{id}/pool/delete', function ($params) {
         $domain = trim((string) ($pool['domain'] ?? ''));
         $poolName = (string) ($pool['name'] ?? ('pool ' . $poolId));
 
+        // A pool's entry relay would be orphaned: with no members it relays to
+        // nothing, and the domain (if on the front) would blackhole everyone.
+        if ($front = PoolFront::forPool($poolId)) {
+            if ($front['dns_mode'] === 'front') {
+                http_response_code(409);
+                echo json_encode(['success' => false, 'error' => 'Домен пула указывает на RU-фронт — сначала верните его на сервер (страница «Пулы»)'], JSON_UNESCAPED_UNICODE);
+                return;
+            }
+            PoolFront::remove($poolId);
+        }
+
         // Dissolve: clear pool membership/state on every member → standalone.
         DB::conn()->prepare(
             'UPDATE vpn_servers
