@@ -10,8 +10,10 @@ class SettingsController {
     }
     
     public function index() {
-        $users = $this->getAllUsers();
-        $timewebKey = $this->getApiKey('timeweb');
+        // Admin-only data is not even handed to the template for other users.
+        $isAdmin = (Auth::user()['role'] ?? '') === 'admin';
+        $users = $isAdmin ? $this->getAllUsers() : [];
+        $timewebKey = $isAdmin ? $this->getApiKey('timeweb') : null;
 
         // Protocols data for embedded tab (new management)
         $protocols = ProtocolService::getAllProtocolsWithStats();
@@ -38,8 +40,8 @@ class SettingsController {
         $data = [
             'users' => $users,
             'timeweb_key' => $timewebKey,
-            'alert_settings' => $this->getAlertSettings(),
-            'alert_states' => $this->getAlertStates(),
+            'alert_settings' => $isAdmin ? $this->getAlertSettings() : [],
+            'alert_states' => $isAdmin ? $this->getAlertStates() : [],
             // Protocols
             'protocols' => $protocols,
             'editing' => $editing,
@@ -110,6 +112,11 @@ class SettingsController {
         $newHash = password_hash($newPassword, PASSWORD_BCRYPT);
         $stmt = $this->pdo->prepare("UPDATE users SET password_hash = ? WHERE id = ?");
         $stmt->execute([$newHash, $user['id']]);
+        // A password change is often a response to a compromise: invalidate
+        // every API token and rotate this session id.
+        $this->pdo->prepare('UPDATE api_tokens SET revoked_at = NOW() WHERE user_id = ? AND revoked_at IS NULL')
+            ->execute([$user['id']]);
+        session_regenerate_id(true);
         
         $_SESSION['settings_success'] = 'Password changed successfully';
         header('Location: /settings#profile');

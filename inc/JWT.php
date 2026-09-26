@@ -136,6 +136,7 @@ class JWT {
               AND t.token = ?
               AND t.revoked_at IS NULL
               AND (t.expires_at IS NULL OR t.expires_at > NOW())
+              AND (u.status IS NULL OR u.status = \'active\')
             LIMIT 1
         ');
         $stmt->execute([$userId, $tokenHash]);
@@ -267,7 +268,8 @@ class JWT {
     public static function revokeApiToken(int $tokenId, int $userId): bool {
         $pdo = DB::conn();
         $stmt = $pdo->prepare('UPDATE api_tokens SET revoked_at = NOW() WHERE id = ? AND user_id = ? AND revoked_at IS NULL');
-        return $stmt->execute([$tokenId, $userId]);
+        $stmt->execute([$tokenId, $userId]);
+        return $stmt->rowCount() > 0;
     }
     
     /**

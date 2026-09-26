@@ -4,11 +4,34 @@
  * Main entry point
  */
 
-// Suppress errors for API endpoints to prevent HTML output
-if (isset($_SERVER['REQUEST_URI']) && strpos($_SERVER['REQUEST_URI'], '/api/') !== false) {
-    @ini_set('display_errors', '0');
-    error_reporting(0);
-}
+// Never render PHP errors into responses (paths, stack traces, and HTML
+// warnings that corrupt JSON bodies) — log them instead. The image had no
+// php.ini, so PHP's built-in display_errors=On applied to every non-API page.
+@ini_set('display_errors', '0');
+@ini_set('display_startup_errors', '0');
+@ini_set('log_errors', '1');
+
+// Last-resort handler: log the full error with a short reference id and give
+// the client only that id, in the shape the caller expects.
+set_exception_handler(static function (Throwable $e): void {
+    $ref = substr(bin2hex(random_bytes(4)), 0, 8);
+    error_log("[ref {$ref}] Uncaught " . get_class($e) . ': ' . $e->getMessage() . ' @ ' . $e->getFile() . ':' . $e->getLine());
+    if (!headers_sent()) {
+        http_response_code(500);
+    }
+    $uri = (string) ($_SERVER['REQUEST_URI'] ?? '');
+    $wantsJson = str_contains($uri, '/api/')
+        || str_contains((string) ($_SERVER['HTTP_ACCEPT'] ?? ''), 'application/json')
+        || str_contains((string) ($_SERVER['CONTENT_TYPE'] ?? ''), 'application/json');
+    if ($wantsJson) {
+        if (!headers_sent()) {
+            header('Content-Type: application/json');
+        }
+        echo json_encode(['success' => false, 'error' => "Внутренняя ошибка (ref {$ref})"], JSON_UNESCAPED_UNICODE);
+    } else {
+        echo 'Внутренняя ошибка сервера (ref ' . htmlspecialchars($ref) . ')';
+    }
+});
 
 // Load early dependencies/config before session initialization.
 require_once __DIR__ . '/../vendor/autoload.php';
@@ -100,7 +123,9 @@ require_once __DIR__ . '/../inc/AuditLog.php';
 try {
     DB::conn();
 } catch (Throwable $e) {
-    die('Database connection error: ' . $e->getMessage());
+    error_log('Database connection error: ' . $e->getMessage());
+    http_response_code(503);
+    die('Database unavailable');
 }
 
 // Seed admin user if not exists
@@ -131,11 +156,9 @@ function authenticateRequest(): ?array
     // Check JWT token in Authorization header
     $authHeader = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
     if ($authHeader && preg_match('/Bearer\s+(.*)$/i', $authHeader, $matches)) {
-        $token = $matches[1];
-        $user = JWT::verify($token);
-        if ($user) {
-            return $user;
-        }
+        // A Bearer request skipped CSRF, so it must authenticate by the token
+        // ONLY — falling back to the session would turn it into a CSRF bypass.
+        return JWT::verify($matches[1]) ?: null;
     }
 
     // Fallback to session
@@ -429,10 +452,19 @@ function configInt(string $key, int $default): int
 function clientIp(): string
 {
     $trustProxy = in_array(strtolower((string) Config::get('TRUST_PROXY_HEADERS', '0')), ['1', 'true', 'yes', 'on'], true);
-    $forwardedFor = $trustProxy ? trim((string) ($_SERVER['HTTP_X_FORWARDED_FOR'] ?? '')) : '';
-    if ($forwardedFor !== '') {
-        $parts = array_map('trim', explode(',', $forwardedFor));
-        return $parts[0] ?: ($_SERVER['REMOTE_ADDR'] ?? 'unknown');
+    if ($trustProxy) {
+        // X-Real-IP is overwritten by our nginx with $remote_addr; the FIRST
+        // X-Forwarded-For entry is client-supplied (nginx appends), so only the
+        // LAST one — added by the proxy itself — can be trusted.
+        $realIp = trim((string) ($_SERVER['HTTP_X_REAL_IP'] ?? ''));
+        if (filter_var($realIp, FILTER_VALIDATE_IP) !== false) {
+            return $realIp;
+        }
+        $parts = array_values(array_filter(array_map('trim', explode(',', (string) ($_SERVER['HTTP_X_FORWARDED_FOR'] ?? '')))));
+        $last = $parts ? end($parts) : '';
+        if (filter_var($last, FILTER_VALIDATE_IP) !== false) {
+            return $last;
+        }
     }
 
     return $_SERVER['REMOTE_ADDR'] ?? 'unknown';
@@ -504,6 +536,57 @@ function recordRateLimitFailure(string $scope, string $identity, int $windowSeco
 function clearRateLimit(string $scope, string $identity): void
 {
     @unlink(rateLimitPath($scope, $identity));
+}
+
+/**
+ * Credential-guessing throttle shared by web login and /api/auth/token, over
+ * three buckets: email+IP (the old one), the account alone (password spraying
+ * from many IPs) and the IP alone (one password across many emails). The IP
+ * bucket is skipped for private addresses — that's the reverse proxy when
+ * TRUST_PROXY_HEADERS is off, and counting it would lock everyone out at once.
+ */
+function authThrottleBuckets(string $email): array
+{
+    $email = strtolower(trim($email));
+    $ip = clientIp();
+    $window = configInt('LOGIN_RATE_LIMIT_WINDOW_SECONDS', 300);
+    $buckets = [
+        ['auth_pair', $email . '|' . $ip, configInt('LOGIN_RATE_LIMIT_ATTEMPTS', 10), $window],
+        ['auth_account', $email, configInt('LOGIN_RATE_LIMIT_ACCOUNT_ATTEMPTS', 30), $window],
+    ];
+    if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) !== false) {
+        $buckets[] = ['auth_ip', $ip, configInt('LOGIN_RATE_LIMIT_IP_ATTEMPTS', 50), $window];
+    }
+    return $buckets;
+}
+
+function authThrottleCheck(string $email): array
+{
+    foreach (authThrottleBuckets($email) as [$scope, $id, $limit, $window]) {
+        $r = rateLimitExceeded($scope, $id, $limit, $window);
+        if ($r['limited']) {
+            return $r;
+        }
+    }
+    return ['limited' => false, 'retry_after' => 0];
+}
+
+function authThrottleFail(string $email): void
+{
+    foreach (authThrottleBuckets($email) as [$scope, $id, , $window]) {
+        recordRateLimitFailure($scope, $id, $window);
+    }
+}
+
+function authThrottleSuccess(string $email): void
+{
+    // Only the pair/account buckets: a success must not wipe an IP's record
+    // of guesses against OTHER accounts.
+    foreach (authThrottleBuckets($email) as [$scope, $id]) {
+        if ($scope !== 'auth_ip') {
+            clearRateLimit($scope, $id);
+        }
+    }
 }
 
 function uploadMaxBytes(): int
@@ -591,10 +674,8 @@ function getAuthUser(): ?array
     // Try JWT first
     $token = JWT::getTokenFromHeader();
     if ($token !== null) {
-        $user = JWT::verify($token);
-        if ($user !== null) {
-            return $user;
-        }
+        // Token present → token only (see authenticateRequest()).
+        return JWT::verify($token);
     }
 
     // Fall back to session

@@ -14,12 +14,10 @@
 Router::post('/api/auth/token', function () {
     header('Content-Type: application/json');
 
-    $email = $_POST['email'] ?? '';
-    $password = $_POST['password'] ?? '';
-    $rateIdentity = strtolower(trim($email)) . '|' . clientIp();
-    $rateWindow = configInt('API_TOKEN_RATE_LIMIT_WINDOW_SECONDS', 300);
-    $rateLimit = configInt('API_TOKEN_RATE_LIMIT_ATTEMPTS', 10);
-    $rate = rateLimitExceeded('api_token', $rateIdentity, $rateLimit, $rateWindow);
+    $email = is_string($_POST['email'] ?? null) ? trim($_POST['email']) : '';
+    $password = is_string($_POST['password'] ?? null) ? $_POST['password'] : '';
+    // Same buckets as the web login, so the two endpoints don't double the budget.
+    $rate = authThrottleCheck($email);
 
     if ($rate['limited']) {
         http_response_code(429);
@@ -34,15 +32,15 @@ Router::post('/api/auth/token', function () {
         return;
     }
 
-    $user = Auth::getUserByEmail($email);
-    if (!$user || !password_verify($password, $user['password_hash'])) {
-        recordRateLimitFailure('api_token', $rateIdentity, $rateWindow);
+    $user = Auth::verifyCredentials($email, $password);
+    if (!$user) {
+        authThrottleFail($email);
         http_response_code(401);
         echo json_encode(['error' => 'Invalid credentials']);
         return;
     }
 
-    clearRateLimit('api_token', $rateIdentity);
+    authThrottleSuccess($email);
 
     try {
         $tokenData = JWT::createApiToken($user['id'], 'Login API Token', 30 * 24 * 3600);
@@ -67,8 +65,11 @@ Router::post('/api/tokens', function () {
     if (!$user)
         return;
 
-    $name = $_POST['name'] ?? 'API Token';
+    $name = is_string($_POST['name'] ?? null) ? mb_substr(trim($_POST['name']), 0, 100) : 'API Token';
+    // Bounded lifetime: a (possibly stolen) token must not mint a permanent one.
+    $maxLifetime = configInt('API_TOKEN_MAX_LIFETIME_SECONDS', 90 * 86400);
     $expiresIn = isset($_POST['expires_in']) ? (int) $_POST['expires_in'] : 2592000; // 30 days default
+    $expiresIn = max(3600, min($expiresIn, $maxLifetime));
 
     try {
         $tokenData = JWT::createApiToken($user['id'], $name, $expiresIn);
@@ -104,7 +105,11 @@ Router::delete('/api/tokens/{id}', function ($params) {
         return;
 
     try {
-        JWT::revokeApiToken($params['id'], $user['id']);
+        if (!ctype_digit((string) $params['id']) || !JWT::revokeApiToken((int) $params['id'], (int) $user['id'])) {
+            http_response_code(404);
+            echo json_encode(['error' => 'Token not found']);
+            return;
+        }
         echo json_encode(['success' => true]);
     } catch (Exception $e) {
         http_response_code(404);

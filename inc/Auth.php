@@ -13,21 +13,32 @@ class Auth {
     return $stmt->execute([$email, $hash, $name ?: $email, 'user', 'active']);
   }
 
-  public static function login(string $email, string $password): bool {
-    $pdo = DB::conn();
+  /**
+   * The user row for valid credentials of an ACTIVE account, else null. An
+   * unknown email still costs one bcrypt verify, so timing doesn't reveal
+   * which emails exist.
+   */
+  public static function verifyCredentials(string $email, string $password): ?array {
     $email = strtolower(trim($email));
-
-    $stmt = $pdo->prepare('SELECT * FROM users WHERE email = ? LIMIT 1');
+    $stmt = DB::conn()->prepare('SELECT * FROM users WHERE email = ? LIMIT 1');
     $stmt->execute([$email]);
     $user = $stmt->fetch();
-    if (!$user) return false;
-    if (!password_verify($password, $user['password_hash'])) return false;
-    // A deactivated account must not be able to log in. There is no UI to
-    // deactivate users yet (they get deleted), so this never fired — which is
-    // exactly why it would be missed the day such a UI appears.
-    if (array_key_exists('status', $user) && $user['status'] !== null && $user['status'] !== 'active') {
-      return false;
+    if (!$user) {
+      password_verify($password, '$2y$10$itS6u9c8NuUobi/mzU3HquveFMqE6zPPGioKCTyPLnsE9ozRJk54e');
+      return null;
     }
+    if (!password_verify($password, (string) $user['password_hash'])) return null;
+    // A deactivated account must not be able to log in (web or API token).
+    if (array_key_exists('status', $user) && $user['status'] !== null && $user['status'] !== 'active') {
+      return null;
+    }
+    return $user;
+  }
+
+  public static function login(string $email, string $password): bool {
+    $pdo = DB::conn();
+    $user = self::verifyCredentials($email, $password);
+    if (!$user) return false;
     session_regenerate_id(true);
     $_SESSION['user_id'] = (int)$user['id'];
     $pdo->prepare('UPDATE users SET last_login_at = NOW() WHERE id = ?')->execute([$user['id']]);

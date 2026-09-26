@@ -34,11 +34,11 @@
                class="tab-link border-brand-500 text-brand-600 py-4 px-1 border-b-2 font-medium text-sm">
                 <i class="fas fa-user mr-2"></i>{{ t('settings.profile') }}
             </a>
+            {% if user.role == 'admin' %}
             <a href="#" data-action="showTabClick" data-tab="api" id="tab-api"
                class="tab-link border-transparent text-gray-500 hover:text-gray-700 py-4 px-1 border-b-2 font-medium text-sm">
                 <i class="fas fa-key mr-2"></i>{{ t('settings.api_keys') }}
             </a>
-            {% if user.role == 'admin' %}
             <a href="#" data-action="showTabClick" data-tab="users" id="tab-users"
                class="tab-link border-transparent text-gray-500 hover:text-gray-700 py-4 px-1 border-b-2 font-medium text-sm">
                 <i class="fas fa-users mr-2"></i>{{ t('settings.users') }}
@@ -116,7 +116,8 @@
         </div>
     </div>
 
-    <!-- API Tab -->
+    <!-- API Tab (admin only: the DNS token controls the panel owner's zone) -->
+    {% if user.role == 'admin' %}
     <div id="content-api" class="tab-content hidden">
         <div class="card">
             <div class="px-6 py-5 border-b border-gray-200">
@@ -166,6 +167,8 @@
             </div>
         </div>
     </div>
+
+    {% endif %}
 
     <!-- Users Tab -->
     {% if user.role == 'admin' %}

@@ -519,7 +519,7 @@ async function updateClientSpeeds() {
         // Render clients list
         const html = clientsData.map(c => `
             <div class="client-speed-item">
-                <span class="client-name">${c.name}</span>
+                <span class="client-name">${escapeHtml(c.name)}</span>
                 <div class="client-speeds">
                     <span class="speed-up">↑ ${c.speedUp.toFixed(2)} Kbps</span>
                     <span class="speed-down">↓ ${c.speedDown.toFixed(2)} Kbps</span>

@@ -44,7 +44,7 @@ COPY apache.conf /etc/apache2/sites-available/000-default.conf
 # so anything sorting earlier is simply overridden.
 RUN printf '%s\n' 'ServerTokens Prod' 'ServerSignature Off' > /etc/apache2/conf-available/zz-security-tokens.conf \
     && a2enconf zz-security-tokens \
-    && printf '%s\n' 'expose_php = Off' > /usr/local/etc/php/conf.d/zz-hide-version.ini
+    && printf '%s\n' 'expose_php = Off' 'display_errors = Off' 'display_startup_errors = Off' 'log_errors = On' > /usr/local/etc/php/conf.d/zz-hide-version.ini
 
 # Set permissions and create writable directories
 RUN mkdir -p /var/www/html/backups /var/www/html/logs /var/www/html/storage/ssh \
