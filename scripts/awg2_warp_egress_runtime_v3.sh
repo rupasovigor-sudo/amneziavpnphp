@@ -109,10 +109,12 @@ register_pool() {
   local have i out priv rest peer endpoint v4 cid slot backoff
   have="$(count_profiles)"
   log "WARP pool: have $have / $POOL_SIZE profiles"
-  backoff=2
   for i in $(seq 1 "$POOL_SIZE"); do
     slot="$(printf '%02d' "$i")"
     [ -s "$PROFILE_DIR/$slot/profile.setconf" ] && continue
+    # Per-slot backoff, capped: a shared doubling counter reached hours of
+    # sleep across 5 slots and pushed "start" past TimeoutStartSec.
+    backoff=2
     local attempt ok=0
     for attempt in 1 2 3; do
       priv="$(wg genkey)"
@@ -143,7 +145,7 @@ register_pool() {
       fi
       log "WARP pool: slot $slot attempt $attempt failed, backoff ${backoff}s"
       sleep "$backoff"
-      backoff=$((backoff * 2))
+      backoff=$((backoff * 2)); [ "$backoff" -gt 30 ] && backoff=30
     done
     [ "$ok" = "1" ] || log "WARP pool: slot $slot could not be registered (will retry next run)"
   done
@@ -448,7 +450,16 @@ rotate_profile() {
 
 # Health probe used by the systemd timer: rotate on WARP-down / 429 / traffic cap.
 health_check() {
-  [ -d "/var/run/netns" ] && ip netns list 2>/dev/null | grep -qw "$NS" || { log "health: namespace missing, starting"; start_egress; return; }
+  # The namespace is legitimately absent while the unit is (re)starting; do not
+  # race it with a second start (the two cleanup_runtime calls used to delete
+  # each other's fwmark rule). Hand recovery to the unit instead.
+  if ! { [ -d "/var/run/netns" ] && ip netns list 2>/dev/null | grep -qw "$NS"; }; then
+    case "$(systemctl is-active awg2-warp-egress.service 2>/dev/null || true)" in
+      activating|deactivating|reloading) log "health: namespace missing, unit is starting - skip" ;;
+      *) log "health: namespace missing, restarting unit"; systemctl restart --no-block awg2-warp-egress.service || true ;;
+    esac
+    return
+  fi
   local trace warp_on http429 baseline now used
   trace="$(warp_trace)"
   printf '%s\n' "$trace" > "$STATE_DIR/last_trace"
@@ -487,6 +498,15 @@ status_egress() {
   iptables -t mangle -S "$CHAIN" 2>/dev/null || true
   ip rule show | grep "$TABLE" || true
 }
+
+# Serialize every mutating entry point (unit start/stop, health timer, manual
+# rotate): they all rewrite the same netns / ip rules / mangle chain. health
+# skips when busy rather than queueing behind a multi-minute start.
+case "${1:-start}" in
+  status) ;;
+  health) exec 9>/run/awg2-warp-egress.lock; flock -n 9 || { log "health: another run in progress - skip"; exit 0; } ;;
+  *)      exec 9>/run/awg2-warp-egress.lock; flock -w 600 9 || { log "ERROR: lock busy for 600s"; exit 1; } ;;
+esac
 
 case "${1:-start}" in
   start)    start_egress ;;
