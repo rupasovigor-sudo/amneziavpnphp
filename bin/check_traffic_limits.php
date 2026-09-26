@@ -5,6 +5,9 @@
  * Run this script via cron every hour
  */
 
+// Autoload is required: revoke() goes through Ssh, which isn't in the list
+// below — without it the client was marked disabled but its peer stayed up.
+require_once __DIR__ . '/../vendor/autoload.php';
 require_once __DIR__ . '/../inc/Config.php';
 require_once __DIR__ . '/../inc/DB.php';
 require_once __DIR__ . '/../inc/VpnClient.php';

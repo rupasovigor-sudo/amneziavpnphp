@@ -114,14 +114,16 @@ function collectForServer(array $server, AlertManager $alertManager, array $cfg)
         echo "  WARP egress broken on #{$server['id']} — restart "
             . ($repaired ? 'issued' : 'FAILED') . "\n";
         try {
-            $alertManager->recordProblem(
+            // A one-off event, not a state: the warp_egress check itself stays
+            // open while broken and resolves once egress is back.
+            $alertManager->recordEvent(
                 (int) $server['id'],
                 (string) $server['name'],
                 'warp_egress_repair',
                 $repaired
                     ? 'WARP-egress был сломан — выполнен авто-рестарт сервиса'
                     : 'WARP-egress сломан — авто-рестарт сервиса не удался',
-                'critical'
+                $repaired ? 'warning' : 'critical'
             );
         } catch (Throwable $e) {
             error_log('warp_egress_repair alert failed: ' . $e->getMessage());
@@ -435,7 +437,8 @@ while (true) {
         // member health; fall the domain back to a member if a front is down.
         try {
             $frontThreshold = max(1, (int) Config::get('AMNEZIA_FRONT_FAILURE_THRESHOLD', '2'));
-            foreach (PoolFront::syncAll($frontThreshold) as $fr) {
+            $autoFailover = in_array(strtolower((string) Config::get('AMNEZIA_AUTO_FAILOVER_ENABLED', '1')), ['1', 'true', 'yes', 'on'], true);
+            foreach (PoolFront::syncAll($frontThreshold, $autoFailover) as $fr) {
                 echo "[" . date('Y-m-d H:i:s') . "] POOL FRONT {$fr['action']} pool {$fr['pool']}: "
                     . ($fr['ok'] ? 'ok' : 'FAILED') . ' — ' . ($fr['message'] ?? '') . "\n";
             }
