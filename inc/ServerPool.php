@@ -996,6 +996,9 @@ class ServerPool
                 $warpStatus = !empty($warpRes['success']) ? 'installed' : 'failed';
                 if ($warpStatus === 'failed') {
                     error_log("ServerPool::addMember: WARP egress install returned failure on {$serverId}");
+                } else {
+                    // Pool-level egress settings (e.g. Google direct) — same on every member.
+                    ServerUpdateManager::applyWarpSettings($serverId);
                 }
             }
         } catch (Throwable $e) {

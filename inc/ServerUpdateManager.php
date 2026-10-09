@@ -207,6 +207,63 @@ SH;
         return $m[1];
     }
 
+    /**
+     * Bring a member's WARP egress in line with the panel: ship the repo runtime
+     * if the installed one differs (atomic rename — a running health check
+     * keeps reading the old inode), write its settings file, and apply the
+     * Google-direct bypass live. No egress restart, so clients don't notice.
+     * Settings come from the server's pool (standalone servers: bypass off).
+     */
+    public static function applyWarpSettings(int $serverId): array
+    {
+        try {
+            $server = new VpnServer($serverId);
+            $data = $server->getData();
+            $poolId = (int) ($data['pool_id'] ?? 0);
+            $bypass = 0;
+            if ($poolId > 0) {
+                $st = DB::conn()->prepare('SELECT warp_bypass_google FROM server_pools WHERE id = ?');
+                $st->execute([$poolId]);
+                $bypass = (int) $st->fetchColumn() === 1 ? 1 : 0;
+            }
+
+            $installed = trim((string) $server->executeCommand(
+                '[ -x /usr/local/sbin/awg2-warp-egress ] && sha256sum /usr/local/sbin/awg2-warp-egress | cut -d" " -f1 || echo none',
+                true
+            ));
+            if ($installed === 'none') {
+                return ['success' => false, 'message' => 'WARP egress не установлен'];
+            }
+            $path = dirname(__DIR__) . '/scripts/awg2_warp_egress_runtime_v3.sh';
+            $runtime = (string) @file_get_contents($path);
+            $shipped = false;
+            if ($runtime !== '' && $installed !== hash('sha256', $runtime)) {
+                $server->uploadContent('/usr/local/sbin/.awg2-warp-egress.new', $runtime, 0755);
+                $server->executeCommand('mv -f /usr/local/sbin/.awg2-warp-egress.new /usr/local/sbin/awg2-warp-egress', true);
+                $shipped = true;
+            }
+
+            $server->uploadContent('/etc/default/awg2-warp-egress', "# Managed by the Amnezia panel
+WARP_BYPASS_GOOGLE={$bypass}
+", 0644);
+            $out = (string) $server->executeCommand(
+                'timeout 120 /usr/local/sbin/awg2-warp-egress bypass 2>&1 | tail -3; '
+                . 'nft list table ip awg2_direct >/dev/null 2>&1 && echo BYPASS_ON || echo BYPASS_OFF',
+                true
+            );
+            $on = str_contains($out, 'BYPASS_ON');
+            $ok = $on === ($bypass === 1);
+            $msg = ($shipped ? 'runtime обновлён; ' : '')
+                . ($bypass ? ($on ? 'Google напрямую — включено' : 'Google напрямую — НЕ применилось') : 'Google через WARP');
+            if (!$ok) {
+                $msg .= ': ' . trim(substr($out, -300));
+            }
+            return ['success' => $ok, 'message' => $msg, 'bypass' => $on, 'runtime_shipped' => $shipped];
+        } catch (Throwable $e) {
+            return ['success' => false, 'message' => 'WARP settings: ' . $e->getMessage()];
+        }
+    }
+
     /** sha256 of the WARP runtime script shipped in this repo. */
     public static function warpRepoScriptSha(): ?string
     {
@@ -640,6 +697,7 @@ SH;
             if (empty($res['success'])) {
                 return ['success' => false, 'message' => 'Переустановка WARP не удалась'];
             }
+            self::applyWarpSettings($serverId);
         } catch (Throwable $e) {
             return ['success' => false, 'message' => 'WARP: ' . $e->getMessage()];
         }

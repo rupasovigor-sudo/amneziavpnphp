@@ -471,6 +471,33 @@ Router::post('/pools/{id}/front/remove', function ($params) {
     poolFrontJson(fn($in) => PoolFront::remove((int) $params['id']));
 });
 
+// Pool egress: Google directly from each member's IP instead of WARP.
+Router::post('/pools/{id}/warp-bypass', function ($params) {
+    poolFrontJson(function ($in) use ($params) {
+        $poolId = (int) $params['id'];
+        if (!ServerPool::get($poolId)) {
+            return ['success' => false, 'message' => 'Пул не найден'];
+        }
+        @set_time_limit(300);
+        ignore_user_abort(true);
+        $on = !empty($in['enabled']) ? 1 : 0;
+        DB::conn()->prepare('UPDATE server_pools SET warp_bypass_google = ? WHERE id = ?')->execute([$on, $poolId]);
+        $st = DB::conn()->prepare("SELECT id, name FROM vpn_servers WHERE pool_id = ? AND status = 'active' ORDER BY id");
+        $st->execute([$poolId]);
+        $lines = [];
+        $allOk = true;
+        foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $m) {
+            $r = ServerUpdateManager::applyWarpSettings((int) $m['id']);
+            $allOk = $allOk && !empty($r['success']);
+            $lines[] = "{$m['name']}: " . ($r['message'] ?? '');
+        }
+        return [
+            'success' => $allOk,
+            'message' => ($on ? 'Google напрямую включён. ' : 'Google снова через WARP. ') . implode('; ', $lines),
+        ];
+    });
+});
+
 // Audit trail of state-changing admin actions (admin-only).
 Router::get('/audit', function () {
     requireAdmin();

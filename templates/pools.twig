@@ -30,6 +30,22 @@
       </div>
     </div>
 
+    {# Egress policy for the whole pool #}
+    <div class="px-5 py-3 border-b border-gray-100 flex items-center justify-between flex-wrap gap-3 text-sm">
+      <div class="text-gray-600 leading-snug">
+        <span class="font-medium text-gray-800">Выход в интернет:</span> Cloudflare WARP.
+        {% if pool.warp_bypass_google ?? 1 %}
+          Google (поиск, Gemini, YouTube) — <b>напрямую с IP сервера</b>: без капчи и без крюка через другую страну; страна для Google = страна сервера.
+        {% else %}
+          Google тоже через WARP — общие IP Cloudflare Google иногда принимает за ботов (капча).
+        {% endif %}
+      </div>
+      <label class="inline-flex items-center gap-2 cursor-pointer select-none">
+        <input type="checkbox" class="js-warp-bypass rounded border-gray-300 text-brand-600 focus:ring-brand-500" data-pool="{{ pool.id }}" {{ (pool.warp_bypass_google ?? 1) ? 'checked' }}>
+        <span>Google напрямую</span>
+      </label>
+    </div>
+
     <div class="overflow-x-auto">
       <table class="min-w-full text-sm">
         <thead class="bg-gray-50 text-gray-600">
@@ -263,6 +279,19 @@
         .then(function (d) { done(d, true); })
         .catch(function (err) { showToast('Ошибка: ' + err, 'error'); })
         .finally(function () { sel.disabled = false; });
+    });
+  });
+
+  document.querySelectorAll('.js-warp-bypass').forEach(function (cb) {
+    cb.addEventListener('change', function () {
+      cb.disabled = true;
+      showToast('Применяю на серверах пула…', 'info');
+      fetch('/pools/' + cb.dataset.pool + '/warp-bypass', {
+        method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({enabled: cb.checked})
+      }).then(function (r) { return r.json(); })
+        .then(function (d) { done(d, true); })
+        .catch(function (err) { showToast('Ошибка: ' + err, 'error'); cb.checked = !cb.checked; })
+        .finally(function () { cb.disabled = false; });
     });
   });
 

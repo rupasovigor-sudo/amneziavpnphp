@@ -1,6 +1,10 @@
 #!/bin/bash
 set -euo pipefail
 
+# Per-server settings written by the panel (e.g. WARP_BYPASS_GOOGLE=1). Sourced
+# first so they override the defaults below.
+[ -r /etc/default/awg2-warp-egress ] && . /etc/default/awg2-warp-egress
+
 # AWG2 Cloudflare WARP egress runtime v3.
 #
 # Difference from v2: instead of a single wgcf-generated profile, this manages a
@@ -34,6 +38,14 @@ MSS_CLAMP="${WARP_MSS_CLAMP:-1240}"
 WG_IF="${WARP_WG_IF:-wgcf}"
 
 POOL_SIZE="${WARP_POOL_SIZE:-5}"
+
+# Google services egress DIRECTLY from the server's own IP instead of WARP:
+# shared WARP exits are often flagged by Google (search CAPTCHA "/sorry"), and
+# a FI server exiting via a DE WARP colo adds a detour. Only Google's own
+# ranges (goog.json minus cloud.json = not GCP customers' sites) are bypassed;
+# an nft chain after mangle clears the WARP mark for them.
+BYPASS_GOOGLE="${WARP_BYPASS_GOOGLE:-0}"
+DIRECT_TABLE="awg2_direct"
 # Rotate the active profile once this many bytes have egressed through it
 # (default 5 GiB); 0 disables traffic-based rotation.
 ROTATE_TRAFFIC_BYTES="${WARP_ROTATE_TRAFFIC_BYTES:-5368709120}"
@@ -352,6 +364,101 @@ install_client_routing() {
   echo "$vpn_port" > "$STATE_DIR/vpn_port"
 }
 
+# ---------------------------------------------------------------------------
+# Direct-egress bypass (Google)
+# ---------------------------------------------------------------------------
+google_ranges_file() { echo "$STATE_DIR/google_v4.txt"; }
+
+# goog.json minus cloud.json, collapsed. Keeps the previous list on any failure.
+refresh_google_ranges() {
+  local tmp out
+  tmp="$(mktemp -d)"
+  out="$(google_ranges_file)"
+  if curl -4 -fsS --max-time 20 -o "$tmp/goog.json" https://www.gstatic.com/ipranges/goog.json \
+     && curl -4 -fsS --max-time 20 -o "$tmp/cloud.json" https://www.gstatic.com/ipranges/cloud.json \
+     && python3 - "$tmp/goog.json" "$tmp/cloud.json" > "$tmp/ranges" <<'PY'
+import ipaddress, json, sys
+def v4(path):
+    return [ipaddress.ip_network(p["ipv4Prefix"]) for p in json.load(open(path))["prefixes"] if "ipv4Prefix" in p]
+goog, cloud = v4(sys.argv[1]), v4(sys.argv[2])
+keep = []
+for net in goog:
+    parts = [net]
+    for c in cloud:
+        nxt = []
+        for p in parts:
+            if not p.overlaps(c):
+                nxt.append(p)
+            elif c.subnet_of(p) and c != p:
+                nxt.extend(p.address_exclude(c))
+            # else: p lies entirely inside customer space -> drop
+        parts = nxt
+    keep.extend(parts)
+for n in ipaddress.collapse_addresses(keep):
+    print(n)
+PY
+  then
+    if [ "$(wc -l < "$tmp/ranges")" -ge 20 ]; then
+      mkdir -p "$STATE_DIR"
+      mv "$tmp/ranges" "$out"
+      log "bypass: Google ranges refreshed ($(wc -l < "$out") prefixes)"
+      rm -rf "$tmp"
+      return 0
+    fi
+  fi
+  rm -rf "$tmp"
+  return 1
+}
+
+# Load (or remove) the nft bypass table according to BYPASS_GOOGLE.
+apply_direct_bypass() {
+  local f ranges
+  ranges="$(google_ranges_file)"
+  if [ "$BYPASS_GOOGLE" != "1" ]; then
+    nft delete table ip "$DIRECT_TABLE" 2>/dev/null || true
+    return 0
+  fi
+  if [ ! -s "$ranges" ] || [ -n "$(find "$ranges" -mmin +1440 2>/dev/null || true)" ]; then
+    refresh_google_ranges || log "bypass: range refresh failed (keeping previous list)"
+  fi
+  if [ ! -s "$ranges" ]; then
+    log "bypass: no Google ranges yet - everything stays on WARP"
+    nft delete table ip "$DIRECT_TABLE" 2>/dev/null || true
+    return 0
+  fi
+  f="$(mktemp)"
+  {
+    echo "table ip $DIRECT_TABLE {}"
+    echo "delete table ip $DIRECT_TABLE"
+    echo "table ip $DIRECT_TABLE {"
+    echo "  set google { type ipv4_addr; flags interval; auto-merge; elements = { $(paste -sd, "$ranges") } }"
+    echo "  chain prerouting {"
+    echo "    type filter hook prerouting priority -140; policy accept;"
+    echo "    meta mark $MARK ip daddr @google counter meta mark set 0x0"
+    echo "  }"
+    echo "}"
+  } > "$f"
+  if nft -f "$f"; then
+    log "bypass: Google direct via server IP ($(wc -l < "$ranges") prefixes)"
+  else
+    log "ERROR: bypass: nft load failed - Google stays on WARP"
+  fi
+  rm -f "$f"
+}
+
+# Cheap per-health-run check: (re)apply only when state drifted or list is stale.
+ensure_direct_bypass() {
+  local have=0
+  nft list table ip "$DIRECT_TABLE" >/dev/null 2>&1 && have=1
+  if [ "$BYPASS_GOOGLE" = "1" ]; then
+    if [ "$have" = "0" ] || [ -n "$(find "$(google_ranges_file)" -mmin +1440 2>/dev/null || true)" ]; then
+      apply_direct_bypass
+    fi
+  elif [ "$have" = "1" ]; then
+    apply_direct_bypass
+  fi
+}
+
 # Current cumulative tx bytes on the active WARP interface.
 warp_tx_bytes() {
   ip netns exec "$NS" cat "/sys/class/net/$WG_IF/statistics/tx_bytes" 2>/dev/null || echo 0
@@ -413,6 +520,7 @@ start_egress() {
   fi
 
   install_client_routing "$ips" "$vpn_port"
+  apply_direct_bypass || true
   echo "$(warp_tx_bytes)" > "$STATE_DIR/traffic_baseline"
   print_variables "$ips" "$vpn_port"
 }
@@ -466,6 +574,7 @@ health_check() {
     return
   fi
   local trace warp_on http429 baseline now used
+  ensure_direct_bypass || true
   trace="$(warp_trace)"
   printf '%s\n' "$trace" > "$STATE_DIR/last_trace"
   warp_on="$(echo "$trace" | awk -F= '$1=="warp"{print $2; exit}')"
@@ -502,6 +611,8 @@ status_egress() {
   echo "active=$(active_slot) pool=$(count_profiles) rotations=$(cat "$STATE_DIR/rotation_count" 2>/dev/null || echo 0)"
   iptables -t mangle -S "$CHAIN" 2>/dev/null || true
   ip rule show | grep "$TABLE" || true
+  echo "bypass_google=$BYPASS_GOOGLE prefixes=$(wc -l < "$(google_ranges_file)" 2>/dev/null || echo 0)"
+  nft list chain ip "$DIRECT_TABLE" prerouting 2>/dev/null | grep counter || true
 }
 
 # Serialize every mutating entry point (unit start/stop, health timer, manual
@@ -517,9 +628,10 @@ case "${1:-start}" in
   start)    start_egress ;;
   stop)     cleanup_runtime ;;
   rotate)   rotate_profile "${2:-manual}" ;;
+  bypass)   apply_direct_bypass ;;
   health)   health_check ;;
   register) mkdir -p "$STATE_DIR" "$PROFILE_DIR"; install_packages; register_pool ;;
   status)   status_egress ;;
   cleanup)  cleanup_runtime ;;
-  *) echo "Usage: $0 {start|stop|rotate [reason]|health|register|status|cleanup}"; exit 2 ;;
+  *) echo "Usage: $0 {start|stop|rotate [reason]|bypass|health|register|status|cleanup}"; exit 2 ;;
 esac

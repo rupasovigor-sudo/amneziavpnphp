@@ -38,7 +38,9 @@ rm -f /etc/systemd/system/awg2-warp-egress.service \
       /etc/systemd/system/awg2-warp-egress-health.timer
 systemctl daemon-reload 2>/dev/null
 
-rm -f "$BIN" /etc/wireguard/awg2-warp-egress.setconf
+rm -f "$BIN" /etc/wireguard/awg2-warp-egress.setconf /etc/default/awg2-warp-egress
+# Google-direct bypass table (harmless without the WARP mark, but tidy up).
+nft delete table ip awg2_direct 2>/dev/null || true
 rm -rf "/etc/netns/$NS" "$STATE_DIR"
 
 echo "WARP_UNINSTALL_DONE"
