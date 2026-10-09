@@ -12,7 +12,7 @@ services:
       MYSQL_USER: ${DB_USERNAME:-amnezia}
       MYSQL_PASSWORD: ${DB_PASSWORD:-amnezia}
     ports:
-      - "3309:3306"
+      - "127.0.0.1:3309:3306"
     volumes:
       - db_data:/var/lib/mysql
       - ./migrations:/docker-entrypoint-initdb.d
@@ -50,7 +50,7 @@ services:
     volumes:
       - ./:/var/www/html
     ports:
-      - "8082:80"
+      - "127.0.0.1:8082:80"
 
   dind:
     image: docker:24-dind
