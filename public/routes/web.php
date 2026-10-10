@@ -1374,33 +1374,6 @@ Router::post('/servers/{id}/pool/mark-clean', function ($params) {
     }
 });
 
-// Build a full-tunnel AllowedIPs list (0.0.0.0/0 minus all pool member IPs +
-// caller-supplied local exclusions) for a router config that must survive an
-// in-pool DNS failover. (AJAX, admin)
-Router::get('/servers/{id}/pool/allowed-ips', function ($params) {
-    requireAdmin();
-    header('Content-Type: application/json');
-    $serverId = (int) $params['id'];
-    try {
-        $server = new VpnServer($serverId);
-        $serverData = $server->getData();
-        $poolId = (int) ($serverData['pool_id'] ?? 0);
-        if ($poolId <= 0) {
-            http_response_code(400);
-            echo json_encode(['success' => false, 'error' => 'Server is not in a pool']);
-            return;
-        }
-        // Extra exclusions: split on commas, whitespace and newlines.
-        $raw = (string) ($_GET['exclude'] ?? '');
-        $extra = array_filter(array_map('trim', preg_split('/[,\s]+/', $raw) ?: []));
-        $res = ServerPool::allowedIpsExcludingPool($poolId, $extra);
-        echo json_encode(['success' => true] + $res, JSON_UNESCAPED_SLASHES);
-    } catch (Exception $e) {
-        http_response_code(500);
-        echo json_encode(['success' => false, 'error' => $e->getMessage()]);
-    }
-});
-
 // Make this server the active member (repoint the pool domain here) (AJAX, admin)
 Router::post('/servers/{id}/pool/activate', function ($params) {
     requireAdmin();

@@ -470,6 +470,29 @@ Router::post('/pools/{id}/front/remove', function ($params) {
     poolFrontJson(fn($in) => PoolFront::remove((int) $params['id']));
 });
 
+// Router AllowedIPs for a pool: full tunnel minus every member's (and the
+// front's) ingress IP plus caller-supplied local exclusions, so a router config
+// survives an in-pool failover. (AJAX, admin)
+Router::get('/pools/{id}/allowed-ips', function ($params) {
+    requireAdmin();
+    header('Content-Type: application/json');
+    $poolId = (int) $params['id'];
+    try {
+        if (!ServerPool::get($poolId)) {
+            http_response_code(404);
+            echo json_encode(['success' => false, 'error' => 'Пул не найден'], JSON_UNESCAPED_UNICODE);
+            return;
+        }
+        // Extra exclusions: split on commas, whitespace and newlines.
+        $raw = is_string($_GET['exclude'] ?? null) ? $_GET['exclude'] : '';
+        $extra = array_filter(array_map('trim', preg_split('/[,\s]+/', $raw) ?: []));
+        echo json_encode(['success' => true] + ServerPool::allowedIpsExcludingPool($poolId, $extra), JSON_UNESCAPED_SLASHES);
+    } catch (Throwable $e) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'error' => $e->getMessage()], JSON_UNESCAPED_UNICODE);
+    }
+});
+
 // Pool egress: Google directly from each member's IP instead of WARP.
 Router::post('/pools/{id}/warp-bypass', function ($params) {
     poolFrontJson(function ($in) use ($params) {

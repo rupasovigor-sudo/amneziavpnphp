@@ -149,24 +149,8 @@
             <button type="button" id="forceMigrateBtn" class="px-2 py-1 rounded text-sm bg-red-600 hover:bg-red-700 text-white" title="Разорвать туннели на резервных, чтобы клиенты переподключились на активный (лечит «клиент завис на старом сервере»)"><i class="fas fa-users-line mr-1"></i>Согнать клиентов на активный</button>
             <span class="text-sm text-gray-400 leading-tight">снимает клиентские пиры с резервных → их туннели рвутся; при переподключении клиент попадёт на активный. Без авто-reconnect — только после ручного переподключения. Резервные пометятся на «Ре-синк».</span>
           </div>
-          <div class="mt-2 pt-2 border-t">
-            <details>
-              <summary class="text-sm text-gray-700 cursor-pointer"><i class="fas fa-route mr-1"></i>AllowedIPs для роутера (full-tunnel, исключает все IP пула)</summary>
-              <div class="mt-2 space-y-2">
-                <p class="text-sm text-gray-500 leading-tight">Для full-tunnel конфига (напр. MikroTik), который не должен заворачивать endpoint обратно в туннель. Вычитает из <code>0.0.0.0/0</code> <b>все ingress-IP пула</b> + локальные исключения ниже — конфиг переживает failover без правок. <b>Перегенерируй при добавлении нового сервера в пул.</b></p>
-                <label class="block text-sm text-gray-600">Локальные исключения — по одному CIDR в строке (свой адрес, LAN, docker-сети):</label>
-                <textarea id="aipExtra" rows="3" class="w-full border rounded px-2 py-1 text-sm font-mono" placeholder="10.8.1.8/32&#10;172.18.20.0/30"></textarea>
-                <button type="button" id="aipGenBtn" class="px-2 py-1 bg-gray-600 hover:bg-gray-700 text-white rounded text-sm"><i class="fas fa-gears mr-1"></i>Сгенерировать</button>
-                <div id="aipOut" style="display:none">
-                  <div class="flex items-center justify-between mb-1">
-                    <span class="text-sm text-gray-500">Замени строку <code>AllowedIPs = …</code> в секции <code>[Peer]</code> конфига роутера:</span>
-                    <button type="button" id="aipCopy" class="px-2 py-0.5 bg-gray-200 rounded text-sm">Копировать</button>
-                  </div>
-                  <textarea id="aipResult" rows="4" readonly class="w-full border rounded px-2 py-1 text-sm font-mono bg-gray-50"></textarea>
-                  <p id="aipMeta" class="text-sm text-gray-400 mt-1"></p>
-                </div>
-              </div>
-            </details>
+          <div class="mt-2 pt-2 border-t text-sm text-gray-500">
+            <i class="fas fa-route mr-1"></i>AllowedIPs для роутера (full-tunnel без IP пула) — на странице <a href="/pools" class="text-brand-600 hover:underline">Пулы</a>.
           </div>
           <div class="mt-2 pt-2 border-t">
             <button type="button" id="poolDeleteBtn" class="px-2 py-1 bg-red-600 hover:bg-red-700 text-white rounded text-sm"><i class="fas fa-trash mr-1"></i>Удалить пул</button>
@@ -482,28 +466,7 @@
             .finally(() => { poolDeleteBtn.disabled = false; });
         });
 
-        const aipGenBtn = document.getElementById('aipGenBtn');
-        if (aipGenBtn) aipGenBtn.addEventListener('click', function () {
-          const extra = (document.getElementById('aipExtra').value || '').trim();
-          aipGenBtn.disabled = true;
-          fetch('/servers/' + SID + '/pool/allowed-ips?exclude=' + encodeURIComponent(extra))
-            .then(r => r.json()).then(d => {
-              if (!d.success) { showToast(d.error || 'Ошибка', 'error'); return; }
-              document.getElementById('aipResult').value = 'AllowedIPs = ' + d.allowed_ips;
-              document.getElementById('aipMeta').textContent =
-                'IP пула исключено: ' + (d.member_ips || []).length +
-                ' (' + (d.member_ips || []).join(', ') + '); всего исключений: ' + (d.excluded || []).length;
-              document.getElementById('aipOut').style.display = 'block';
-            }).catch(e => showToast('Ошибка: ' + e, 'error'))
-            .finally(() => { aipGenBtn.disabled = false; });
-        });
-        const aipCopy = document.getElementById('aipCopy');
-        if (aipCopy) aipCopy.addEventListener('click', function () {
-          const ta = document.getElementById('aipResult');
-          ta.select();
-          navigator.clipboard.writeText(ta.value).then(() => showToast('Скопировано', 'success'))
-            .catch(() => { document.execCommand('copy'); showToast('Скопировано', 'success'); });
-        });
+
 
         load();
         pollJoinStatus(true);

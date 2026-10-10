@@ -105,6 +105,31 @@
       </table>
     </div>
 
+    {# ── Router AllowedIPs (full tunnel minus every pool endpoint) ── #}
+    <div class="border-t border-gray-100 px-5 py-4 js-aip" data-pool="{{ pool.id }}">
+      <details>
+        <summary class="text-sm font-medium text-gray-800 cursor-pointer"><i class="fas fa-route mr-1 text-brand-600"></i>AllowedIPs для роутера — full-tunnel без IP пула</summary>
+        <div class="mt-3 space-y-2 text-sm">
+          <p class="text-gray-500 leading-snug">
+            Для full-tunnel конфига роутера (MikroTik, Keenetic и т.п.): из <code>0.0.0.0/0</code> вычитаются IP <b>всех серверов пула</b>
+            ({% for m in p.members %}<span class="font-mono">{{ m.host }}</span>{{ not loop.last ? ', ' }}{% else %}—{% endfor %}{% if fronts[pool.id] ?? null %}, фронт <span class="font-mono">{{ fronts[pool.id].front.server_host }}</span>{% endif %})
+            и локальные исключения ниже, чтобы туннель не заворачивал сам себя. Конфиг переживает переключение активного сервера; <b>перегенерируйте его после добавления нового сервера в пул</b>.
+          </p>
+          <label class="block text-gray-600">Локальные исключения — по одному CIDR в строке (свой адрес, LAN, docker-сети):</label>
+          <textarea class="js-aip-extra w-full border rounded px-2 py-1 font-mono" rows="3" placeholder="10.8.1.8/32&#10;192.168.1.0/24"></textarea>
+          <button type="button" class="js-aip-gen btn-secondary"><i class="fas fa-gears"></i>Сгенерировать</button>
+          <div class="js-aip-out" hidden>
+            <div class="flex items-center justify-between mb-1 gap-2 flex-wrap">
+              <span class="text-gray-500">Замените строку <code>AllowedIPs = …</code> в секции <code>[Peer]</code> конфига роутера:</span>
+              <button type="button" class="js-aip-copy btn-secondary"><i class="fas fa-copy"></i>Копировать</button>
+            </div>
+            <textarea class="js-aip-result w-full border rounded px-2 py-1 font-mono bg-gray-50" rows="4" readonly></textarea>
+            <p class="js-aip-meta text-gray-400 mt-1"></p>
+          </div>
+        </div>
+      </details>
+    </div>
+
     {# ── RU-фронт (entry relay) ── #}
     {% set fs = fronts[pool.id] ?? null %}
     {% set countries = ['DE','US','FI','SE','NL','GB','FR','PL','EE','LV','LT','TR','KZ'] %}
@@ -276,6 +301,32 @@
         .then(function (d) { done(d, true); })
         .catch(function (err) { showToast('Ошибка: ' + err, 'error'); })
         .finally(function () { sel.disabled = false; });
+    });
+  });
+
+  document.querySelectorAll('.js-aip').forEach(function (box) {
+    var gen = box.querySelector('.js-aip-gen');
+    var result = box.querySelector('.js-aip-result');
+    gen.addEventListener('click', function () {
+      var extra = (box.querySelector('.js-aip-extra').value || '').trim();
+      setBtnLoading(gen, true);
+      fetch('/pools/' + box.dataset.pool + '/allowed-ips?exclude=' + encodeURIComponent(extra), { credentials: 'same-origin' })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          if (!d.success) { showToast(d.error || 'Ошибка', 'error'); return; }
+          result.value = 'AllowedIPs = ' + d.allowed_ips;
+          box.querySelector('.js-aip-meta').textContent =
+            'Исключено IP пула: ' + (d.member_ips || []).length + ' (' + (d.member_ips || []).join(', ') + '); всего исключений: ' + (d.excluded || []).length;
+          box.querySelector('.js-aip-out').hidden = false;
+        })
+        .catch(function (e) { showToast('Ошибка: ' + e, 'error'); })
+        .finally(function () { setBtnLoading(gen, false); });
+    });
+    box.querySelector('.js-aip-copy').addEventListener('click', function () {
+      result.select();
+      (navigator.clipboard ? navigator.clipboard.writeText(result.value) : Promise.reject())
+        .then(function () { showToast('Скопировано', 'success'); })
+        .catch(function () { document.execCommand('copy'); showToast('Скопировано', 'success'); });
     });
   });
 
