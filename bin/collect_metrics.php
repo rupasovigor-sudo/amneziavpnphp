@@ -103,6 +103,20 @@ function collectForServer(array $server, AlertManager $alertManager, array $cfg)
             (string) $check['severity']
         );
     }
+    // Conditional checks (pool_peers after leaving a pool, warp_egress after
+    // uninstall, stale-handshake below the peer minimum…) simply stop being
+    // emitted, which left their alerts open forever. On a COMPLETE health run
+    // (container line present, or a front's relay check), close the ones that
+    // weren't produced. Incomplete runs resolve nothing.
+    $complete = isset($healthChecks['container_running']) || isset($healthChecks['front_relay']);
+    if ($complete) {
+        $alertManager->resolveMissingChecks(
+            (int) $server['id'],
+            (string) $server['name'],
+            ServerMonitoring::HEALTH_CHECK_NAMES,
+            array_keys($healthChecks)
+        );
+    }
 
     // Auto-heal a broken WARP egress (the fwmark rule silently vanishing kills
     // egress for every client). Rate-limited so a persistently broken host is
@@ -456,6 +470,14 @@ while (true) {
             sleep((int)$sleepTime);
         }
         
+    } catch (PDOException $e) {
+        // The cached PDO connection never reconnects: after a MySQL restart
+        // every cycle would fail forever while the process stays alive (so the
+        // cron monitor never restarts it). Exit; monitor_metrics.sh brings up
+        // a fresh collector with a new connection within a few minutes.
+        echo "[" . date('Y-m-d H:i:s') . "] DB ERROR: " . $e->getMessage() . " — exiting for a clean restart\n";
+        error_log("[FATAL] Metrics collector DB error, exiting: " . $e->getMessage());
+        exit(1);
     } catch (Exception $e) {
         echo "[" . date('Y-m-d H:i:s') . "] FATAL ERROR: " . $e->getMessage() . "\n";
         error_log("[FATAL] Metrics collector error: " . $e->getMessage());

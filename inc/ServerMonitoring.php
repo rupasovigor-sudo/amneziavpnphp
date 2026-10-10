@@ -180,6 +180,13 @@ SH;
      *
      * @return array<string, array{ok: bool, severity: string, message: string}>
      */
+    /** Every check collectHealthChecks() can emit (for the stale-alert sweep). */
+    public const HEALTH_CHECK_NAMES = [
+        'ssh', 'front_relay', 'container_running', 'wireguard_interface', 'wireguard_port',
+        'wireguard_input_drops', 'wireguard_mass_stale_handshake', 'watchdog_restart_recent',
+        'clock_sync', 'warp_egress', 'pool_peers',
+    ];
+
     public function collectHealthChecks(): array
     {
         $checks = [];
@@ -302,6 +309,15 @@ SH;
         $cmd = 'bash -s -- ' . $containerArg . ' ' . escapeshellarg((string) $vpnPort) . ' ' . escapeshellarg((string) $watchdogLookbackSeconds) . ' ' . escapeshellarg((string) $handshakeStaleSeconds) . ' <<' . "'AMNEZIA_HEALTH_SH'\n" . $script . "\nAMNEZIA_HEALTH_SH";
         $output = $this->execSSH($cmd);
         $values = $this->parseHealthOutput((string) $output);
+
+        // No container_running line = the script timed out or the session
+        // broke mid-way. That is "unknown", not "container down": recording it
+        // as a critical failure restarted containers / failed over pools just
+        // because a host was briefly slow. Leave those checks untouched.
+        if (!array_key_exists('container_running', $values)) {
+            error_log("ServerMonitoring: incomplete health output for server " . (int) ($this->serverData['id'] ?? 0) . " — container checks skipped this cycle");
+            return $checks;
+        }
 
         $containerRunning = ($values['container_running'] ?? '') === 'true';
         $checks['container_running'] = [
@@ -649,14 +665,18 @@ SH;
             . ($rxMoved ? ', last_rx_at = NOW()' : '')
         )->execute([$clientId, $serverId, $rawSent, $rawReceived]);
 
+        // Add the delta IN SQL: two pool members can both pass the ownership
+        // gate in one cycle, and a read-modify-write of absolute totals let the
+        // later write erase the other's delta (permanently undercounting).
+        if ($deltaSent > 0 || $deltaReceived > 0) {
+            $db->prepare('UPDATE vpn_clients SET bytes_sent = bytes_sent + ?, bytes_received = bytes_received + ? WHERE id = ?')
+                ->execute([$deltaSent, $deltaReceived, $clientId]);
+        }
         $cur = $db->prepare('SELECT bytes_sent, bytes_received FROM vpn_clients WHERE id = ?');
         $cur->execute([$clientId]);
         $row = $cur->fetch(PDO::FETCH_ASSOC) ?: [];
 
-        return [
-            (int) ($row['bytes_sent'] ?? 0) + $deltaSent,
-            (int) ($row['bytes_received'] ?? 0) + $deltaReceived,
-        ];
+        return [(int) ($row['bytes_sent'] ?? 0), (int) ($row['bytes_received'] ?? 0)];
     }
 
     /**
@@ -701,10 +721,10 @@ SH;
             $peerStats = $this->getWireguardPeerStats($containerName, $publicKey);
             $inPool = (int) ($this->serverData['pool_id'] ?? 0) > 0;
             if (!$peerStats) {
-                if ($inPool) {
-                    // Peer absent here — leave the owning member's figures alone.
-                    return null;
-                }
+                // Peer absent here (pool: another member owns it) or the dump
+                // failed (SSH hiccup). Either way there is nothing to book —
+                // falling through used to write bytes = 0 and wipe the total.
+                return null;
             } else {
                 $handshakeTs = (int) $peerStats['handshake_ts'];
                 if ($inPool) {
@@ -838,10 +858,13 @@ SH;
             throw $e;
         }
 
-        // Update vpn_clients table with latest stats (don't touch last_handshake - it's set separately for WG/AWG)
+        // Update vpn_clients with the latest speeds. Byte totals are NOT written
+        // here: accumulateTraffic() already added the delta atomically, and
+        // writing the absolute figure back would race other pool members.
+        // (don't touch last_handshake - it's set separately for WG/AWG)
         $stmt = $db->prepare("
             UPDATE vpn_clients 
-            SET bytes_sent = ?, bytes_received = ?, speed_up = ?, speed_down = ?, current_speed = ?, last_sync_at = NOW()
+            SET speed_up = ?, speed_down = ?, current_speed = ?, last_sync_at = NOW()
             WHERE id = ?
         ");
 
@@ -869,8 +892,6 @@ SH;
         $totalSpeedBytes = $speedUpBytes + $speedDownBytes;
 
         $stmt->execute([
-            $stats['bytes_sent'],
-            $stats['bytes_received'],
             $speedUpBytes,
             $speedDownBytes,
             $totalSpeedBytes,

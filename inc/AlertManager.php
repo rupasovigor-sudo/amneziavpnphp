@@ -27,10 +27,9 @@ class AlertManager
         string $severity = 'critical',
         ?int $failureThreshold = null
     ): void {
-        if (!$this->enabled) {
-            return;
-        }
-
+        // State is ALWAYS recorded: failover, peer resync and the dashboard read
+        // alert_states, so ALERTS_ENABLED (default off) must only gate the
+        // notifications — skipping the write silently disabled auto-failover.
         $alertKey = $this->buildAlertKey($serverId, $checkName);
         $severity = $severity === 'warning' ? 'warning' : 'critical';
         $requiredFailures = max(1, $failureThreshold ?? $this->failureThreshold);
@@ -47,7 +46,7 @@ class AlertManager
         }
 
         $failCount = (int) ($state['fail_count'] ?? 0);
-        if ($failCount < $requiredFailures) {
+        if (!$this->enabled || $failCount < $requiredFailures) {
             return;
         }
 
@@ -71,6 +70,26 @@ class AlertManager
         if ($this->send($subject, $body)) {
             $stmt = $this->db->prepare('UPDATE alert_states SET last_sent_at = NOW() WHERE alert_key = ?');
             $stmt->execute([$alertKey]);
+        }
+    }
+
+    /**
+     * Resolve open alerts for $candidates checks that were not in $present —
+     * checks that stopped being emitted would otherwise stay open forever.
+     */
+    public function resolveMissingChecks(int $serverId, string $serverName, array $candidates, array $present): void
+    {
+        $missing = array_values(array_diff($candidates, $present));
+        if (!$missing) {
+            return;
+        }
+        $keys = array_map(fn($c) => $this->buildAlertKey($serverId, (string) $c), $missing);
+        $in = implode(',', array_fill(0, count($keys), '?'));
+        $st = $this->db->prepare("SELECT alert_key FROM alert_states WHERE status = 'open' AND alert_key IN ($in)");
+        $st->execute($keys);
+        foreach ($st->fetchAll(PDO::FETCH_COLUMN) as $key) {
+            $check = substr((string) $key, strlen("server:{$serverId}:"));
+            $this->resolveAlert((string) $key, $serverId, $serverName, $check);
         }
     }
 
@@ -172,7 +191,7 @@ class AlertManager
         ");
         $stmt->execute([$alertKey]);
 
-        if (!$alertWasSentForCurrentIncident) {
+        if (!$this->enabled || !$alertWasSentForCurrentIncident) {
             return;
         }
 
