@@ -116,7 +116,8 @@
             и локальные исключения ниже, чтобы туннель не заворачивал сам себя. Конфиг переживает переключение активного сервера; <b>перегенерируйте его после добавления нового сервера в пул</b>.
           </p>
           <label class="block text-gray-600">Локальные исключения — по одному CIDR в строке (свой адрес, LAN, docker-сети):</label>
-          <textarea class="js-aip-extra w-full border rounded px-2 py-1 font-mono" rows="3" placeholder="10.8.1.8/32&#10;172.18.20.0/30"></textarea>
+          <textarea class="js-aip-extra w-full border rounded px-2 py-1 font-mono" rows="3">10.8.1.8/32
+172.18.20.0/30</textarea>
           <button type="button" class="js-aip-gen btn-secondary"><i class="fas fa-gears"></i>Сгенерировать</button>
           <div class="js-aip-out" hidden>
             <div class="flex items-center justify-between mb-1 gap-2 flex-wrap">
