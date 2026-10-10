@@ -488,7 +488,7 @@ echo "RESULT=ok"
 SH;
 
         try {
-            $out = (string) $server->executeCommand($upgrade);
+            $out = (string) $server->executeCommand($upgrade, null, 2400);
         } catch (Exception $e) {
             return ['success' => false, 'message' => 'SSH/apt: ' . $e->getMessage()];
         }
@@ -601,7 +601,7 @@ echo "RESULT=ok"
 SH;
 
         try {
-            $out = (string) $server->executeCommand($script);
+            $out = (string) $server->executeCommand($script, null, 2400);
         } catch (Exception $e) {
             return ['success' => false, 'message' => 'SSH/apt: ' . $e->getMessage()];
         }
@@ -680,7 +680,7 @@ echo "RESULT=ok"
 SH;
 
         try {
-            $out = (string) $server->executeCommand($script);
+            $out = (string) $server->executeCommand($script, null, 2400);
         } catch (Exception $e) {
             return ['success' => false, 'message' => 'SSH/apt: ' . $e->getMessage()];
         }
@@ -807,7 +807,7 @@ SH;
 
         // The WARP fwmark rule sometimes does not survive a restart.
         try {
-            (new VpnServer($serverId))->executeCommand('systemctl restart awg2-warp-egress.service >/dev/null 2>&1 || true; echo done', true);
+            (new VpnServer($serverId))->executeCommand('systemctl restart --no-block awg2-warp-egress.service >/dev/null 2>&1 || true; echo done', true);
         } catch (Throwable $e) {
             // non-fatal
         }

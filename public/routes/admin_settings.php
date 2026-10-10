@@ -408,6 +408,7 @@ Router::get('/pools', function () {
 function poolFrontJson(callable $fn): void
 {
     requireAdmin();
+    session_write_close(); // front install / member-wide applies take a while
     header('Content-Type: application/json');
     try {
         $in = json_decode(file_get_contents('php://input'), true) ?: [];

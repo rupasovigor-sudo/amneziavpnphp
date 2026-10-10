@@ -494,6 +494,10 @@ Router::post('/servers/{id}/protocols/{slug}/uninstall', function ($params) {
 // Activate protocol on server (AJAX)
 Router::post('/servers/{id}/protocols/activate', function ($params) {
     requireAuth();
+    // A protocol install runs for minutes; don't hold the session lock (it
+    // would freeze every other page of this admin meanwhile). $_SESSION stays
+    // readable in memory for the rest of the handler.
+    session_write_close();
 
     // Suppress errors and clean output buffer to prevent HTML corruption of JSON
     @ini_set('display_errors', '0');
@@ -571,6 +575,7 @@ Router::get('/servers/{id}/warp/status', function ($params) {
 // WARP actions: connect/disconnect/reconnect (AJAX)
 Router::post('/servers/{id}/warp/action', function ($params) {
     requireAdmin();
+    session_write_close(); // on/off waits up to ~50s for the unit
     header('Content-Type: application/json');
     $serverId = (int) $params['id'];
     $input = json_decode(file_get_contents('php://input'), true);
@@ -1136,7 +1141,10 @@ Router::post('/servers/{id}/pool/join', function ($params) {
             echo json_encode(['success' => false, 'error' => 'Server is already in a pool']);
             return;
         }
-        if (($serverData['pool_join_state'] ?? '') === 'deploying') {
+        // A worker that died (container restart, OOM) leaves 'deploying' behind
+        // forever; after 45 minutes treat it as stale and allow a retry.
+        $joinStarted = strtotime((string) ($serverData['pool_join_started_at'] ?? '')) ?: 0;
+        if (($serverData['pool_join_state'] ?? '') === 'deploying' && (time() - $joinStarted) < 2700) {
             echo json_encode(['success' => true, 'async' => true, 'state' => 'deploying', 'message' => 'Добавление уже выполняется…']);
             return;
         }

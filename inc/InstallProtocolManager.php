@@ -528,13 +528,23 @@ SWAP;
         $remoteScript = "set -eo pipefail\n" . $exportLines . $script . "\n";
         $remotePath = '/tmp/amnezia_protocol_' . preg_replace('/[^a-zA-Z0-9_-]+/', '_', (string) ($protocol['slug'] ?? 'script')) . '_' . $phase . '.sh';
         $server->uploadContent($remotePath, $remoteScript, 0700);
+        // executeCommand() returns only the output, so the script's exit code
+        // is echoed as a trailing marker (and stripped before parsing). Without
+        // it a script aborted by set -e — or the WARP installer's exit 20/21 —
+        // still parsed as success from whatever it printed before dying.
         $wrapper = sprintf(
-            "bash %s; rc=\$?; rm -f %s; exit \$rc",
+            "bash %s; rc=\$?; rm -f %s; echo \"__AMZ_RC=\$rc\"; exit \$rc",
             escapeshellarg($remotePath),
             escapeshellarg($remotePath)
         );
         Logger::appendInstall($server->getId(), strtoupper($phase) . ' phase: executing remote script');
-        $output = $server->executeCommand($wrapper, true);
+        $output = (string) $server->executeCommand($wrapper, true);
+        $exitCode = null;
+        if (preg_match('/__AMZ_RC=(\d+)\s*$/', $output, $rcm)) {
+            $exitCode = (int) $rcm[1];
+            $output = (string) preg_replace('/\n?__AMZ_RC=\d+\s*$/', '', $output);
+            Logger::appendInstall($server->getId(), strtoupper($phase) . " phase: exit code {$exitCode}");
+        }
         Logger::appendInstall($server->getId(), strtoupper($phase) . ' phase: output size ' . strlen((string) $output) . ' bytes');
         $head = substr(str_replace(["\r", "\n"], ' ', (string) $output), 0, 280);
         if ($head !== '') {
@@ -551,6 +561,10 @@ SWAP;
                 Logger::appendInstall($server->getId(), strtoupper($phase) . ' phase: probe ' . $normalizedProbe);
                 $installProbeSummary = '; probe: ' . $normalizedProbe;
             }
+        }
+
+        if ($phase === 'install' && $exitCode !== null && $exitCode !== 0) {
+            throw new Exception("Ошибка установки: скрипт завершился с кодом {$exitCode}: " . substr($trimmed, -600));
         }
 
         // Try JSON first

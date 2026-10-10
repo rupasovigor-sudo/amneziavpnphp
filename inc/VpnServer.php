@@ -305,7 +305,7 @@ class VpnServer
      * @param bool|null $sudo True = use sudo, false = no sudo, null = auto-detect for docker commands
      * @return string The command output
      */
-    public function executeCommand(string $command, bool $sudo = null): string
+    public function executeCommand(string $command, bool $sudo = null, int $timeout = 900): string
     {
         $baseCommand = $command;
         $pathPrefix = 'export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH; ';
@@ -323,7 +323,7 @@ class VpnServer
             && strtolower((string) ($this->data['username'] ?? '')) !== 'root';
         $prepared = $needsSudo ? Ssh::wrapSudo($this->data, $command) : $command;
 
-        $result = Ssh::exec($this->data, $pathPrefix . $prepared, ['timeout' => 900]);
+        $result = Ssh::exec($this->data, $pathPrefix . $prepared, ['timeout' => $timeout]);
         $output = $result->output;
 
         // If sudo auth fails but user can run docker without sudo, retry docker commands directly.
@@ -332,7 +332,7 @@ class VpnServer
             if ($this->serverId !== null) {
                 self::$dockerSudoCache[$this->serverId] = false;
             }
-            $result = Ssh::exec($this->data, $pathPrefix . $baseCommand, ['timeout' => 900]);
+            $result = Ssh::exec($this->data, $pathPrefix . $baseCommand, ['timeout' => $timeout]);
             $output = $result->output;
         }
 
