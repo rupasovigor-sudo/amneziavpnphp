@@ -71,6 +71,18 @@ fi
 systemctl enable awg2-warp-egress-health.timer >/dev/null 2>&1 || true
 systemctl start awg2-warp-egress-health.timer >/dev/null 2>&1 || true
 
+# WARP switched off in the panel (WARP_ENABLED=0): the unit deliberately keeps
+# egress down, so there is nothing to health-gate. Scripts and units are now
+# current; report "disabled" as a successful install.
+if grep -q '^WARP_ENABLED=0' /etc/default/awg2-warp-egress 2>/dev/null; then
+  pool="$(find "$STATE_DIR/profiles" -mindepth 2 -maxdepth 2 -name profile.setconf 2>/dev/null | wc -l | tr -d ' ')"
+  echo "Variable: warp_mode=wireguard_netns_pool_rotating"
+  echo "Variable: warp_pool_size=$pool"
+  echo "Variable: warp_status=disabled"
+  echo "AWG2 WARP egress installed; WARP is switched off in the panel (direct egress)"
+  exit 0
+fi
+
 # 5. Health gate: confirm WARP is actually on before declaring success.
 ok=0
 for i in $(seq 1 8); do

@@ -749,6 +749,14 @@ SH;
         }
 
         $audit = self::audit($serverId);
+        $sd = (new VpnServer($serverId))->getData();
+        if ((int) ($sd['warp_enabled'] ?? 1) === 0) {
+            return [
+                'success' => true,
+                'message' => 'Скрипты WARP обновлены; WARP выключен в панели — клиенты по-прежнему выходят напрямую',
+                'audit'   => $audit ?: null,
+            ];
+        }
         $ok = !empty($audit['warp_active']);
         return [
             'success' => $ok,
