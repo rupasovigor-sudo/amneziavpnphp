@@ -106,13 +106,15 @@
     }).catch(function (e) { m.textContent = 'Ошибка: ' + e; });
   });
 
+  // Object names come from the S3 bucket listing — escape before innerHTML.
+  function esc(v) { return String(v == null ? '' : v).replace(/[&<>"']/g, function (c) { return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
   function renderList(items) {
     var tb = document.getElementById('b_list');
     tb.innerHTML = (items || []).map(function (b) {
-      return '<tr class="border-t" data-key="' + b.key + '">' +
-        '<td class="px-3 py-2 font-mono text-xs">' + b.name + '</td>' +
-        '<td class="px-3 py-2 text-gray-500">' + (b.modified || '') + '</td>' +
-        '<td class="px-3 py-2 text-right">' + (b.size_h || '') + '</td>' +
+      return '<tr class="border-t" data-key="' + esc(b.key) + '">' +
+        '<td class="px-3 py-2 font-mono text-xs">' + esc(b.name) + '</td>' +
+        '<td class="px-3 py-2 text-gray-500">' + esc(b.modified) + '</td>' +
+        '<td class="px-3 py-2 text-right">' + esc(b.size_h) + '</td>' +
         '<td class="px-3 py-2 text-right whitespace-nowrap">' +
           '<button data-act="info" class="px-2 py-0.5 bg-gray-500 text-white rounded text-xs">Инфо</button> ' +
           '<button data-act="restore" class="px-2 py-0.5 bg-brand-600 text-white rounded text-xs">Восстановить</button> ' +
@@ -167,9 +169,16 @@
             showConfirmModal('Восстановить БД из бэкапа от ' + (info.created || '?') + '?\nТекущая БД будет ПЕРЕЗАПИСАНА.' + warn, 'Восстановить из бэкапа?', 'Восстановить').then(function (ok) {
               if (!ok) return;
               var m = document.getElementById('b_createMsg'); m.textContent = 'Восстановление БД…';
+              // Block a second restore while this one runs; always report the end.
+              document.querySelectorAll('[data-act="restore"]').forEach(function (b) { b.disabled = true; });
               post('/backups/restore', { key: key }).then(function (d) {
                 m.textContent = d.message || (d.success ? 'Восстановлено' : d.error);
                 showToast(d.message || (d.success ? 'Восстановлено' : d.error), d.success ? 'success' : 'error');
+              }).catch(function (e) {
+                m.textContent = 'Восстановление не завершилось: ' + e;
+                showToast('Восстановление не завершилось: ' + e, 'error');
+              }).finally(function () {
+                document.querySelectorAll('[data-act="restore"]').forEach(function (b) { b.disabled = false; });
               });
             });
           }).catch(function (e) { btn.disabled = false; btn.textContent = 'Восстановить'; showToast('Ошибка: ' + e, 'error'); });

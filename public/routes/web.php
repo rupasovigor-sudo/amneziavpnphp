@@ -112,13 +112,20 @@ Router::get('/dashboard', function () {
     $clients = VpnClient::listByUser($user['id']);
 
     // Count clients with a recent handshake (within 5 minutes) as online (WireGuard/AWG).
+    // Admins see the whole system; other users only their own clients.
     $pdo = DB::conn();
-    $stmt = $pdo->query("
+    $onlineSql = "
         SELECT COUNT(*) as cnt FROM vpn_clients
         WHERE last_handshake IS NOT NULL
         AND last_handshake > DATE_SUB(NOW(), INTERVAL 5 MINUTE)
         AND status = 'active'
-    ");
+    ";
+    if (Auth::isAdmin()) {
+        $stmt = $pdo->query($onlineSql);
+    } else {
+        $stmt = $pdo->prepare($onlineSql . ' AND user_id = ?');
+        $stmt->execute([(int) $user['id']]);
+    }
     $totalOnline = (int) $stmt->fetchColumn();
 
     View::render('dashboard.twig', [
@@ -987,7 +994,9 @@ Router::get('/updates/fleet', function () {
         ServerUpdateManager::reapStuck();
         $refresh = !empty($_GET['refresh']);
         $rows = DB::conn()->query(
-            "SELECT id, name, host, pool_id FROM vpn_servers WHERE status != 'deleted' ORDER BY id"
+            "SELECT s.id, s.name, s.host, s.pool_id, p.name AS pool_name
+             FROM vpn_servers s LEFT JOIN server_pools p ON p.id = s.pool_id
+             WHERE s.status != 'deleted' ORDER BY s.id"
         )->fetchAll(PDO::FETCH_ASSOC) ?: [];
 
         $out = [];
@@ -1001,6 +1010,7 @@ Router::get('/updates/fleet', function () {
                 'name'      => $r['name'],
                 'host'      => $r['host'],
                 'pool_id'   => (int) ($r['pool_id'] ?? 0),
+                'pool_name' => $r['pool_name'] ?? null,
                 'is_active' => ServerUpdateManager::isActivePoolMember($id),
                 'audit'     => $audit,
                 'state'     => ServerUpdateManager::getState($id),

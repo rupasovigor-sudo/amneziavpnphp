@@ -11,18 +11,6 @@
 </div>
 
 <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-  {% if session.success_message %}
-  <div class="mb-4 bg-green-50 border-l-4 border-green-400 p-4 rounded">
-    <p class="text-sm text-green-700"><i class="fas fa-check-circle mr-2"></i>{{ session.success_message }}</p>
-  </div>
-  {% endif %}
-
-  {% if session.error_message %}
-  <div class="mb-4 bg-red-50 border-l-4 border-red-400 p-4 rounded">
-    <p class="text-sm text-red-700"><i class="fas fa-exclamation-circle mr-2"></i>{{ session.error_message }}</p>
-  </div>
-  {% endif %}
-
   {% if servers|length > 0 %}
   <div class="card overflow-x-auto">
     {% include 'servers/_server_table.twig' %}

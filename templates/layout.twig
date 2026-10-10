@@ -335,6 +335,13 @@
 
         // Lightweight toast notifications (replaces alert() for feedback).
         // showToast(message, type) where type = 'success' | 'error' | 'info'
+        // Shared HTML escaper for strings that go into innerHTML (server output,
+        // API messages). Pages may still define their own with the same name.
+        window.escapeHtml = window.escapeHtml || function (v) {
+            return String(v == null ? '' : v).replace(/[&<>"']/g, function (c) {
+                return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c];
+            });
+        };
         window.showToast = function(message, type) {
             const container = document.getElementById('toastContainer');
             if (!container) { if (type === 'error') alert(message); return; }
@@ -362,5 +369,13 @@
     </script>
 
     {% block scripts %}{% endblock %}
+    {% if flash_messages is defined and flash_messages %}
+    <script nonce="{{ csp_nonce }}">
+    document.addEventListener('DOMContentLoaded', function () {
+      {% for f in flash_messages %}showToast({{ f.text|json_encode|raw }}, {{ f.type|json_encode|raw }});
+      {% endfor %}
+    });
+    </script>
+    {% endif %}
 </body>
 </html>

@@ -323,7 +323,14 @@
         // Standalone domain actions
         function dnsUpdate(payload) {
           fetch('/servers/' + SID + '/dns/update', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) })
-            .then(r => r.json()).then(() => load()).catch(() => load());
+            .then(r => r.json())
+            .then(d => {
+              // Surface the outcome (invalid domain, DNS provider error, front lock…)
+              const msg = (d.dns && d.dns.message) || d.error || (payload.upsert ? 'A-запись обновлена' : 'Домен сохранён');
+              showToast(msg, d.success ? 'success' : 'error');
+              load();
+            })
+            .catch(e => { showToast('Ошибка: ' + e, 'error'); load(); });
         }
         const saveBtn = document.getElementById('dnsSaveBtn');
         const repointBtn = document.getElementById('dnsRepointBtn');
@@ -334,10 +341,12 @@
         if (createBtn) createBtn.addEventListener('click', () => {
           const name = prompt('Название пула:', 'pool-' + SID);
           if (!name) return;
+          const createLabel = createBtn.innerHTML;
+          const resetCreate = () => { createBtn.disabled = false; createBtn.innerHTML = createLabel; };
           createBtn.disabled = true; createBtn.textContent = '…';
           fetch('/servers/' + SID + '/pool/create', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ name }) })
-            .then(r => r.json()).then(d => { showToast(d.message || (d.success ? 'Пул создан' : d.error), d.success ? 'success' : 'error'); load(); })
-            .catch(e => { showToast('Ошибка: ' + e, 'error'); load(); });
+            .then(r => r.json()).then(d => { showToast(d.message || (d.success ? 'Пул создан' : d.error), d.success ? 'success' : 'error'); resetCreate(); load(); })
+            .catch(e => { showToast('Ошибка: ' + e, 'error'); resetCreate(); load(); });
         });
 
         function fmtAge(sec) {
@@ -661,13 +670,13 @@
         function showState(st) {
           if (!st || !st.state) return;
           if (st.state === 'running') {
-            msg.innerHTML = '<i class="fas fa-circle-notch fa-spin mr-1"></i>' + (st.message || 'Обновление идёт…');
+            msg.innerHTML = '<i class="fas fa-circle-notch fa-spin mr-1"></i>' + escapeHtml(st.message || 'Обновление идёт…');
             actBtns().forEach(b => b.disabled = true);
             startPoll();
           } else if (st.state === 'done') {
-            msg.innerHTML = '<span class="text-green-700">✅ ' + (st.message || 'Готово') + '</span>';
+            msg.innerHTML = '<span class="text-green-700">✅ ' + escapeHtml(st.message || 'Готово') + '</span>';
           } else if (st.state === 'failed') {
-            msg.innerHTML = '<span class="text-red-700">❌ ' + (st.message || 'Ошибка') + '</span>';
+            msg.innerHTML = '<span class="text-red-700">❌ ' + escapeHtml(st.message || 'Ошибка') + '</span>';
           }
         }
 
@@ -715,7 +724,7 @@
                 load(false);
                 if (window.showToast) showToast(st.message || 'Обновление завершено', st.state === 'done' ? 'success' : 'error');
               } else {
-                msg.innerHTML = '<i class="fas fa-circle-notch fa-spin mr-1"></i>' + (st.message || 'Обновление идёт…');
+                msg.innerHTML = '<i class="fas fa-circle-notch fa-spin mr-1"></i>' + escapeHtml(st.message || 'Обновление идёт…');
               }
             }).catch(() => {});
           }, 5000);
@@ -753,7 +762,7 @@
               if (window.showToast) showToast(d.error || 'Ошибка', 'error');
               return;
             }
-            msg.innerHTML = '<i class="fas fa-circle-notch fa-spin mr-1"></i>' + (d.message || 'Запущено…');
+            msg.innerHTML = '<i class="fas fa-circle-notch fa-spin mr-1"></i>' + escapeHtml(d.message || 'Запущено…');
             startPoll();
           }).catch(e => {
             btns.forEach(b => b.disabled = false);
@@ -1397,10 +1406,10 @@ async function warpAction() {
     if (data.success !== false) {
       updateWarpWidget(data);
     } else {
-      if (badge) badge.innerHTML = '<span class="px-2 py-0.5 rounded text-xs bg-red-600 hover:bg-red-700 text-white">' + (data.error || 'Ошибка') + '</span>';
+      if (badge) badge.innerHTML = '<span class="px-2 py-0.5 rounded text-xs bg-red-600 hover:bg-red-700 text-white">' + escapeHtml(data.error || 'Ошибка') + '</span>';
     }
   } catch (e) {
-    if (badge) badge.innerHTML = '<span class="px-2 py-0.5 rounded text-xs bg-red-600 hover:bg-red-700 text-white">' + e.message + '</span>';
+    if (badge) badge.innerHTML = '<span class="px-2 py-0.5 rounded text-xs bg-red-600 hover:bg-red-700 text-white">' + escapeHtml(e.message) + '</span>';
   }
   if (btnReconnect) btnReconnect.disabled = false;
   if (btnRotate) btnRotate.disabled = false;
@@ -1611,20 +1620,6 @@ async function updateClientSpeeds() {
   }
 }
 
-// Live client search filter (name / IP)
-function filterClients() {
-  const q = (document.getElementById('clientSearch')?.value || '').trim().toLowerCase();
-  const rows = document.querySelectorAll('#clientsTableBody .client-row');
-  let visible = 0;
-  rows.forEach(row => {
-    const hay = row.getAttribute('data-search') || '';
-    const show = q === '' || hay.indexOf(q) !== -1;
-    row.style.display = show ? '' : 'none';
-    if (show) visible++;
-  });
-  const noResults = document.getElementById('clientsNoResults');
-  if (noResults) noResults.classList.toggle('hidden', visible !== 0);
-}
 
 // Update client speeds on load and every 30 seconds
 if (document.querySelector('[id^="client-speed-"]')) {
@@ -1706,34 +1701,6 @@ if (document.querySelector('#clientsTableBody .client-row')) {
   setInterval(refreshLiveStatus, 45000);
 }
 
-async function diagnoseClient() {
-  const clientId = this.dataset.clientId;
-  try {
-    const response = await fetch(`/api/clients/${clientId}/diagnostics`, {
-      credentials: 'same-origin'
-    });
-    const data = await response.json();
-    if (!data.success) {
-      showToast('Диагностика: ' + (data.error || 'ошибка'), 'error');
-      return;
-    }
-
-    const header = [
-      `Клиент: ${data.client.name}`,
-      `IP: ${data.client.ip || '-'}`,
-      `Протокол: ${data.client.protocol_slug || '-'}`,
-      `Контейнер: ${data.client.container_name || '-'}`
-    ];
-    const checks = (data.checks || []).map(check => {
-      const status = check.ok ? 'OK' : 'FAIL';
-      return `${status} ${check.name}: ${check.message}`;
-    });
-
-    showToast(header.concat('', checks).join('\n'), data.checks.every(c => c.ok) ? 'success' : 'error');
-  } catch (e) {
-    showToast('Диагностика: ' + e.message, 'error');
-  }
-}
 
 // Real-time online status updates
 async function updateOnlineStatus() {
@@ -1775,5 +1742,51 @@ async function updateOnlineStatus() {
 // Poll every 5 seconds
 setInterval(updateOnlineStatus, 15000);
 {% endif %}
+
+// Client search and diagnostics work on any server state (were only defined
+// when the server was active, so the search box / Diagnose did nothing).
+// Live client search filter (name / IP)
+function filterClients() {
+  const q = (document.getElementById('clientSearch')?.value || '').trim().toLowerCase();
+  const rows = document.querySelectorAll('#clientsTableBody .client-row');
+  let visible = 0;
+  rows.forEach(row => {
+    const hay = row.getAttribute('data-search') || '';
+    const show = q === '' || hay.indexOf(q) !== -1;
+    row.style.display = show ? '' : 'none';
+    if (show) visible++;
+  });
+  const noResults = document.getElementById('clientsNoResults');
+  if (noResults) noResults.classList.toggle('hidden', visible !== 0);
+}
+
+async function diagnoseClient() {
+  const clientId = this.dataset.clientId;
+  try {
+    const response = await fetch(`/api/clients/${clientId}/diagnostics`, {
+      credentials: 'same-origin'
+    });
+    const data = await response.json();
+    if (!data.success) {
+      showToast('Диагностика: ' + (data.error || 'ошибка'), 'error');
+      return;
+    }
+
+    const header = [
+      `Клиент: ${data.client.name}`,
+      `IP: ${data.client.ip || '-'}`,
+      `Протокол: ${data.client.protocol_slug || '-'}`,
+      `Контейнер: ${data.client.container_name || '-'}`
+    ];
+    const checks = (data.checks || []).map(check => {
+      const status = check.ok ? 'OK' : 'FAIL';
+      return `${status} ${check.name}: ${check.message}`;
+    });
+
+    showToast(header.concat('', checks).join('\n'), data.checks.every(c => c.ok) ? 'success' : 'error');
+  } catch (e) {
+    showToast('Диагностика: ' + e.message, 'error');
+  }
+}
 </script>
 {% endblock %}

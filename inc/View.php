@@ -59,6 +59,31 @@ class View {
 
   public static function render(string $template, array $vars = []): void {
     if (!self::$twig) throw new RuntimeException('Twig is not initialized');
+    $vars['flash_messages'] = self::takeFlash();
     echo self::$twig->render($template, $vars);
+  }
+
+  /**
+   * One-shot messages for the layout to show as toasts: the session keys the
+   * routes set before a redirect, plus ?success= / ?error= redirect params.
+   * Several pages never rendered these, so e.g. a failed client creation or a
+   * refused server delete just reloaded with no explanation.
+   */
+  private static function takeFlash(): array {
+    $flash = [];
+    if (session_status() === PHP_SESSION_ACTIVE) {
+      foreach (['success_message' => 'success', 'error_message' => 'error'] as $key => $type) {
+        if (!empty($_SESSION[$key]) && is_string($_SESSION[$key])) {
+          $flash[] = ['type' => $type, 'text' => $_SESSION[$key]];
+          unset($_SESSION[$key]);
+        }
+      }
+    }
+    foreach (['success', 'error'] as $type) {
+      if (isset($_GET[$type]) && is_string($_GET[$type]) && trim($_GET[$type]) !== '') {
+        $flash[] = ['type' => $type, 'text' => mb_substr(trim($_GET[$type]), 0, 300)];
+      }
+    }
+    return $flash;
   }
 }

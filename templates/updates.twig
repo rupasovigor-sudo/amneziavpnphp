@@ -109,15 +109,31 @@
   // Rolling update is only meaningful for a pool with a spare member.
   const rolling = document.getElementById('fleetRolling');
   let poolId = 0;
+  let readyPools = [];
+  const rollingLabel = rolling.innerHTML;
   function maybeShowRolling(rows) {
     const pools = {};
-    (rows || []).forEach(r => { if (r.pool_id) pools[r.pool_id] = (pools[r.pool_id] || 0) + 1; });
-    const ready = Object.keys(pools).filter(p => pools[p] >= 2);
-    poolId = ready.length ? Number(ready[0]) : 0;
+    (rows || []).forEach(r => {
+      if (!r.pool_id) return;
+      pools[r.pool_id] = pools[r.pool_id] || { id: r.pool_id, name: r.pool_name || ('#' + r.pool_id), n: 0 };
+      pools[r.pool_id].n++;
+    });
+    readyPools = Object.values(pools).filter(p => p.n >= 2);
+    poolId = readyPools.length ? Number(readyPools[0].id) : 0;
     rolling.style.display = poolId ? 'inline-flex' : 'none';
+    // Name the target pool instead of silently taking the first one.
+    if (poolId) rolling.innerHTML = rollingLabel + ' <span class="opacity-80">(' + esc(readyPools[0].name) + (readyPools.length > 1 ? ' …' : '') + ')</span>';
   }
   rolling.addEventListener('click', () => {
+    if (readyPools.length > 1) {
+      const list = readyPools.map((p, i) => (i + 1) + ') ' + p.name).join('\n');
+      const pick = Number(prompt('Какой пул обновить?\n' + list, '1'));
+      if (!pick || !readyPools[pick - 1]) return;
+      poolId = Number(readyPools[pick - 1].id);
+    }
+    const target = (readyPools.find(p => Number(p.id) === poolId) || {}).name || ('#' + poolId);
     showConfirmModal(
+      'Пул «' + target + '».\n\n' +
       'Порядок: сначала обновляются резервные серверы, затем пул переключается на проверенный из них, и только потом обновляется бывший активный.\n\n' +
       'Активный сервер не трогается, пока есть кому его заменить. Клиенты, оставшиеся на бывшем активном, кратко переподключатся.',
       'Rolling-обновление пула?', 'Запустить'

@@ -109,6 +109,15 @@ class Translator {
         $translation = self::$translations[$key] ?? self::$fallback[$key] ?? $key;
 
         if (!empty($params)) {
+            // Stored translations use positional {0}, {1} placeholders (e.g.
+            // "Удалить {0}?"), which sprintf ignored — the confirm showed "{0}".
+            if (preg_match('/\{\d+\}/', $translation)) {
+                $map = [];
+                foreach (array_values($params) as $i => $v) {
+                    $map['{' . $i . '}'] = (string) $v;
+                }
+                return strtr($translation, $map);
+            }
             return sprintf($translation, ...$params);
         }
         

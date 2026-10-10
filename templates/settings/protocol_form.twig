@@ -290,7 +290,8 @@ document.addEventListener('DOMContentLoaded', function() {
             const appendCmd = (cmd) => {
                 const line = document.createElement('div');
                 line.className = 'text-xs text-gray-800';
-                line.innerHTML = `<span class="text-blue-600">$</span> <code>${cmd}</code>`;
+                line.innerHTML = '<span class="text-blue-600">$</span> <code></code>';
+                line.querySelector('code').textContent = cmd;
                 testOut.appendChild(line);
             };
             const appendOut = (text) => {
@@ -374,7 +375,8 @@ document.addEventListener('DOMContentLoaded', function() {
             const appendCmd = (cmd) => {
                 const line = document.createElement('div');
                 line.className = 'text-xs text-gray-800';
-                line.innerHTML = `<span class="text-blue-600">$</span> <code>${cmd}</code>`;
+                line.innerHTML = '<span class="text-blue-600">$</span> <code></code>';
+                line.querySelector('code').textContent = cmd;
                 testUninstallOut.appendChild(line);
             };
             const appendOut = (text) => {

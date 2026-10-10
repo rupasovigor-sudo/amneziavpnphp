@@ -365,7 +365,9 @@ class LogsController {
             'total_lines' => count($lines),
             'errors' => $errorCount,
             'warnings' => $warningCount,
-            'success' => $successCount,
+            // Not 'success': that key is the request status, and a duplicate
+            // silently overwrote it with the count (0 → the UI saw a failure).
+            'success_count' => $successCount,
             'file_size' => filesize($filePath),
             'file_size_formatted' => $this->formatBytes(filesize($filePath)),
             'last_modified' => date('Y-m-d H:i:s', filemtime($filePath))

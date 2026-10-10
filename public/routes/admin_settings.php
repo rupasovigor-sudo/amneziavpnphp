@@ -399,9 +399,7 @@ Router::get('/pools', function () {
         'pools' => $pools,
         'fronts' => $fronts,
         'reputation' => IpReputation::latestByServer(),
-        'flash_error' => $_SESSION['error_message'] ?? null,
     ]);
-    unset($_SESSION['error_message']);
 });
 
 // ---- Pool front (entry relay) API (admin, JSON) ----------------------------

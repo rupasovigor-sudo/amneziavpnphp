@@ -72,6 +72,13 @@
 .dark input, .dark select, .dark textarea { background-color: #0f172a; border-color: #334155; color: #e2e8f0; }
 .dark .btn-secondary { background-color: #334155; color: #e2e8f0; }
 .dark .btn-secondary:hover { background-color: #475569; }
+/* Grey fills paired with dark text (Cancel buttons, STANDBY / neutral badges):
+   the text is forced light above, so the fill must go dark too. */
+.dark .bg-gray-200 { background-color: #334155 !important; }
+.dark .bg-gray-300 { background-color: #475569 !important; }
+.dark .hover\:bg-gray-200:hover,
+.dark .hover\:bg-gray-300:hover { background-color: #475569 !important; }
+.dark .badge-gray { background-color: #334155; color: #e2e8f0; }
 
 /* WARP status panel — distinctive dark gradient (plain CSS, never purged). */
 .warp-panel { background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%); }

@@ -12,7 +12,7 @@
             <button class="px-4 py-2 bg-yellow-500 text-white rounded-md hover:bg-yellow-600" id="btnClearAll" title="{{ 'Удалить все логи' | trans }}">
                 <i class="fas fa-trash mr-2"></i>{{ 'Очистить все' | trans }}
             </button>
-            <a href="/admin/logs/download?file={{ selected_file }}"
+            <a href="/admin/logs/download?file={{ selected_file|url_encode }}"
                class="px-4 py-2 rounded-md border {{ selected_file ? 'bg-white text-gray-700 hover:bg-gray-50' : 'bg-gray-100 text-gray-400 cursor-not-allowed' }}">
                 <i class="fas fa-download mr-2"></i>{{ 'Скачать' | trans }}
             </a>
@@ -55,7 +55,7 @@
                 <div class="max-h-[600px] overflow-y-auto">
                     {% if log_files | length > 0 %}
                         {% for file in log_files %}
-                            <a href="/admin/logs?file={{ file.path }}" class="block px-6 py-4 border-b border-gray-100 hover:bg-gray-50 {{ selected_file == file.path ? 'bg-brand-50' : '' }}">
+                            <a href="/admin/logs?file={{ file.path|url_encode }}" class="block px-6 py-4 border-b border-gray-100 hover:bg-gray-50 {{ selected_file == file.path ? 'bg-brand-50' : '' }}">
                                 <div class="flex items-start justify-between">
                                     <div class="flex-1">
                                         <div class="text-sm font-medium" style="word-break: break-all;">{{ file.name }}</div>
@@ -175,7 +175,7 @@
 
 <script nonce="{{ csp_nonce }}">
 document.addEventListener('DOMContentLoaded', function() {
-    const selectedFile = '{{ selected_file }}';
+    const selectedFile = {{ selected_file|default('')|json_encode|raw }};
 
     // Delete log file
     document.querySelectorAll('.delete-log').forEach(btn => {
@@ -219,8 +219,9 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
-    // Search logs
-    document.getElementById('searchForm').addEventListener('submit', function(e) {
+    // Search logs (the form only exists once a file is selected)
+    const searchForm = document.getElementById('searchForm');
+    if (searchForm) searchForm.addEventListener('submit', function(e) {
         e.preventDefault();
         
         const formData = new FormData(this);
@@ -284,7 +285,7 @@ document.addEventListener('DOMContentLoaded', function() {
         document.getElementById('totalLines').textContent = data.total_lines;
         document.getElementById('errorCount').textContent = data.errors;
         document.getElementById('warningCount').textContent = data.warnings;
-        document.getElementById('successCount').textContent = data.success;
+        document.getElementById('successCount').textContent = data.success_count;
         document.getElementById('lastModified').textContent = '{{ "Последнее обновление:" | trans }} ' + data.last_modified;
         
         document.getElementById('statsPanel').style.display = 'block';
