@@ -45,6 +45,12 @@ POOL_SIZE="${WARP_POOL_SIZE:-5}"
 # ranges (goog.json minus cloud.json = not GCP customers' sites) are bypassed;
 # an nft chain after mangle clears the WARP mark for them.
 BYPASS_GOOGLE="${WARP_BYPASS_GOOGLE:-0}"
+
+# Panel switch: WARP_ENABLED=0 turns WARP egress off for this server — start,
+# health and boot all keep it torn down, so client traffic leaves directly
+# from the server IP (the unit stays enabled, so turning it back on is just a
+# settings change + restart).
+WARP_ENABLED="${WARP_ENABLED:-1}"
 DIRECT_TABLE="awg2_direct"
 # Rotate the active profile once this many bytes have egressed through it
 # (default 5 GiB); 0 disables traffic-based rotation.
@@ -414,7 +420,7 @@ PY
 apply_direct_bypass() {
   local f ranges
   ranges="$(google_ranges_file)"
-  if [ "$BYPASS_GOOGLE" != "1" ]; then
+  if [ "$BYPASS_GOOGLE" != "1" ] || [ "$WARP_ENABLED" != "1" ]; then
     nft delete table ip "$DIRECT_TABLE" 2>/dev/null || true
     return 0
   fi
@@ -450,7 +456,7 @@ apply_direct_bypass() {
 ensure_direct_bypass() {
   local have=0
   nft list table ip "$DIRECT_TABLE" >/dev/null 2>&1 && have=1
-  if [ "$BYPASS_GOOGLE" = "1" ]; then
+  if [ "$BYPASS_GOOGLE" = "1" ] && [ "$WARP_ENABLED" = "1" ]; then
     if [ "$have" = "0" ] || [ -n "$(find "$(google_ranges_file)" -mmin +1440 2>/dev/null || true)" ]; then
       apply_direct_bypass
     fi
@@ -493,6 +499,12 @@ bring_up_active() {
 
 start_egress() {
   local ips vpn_port
+  if [ "$WARP_ENABLED" != "1" ]; then
+    log "WARP disabled in the panel (WARP_ENABLED=0): client egress goes directly via the server IP"
+    cleanup_runtime
+    nft delete table ip "$DIRECT_TABLE" 2>/dev/null || true
+    return 0
+  fi
   need_awg2_container
   mkdir -p "$STATE_DIR" "$PROFILE_DIR"
   # Profiles registered by older versions were world-readable (0644).
@@ -563,6 +575,15 @@ rotate_profile() {
 
 # Health probe used by the systemd timer: rotate on WARP-down / 429 / traffic cap.
 health_check() {
+  if [ "$WARP_ENABLED" != "1" ]; then
+    # Keep it off: tear down anything a previous run (or a manual start) left.
+    if ip netns list 2>/dev/null | grep -qw "$NS" || ip rule show | grep -q "lookup ${TABLE}"; then
+      log "health: WARP disabled in the panel - tearing down leftover egress"
+      cleanup_runtime
+    fi
+    nft delete table ip "$DIRECT_TABLE" 2>/dev/null || true
+    return 0
+  fi
   # The namespace is legitimately absent while the unit is (re)starting; do not
   # race it with a second start (the two cleanup_runtime calls used to delete
   # each other's fwmark rule). Hand recovery to the unit instead.
@@ -611,7 +632,7 @@ status_egress() {
   echo "active=$(active_slot) pool=$(count_profiles) rotations=$(cat "$STATE_DIR/rotation_count" 2>/dev/null || echo 0)"
   iptables -t mangle -S "$CHAIN" 2>/dev/null || true
   ip rule show | grep "$TABLE" || true
-  echo "bypass_google=$BYPASS_GOOGLE prefixes=$(wc -l < "$(google_ranges_file)" 2>/dev/null || echo 0)"
+  echo "warp_enabled=$WARP_ENABLED bypass_google=$BYPASS_GOOGLE prefixes=$(wc -l < "$(google_ranges_file)" 2>/dev/null || echo 0)"
   nft list chain ip "$DIRECT_TABLE" prerouting 2>/dev/null | grep counter || true
 }
 

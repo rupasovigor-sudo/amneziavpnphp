@@ -828,10 +828,16 @@
                     </svg>
                     <span class="text-sm font-semibold text-white">Cloudflare WARP</span>
                   </div>
-                  <div id="warpStatusBadge">
-                    <span class="px-2 py-0.5 rounded text-xs bg-gray-600 text-gray-300">
-                      <i class="fas fa-spinner fa-spin mr-1"></i>Загрузка...
-                    </span>
+                  <div class="flex items-center gap-3">
+                    <div id="warpStatusBadge">
+                      <span class="px-2 py-0.5 rounded text-xs bg-gray-600 text-gray-300">
+                        <i class="fas fa-spinner fa-spin mr-1"></i>Загрузка...
+                      </span>
+                    </div>
+                    <label class="inline-flex items-center gap-1.5 cursor-pointer select-none text-xs text-gray-300" title="Выключено — клиенты выходят в интернет напрямую с IP сервера">
+                      <input type="checkbox" id="warpToggle" class="rounded border-gray-500 text-brand-600 focus:ring-brand-500" {{ (server.warp_enabled ?? 1) ? 'checked' }} disabled>
+                      <span>WARP</span>
+                    </label>
                   </div>
                 </div>
 
@@ -864,12 +870,6 @@
                   </button>
                   <button id="warpBtnReconnect" data-action="warpAction" data-warp="reconnect" class="flex-1 px-2 py-1 rounded text-xs font-medium text-white bg-brand-600 hover:bg-brand-700 disabled:opacity-50" disabled>
                     <i class="fas fa-sync-alt mr-1"></i>Reconnect
-                  </button>
-                  <button id="warpBtnDisconnect" data-action="warpAction" data-warp="disconnect" class="flex-1 px-2 py-1 rounded text-xs font-medium text-white bg-red-600 hover:bg-red-700 disabled:opacity-50" disabled>
-                    <i class="fas fa-stop mr-1"></i>Stop
-                  </button>
-                  <button id="warpBtnConnect" data-action="warpAction" data-warp="connect" class="flex-1 px-2 py-1 rounded text-xs font-medium text-white bg-green-600 hover:bg-green-700 disabled:opacity-50" disabled>
-                    <i class="fas fa-play mr-1"></i>Start
                   </button>
                 </div>
 
@@ -1287,15 +1287,26 @@ function updateWarpWidget(data) {
   const rotations = document.getElementById('warpRotations');
   const mode = document.getElementById('warpMode');
   const svc = document.getElementById('warpSvc');
-  const btnConnect = document.getElementById('warpBtnConnect');
-  const btnDisconnect = document.getElementById('warpBtnDisconnect');
   const btnReconnect = document.getElementById('warpBtnReconnect');
   const btnRotate = document.getElementById('warpBtnRotate');
+  const toggle = document.getElementById('warpToggle');
 
   if (!badge) return;
 
   if (!data.installed) {
     badge.innerHTML = '<span class="px-2 py-0.5 rounded text-xs bg-gray-600 text-gray-300">Не установлен</span>';
+    if (toggle) toggle.disabled = true;
+    return;
+  }
+
+  const enabled = Number(data.warp_enabled ?? 1) === 1;
+  if (toggle) { toggle.checked = enabled; toggle.disabled = false; }
+  if (!enabled) {
+    badge.innerHTML = '<span class="px-2 py-0.5 rounded text-xs bg-gray-600 text-gray-200"><i class="fas fa-power-off mr-1"></i>Выключен — выход напрямую</span>';
+    if (exitIp) exitIp.textContent = '—';
+    if (svc) svc.textContent = 'выключен в панели';
+    if (btnReconnect) btnReconnect.disabled = true;
+    if (btnRotate) btnRotate.disabled = true;
     return;
   }
 
@@ -1311,11 +1322,45 @@ function updateWarpWidget(data) {
   if (mode) mode.textContent = data.mode || '—';
   if (svc) svc.textContent = data.service_status || '—';
 
-  if (btnConnect) { btnConnect.disabled = false; }
-  if (btnDisconnect) { btnDisconnect.disabled = false; }
   if (btnReconnect) { btnReconnect.disabled = false; }
   if (btnRotate) { btnRotate.disabled = false; }
 }
+
+// Persistent on/off switch (stored in the panel, enforced on the server).
+document.addEventListener('DOMContentLoaded', function () {
+  const toggle = document.getElementById('warpToggle');
+  if (!toggle) return;
+  toggle.addEventListener('change', async function () {
+    const turnOn = toggle.checked;
+    const ok = await showConfirmModal(
+      turnOn
+        ? 'Включить WARP на этом сервере? Трафик клиентов снова пойдёт через Cloudflare (запуск занимает до пары минут).'
+        : 'Выключить WARP на этом сервере? Клиенты будут выходить в интернет напрямую с IP сервера {{ server.host }}. Настройка сохранится и после перезагрузки.',
+      turnOn ? 'Включить WARP' : 'Выключить WARP',
+      turnOn ? 'Включить' : 'Выключить'
+    );
+    if (!ok) { toggle.checked = !turnOn; return; }
+    toggle.disabled = true;
+    const badge = document.getElementById('warpStatusBadge');
+    if (badge) badge.innerHTML = '<span class="px-2 py-0.5 rounded text-xs bg-gray-600 text-gray-300"><i class="fas fa-spinner fa-spin mr-1"></i>' + (turnOn ? 'включаю…' : 'выключаю…') + '</span>';
+    try {
+      const res = await fetch('/servers/{{ server.id }}/warp/action', {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: turnOn ? 'connect' : 'disconnect' })
+      });
+      const data = await res.json();
+      showToast(data.message || data.error || (data.success ? 'Готово' : 'Ошибка'), data.success ? 'success' : 'error');
+      updateWarpWidget(data);
+      // A start may still be settling — refresh once it has had time.
+      if (turnOn) setTimeout(loadWarpStatus, 30000);
+    } catch (e) {
+      showToast('Ошибка: ' + e.message, 'error');
+      toggle.checked = !turnOn;
+    }
+    toggle.disabled = false;
+  });
+});
 
 async function loadWarpStatus() {
   const widget = document.getElementById('warpStatusWidget');
@@ -1333,12 +1378,8 @@ async function loadWarpStatus() {
 
 async function warpAction() {
   const action = this.dataset.warp;
-  const btnConnect = document.getElementById('warpBtnConnect');
-  const btnDisconnect = document.getElementById('warpBtnDisconnect');
   const btnReconnect = document.getElementById('warpBtnReconnect');
   const btnRotate = document.getElementById('warpBtnRotate');
-  if (btnConnect) btnConnect.disabled = true;
-  if (btnDisconnect) btnDisconnect.disabled = true;
   if (btnReconnect) btnReconnect.disabled = true;
   if (btnRotate) btnRotate.disabled = true;
 
@@ -1361,8 +1402,6 @@ async function warpAction() {
   } catch (e) {
     if (badge) badge.innerHTML = '<span class="px-2 py-0.5 rounded text-xs bg-red-600 hover:bg-red-700 text-white">' + e.message + '</span>';
   }
-  if (btnConnect) btnConnect.disabled = false;
-  if (btnDisconnect) btnDisconnect.disabled = false;
   if (btnReconnect) btnReconnect.disabled = false;
   if (btnRotate) btnRotate.disabled = false;
 }

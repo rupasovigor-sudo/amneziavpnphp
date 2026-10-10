@@ -312,7 +312,15 @@ SH;
                 : "Контейнер {$containerName} не запущен или не найден",
         ];
 
-        if (($values['warp_present'] ?? '0') === '1') {
+        if (($values['warp_present'] ?? '0') === '1' && (int) ($this->serverData['warp_enabled'] ?? 1) === 0) {
+            // Switched off in the panel on purpose — not a fault, and the
+            // collector's auto-repair must not turn it back on.
+            $checks['warp_egress'] = [
+                'ok' => true,
+                'severity' => 'critical',
+                'message' => 'WARP выключен в панели — выход напрямую с IP сервера',
+            ];
+        } elseif (($values['warp_present'] ?? '0') === '1') {
             $svcState = $values['warp_service_active'] ?? '';
             // 'activating' = mid-start (e.g. the ExecStart is waiting on the
             // apt/dpkg lock right after a reboot) — in progress, not broken; do

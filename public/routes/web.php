@@ -561,7 +561,7 @@ Router::get('/servers/{id}/warp/status', function ($params) {
             return;
         }
         $status = InstallProtocolManager::getWarpStatus($server);
-        echo json_encode(array_merge(['success' => true], $status));
+        echo json_encode(array_merge(['success' => true], $status, ['warp_enabled' => (int) ($serverData['warp_enabled'] ?? 1)]));
     } catch (Exception $e) {
         http_response_code(500);
         echo json_encode(['success' => false, 'error' => $e->getMessage()]);
@@ -591,13 +591,25 @@ Router::post('/servers/{id}/warp/action', function ($params) {
         }
         // cf-warp v3 is always the WireGuard-netns profile pool; drive it via
         // systemd and the runtime engine (no legacy warp-cli path).
+        // connect/disconnect are the persistent on/off switch (a bare
+        // "systemctl stop" was undone by the health timer within a minute).
         switch ($action) {
             case 'connect':
-            case 'reconnect':
-                $server->executeCommand('systemctl restart awg2-warp-egress.service 2>/dev/null || { /usr/local/sbin/awg2-warp-egress cleanup 2>/dev/null || true; systemctl reset-failed awg2-warp-egress.service 2>/dev/null || true; }', true);
-                break;
             case 'disconnect':
-                $server->executeCommand('systemctl stop awg2-warp-egress.service 2>/dev/null || true; systemctl reset-failed awg2-warp-egress.service 2>/dev/null || true', true);
+                DB::conn()->prepare('UPDATE vpn_servers SET warp_enabled = ? WHERE id = ?')
+                    ->execute([$action === 'connect' ? 1 : 0, $serverId]);
+                $res = ServerUpdateManager::applyWarpSettings($serverId);
+                $status = InstallProtocolManager::getWarpStatus($server, false);
+                echo json_encode(array_merge($status, [
+                    'success' => !empty($res['success']),
+                    'action' => $action,
+                    'message' => $res['message'] ?? '',
+                    'warp_enabled' => $action === 'connect' ? 1 : 0,
+                ]), JSON_UNESCAPED_UNICODE);
+                return;
+            case 'reconnect':
+                // --no-block: a start may wait minutes on apt locks; never hang the request.
+                $server->executeCommand('systemctl reset-failed awg2-warp-egress.service 2>/dev/null; systemctl restart --no-block awg2-warp-egress.service 2>/dev/null || true', true);
                 break;
             case 'rotate':
                 // Switch to the next profile in the pool without dropping the tunnel.
@@ -606,7 +618,7 @@ Router::post('/servers/{id}/warp/action', function ($params) {
         }
         sleep(2);
         $status = InstallProtocolManager::getWarpStatus($server, false);
-        echo json_encode(array_merge(['success' => true, 'action' => $action], $status));
+        echo json_encode(array_merge(['success' => true, 'action' => $action], $status, ['warp_enabled' => (int) ($serverData['warp_enabled'] ?? 1)]));
     } catch (Exception $e) {
         http_response_code(500);
         echo json_encode(['success' => false, 'error' => $e->getMessage()]);

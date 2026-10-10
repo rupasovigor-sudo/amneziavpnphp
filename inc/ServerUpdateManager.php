@@ -220,6 +220,7 @@ SH;
             $server = new VpnServer($serverId);
             $data = $server->getData();
             $poolId = (int) ($data['pool_id'] ?? 0);
+            $enabled = (int) ($data['warp_enabled'] ?? 1) === 1 ? 1 : 0;
             $bypass = 0;
             if ($poolId > 0) {
                 $st = DB::conn()->prepare('SELECT warp_bypass_google FROM server_pools WHERE id = ?');
@@ -231,6 +232,11 @@ SH;
                 '[ -x /usr/local/sbin/awg2-warp-egress ] && sha256sum /usr/local/sbin/awg2-warp-egress | cut -d" " -f1 || echo none',
                 true
             ));
+            // What the server currently runs with (no file = enabled).
+            $wasEnabled = trim((string) $server->executeCommand(
+                'grep -q "^WARP_ENABLED=0" /etc/default/awg2-warp-egress 2>/dev/null && echo 0 || echo 1',
+                true
+            )) === '1' ? 1 : 0;
             if ($installed === 'none') {
                 return ['success' => false, 'message' => 'WARP egress не установлен'];
             }
@@ -243,9 +249,49 @@ SH;
                 $shipped = true;
             }
 
-            $server->uploadContent('/etc/default/awg2-warp-egress', "# Managed by the Amnezia panel
-WARP_BYPASS_GOOGLE={$bypass}
-", 0644);
+            $server->uploadContent(
+                '/etc/default/awg2-warp-egress',
+                "# Managed by the Amnezia panel\nWARP_ENABLED={$enabled}\nWARP_BYPASS_GOOGLE={$bypass}\n",
+                0644
+            );
+            $prefix = $shipped ? 'runtime обновлён; ' : '';
+
+            if ($enabled !== $wasEnabled) {
+                // On/off flips need the unit to (re)build or tear down routing.
+                // Never block on it (a start can wait minutes on apt locks):
+                // fire --no-block and poll briefly for the ip rule.
+                $want = $enabled ? 'present' : 'absent';
+                $out = (string) $server->executeCommand(
+                    'systemctl reset-failed awg2-warp-egress.service 2>/dev/null; '
+                    . 'systemctl restart --no-block awg2-warp-egress.service; '
+                    . 'for i in $(seq 1 25); do sleep 2; '
+                    . 'if ip rule show | grep -q "lookup 51888"; then s=present; else s=absent; fi; '
+                    . '[ "$s" = "' . $want . '" ] && break; done; echo "RULE_$s"',
+                    true
+                );
+                $reached = str_contains($out, 'RULE_' . $want);
+                if (!$enabled) {
+                    return [
+                        'success' => $reached,
+                        'message' => $prefix . ($reached
+                            ? 'WARP выключен — клиенты выходят напрямую с IP сервера'
+                            : 'WARP выключается, но маршрут ещё на месте — проверьте через минуту'),
+                        'enabled' => false,
+                    ];
+                }
+                return [
+                    'success' => true,
+                    'message' => $prefix . ($reached
+                        ? 'WARP включён' . ($bypass ? ' (Google — напрямую)' : '')
+                        : 'WARP запускается (может занять пару минут) — статус обновится сам'),
+                    'enabled' => true,
+                    'starting' => !$reached,
+                ];
+            }
+
+            if (!$enabled) {
+                return ['success' => true, 'message' => $prefix . 'WARP выключен — клиенты выходят напрямую с IP сервера', 'enabled' => false];
+            }
             $out = (string) $server->executeCommand(
                 'timeout 120 /usr/local/sbin/awg2-warp-egress bypass 2>&1 | tail -3; '
                 . 'nft list table ip awg2_direct >/dev/null 2>&1 && echo BYPASS_ON || echo BYPASS_OFF',
@@ -253,12 +299,11 @@ WARP_BYPASS_GOOGLE={$bypass}
             );
             $on = str_contains($out, 'BYPASS_ON');
             $ok = $on === ($bypass === 1);
-            $msg = ($shipped ? 'runtime обновлён; ' : '')
-                . ($bypass ? ($on ? 'Google напрямую — включено' : 'Google напрямую — НЕ применилось') : 'Google через WARP');
+            $msg = $prefix . ($bypass ? ($on ? 'Google напрямую — включено' : 'Google напрямую — НЕ применилось') : 'Google через WARP');
             if (!$ok) {
                 $msg .= ': ' . trim(substr($out, -300));
             }
-            return ['success' => $ok, 'message' => $msg, 'bypass' => $on, 'runtime_shipped' => $shipped];
+            return ['success' => $ok, 'message' => $msg, 'bypass' => $on, 'enabled' => true, 'runtime_shipped' => $shipped];
         } catch (Throwable $e) {
             return ['success' => false, 'message' => 'WARP settings: ' . $e->getMessage()];
         }

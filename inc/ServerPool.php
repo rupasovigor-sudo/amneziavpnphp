@@ -35,7 +35,7 @@ class ServerPool
     {
         $stmt = DB::conn()->prepare(
             'SELECT id, name, host, domain, status, pool_priority, pool_sync_pending, last_check_at,
-                    validated_clean, validated_at, validation_note
+                    validated_clean, validated_at, validation_note, warp_enabled
              FROM vpn_servers WHERE pool_id = ? ORDER BY pool_priority ASC, id ASC'
         );
         $stmt->execute([$poolId]);
@@ -156,6 +156,7 @@ class ServerPool
                 'sync_pending' => (int) ($m['pool_sync_pending'] ?? 0) === 1,
                 'validated_clean' => is_null($m['validated_clean'] ?? null) ? null : (int) $m['validated_clean'],
                 'validation_note' => $m['validation_note'] ?? null,
+                'warp_enabled' => (int) ($m['warp_enabled'] ?? 1) === 1,
             ];
         }
 
@@ -167,6 +168,7 @@ class ServerPool
                 'vpn_port' => (int) ($pool['vpn_port'] ?? 443),
                 'vpn_subnet' => $pool['vpn_subnet'],
                 'active_server_id' => $activeId,
+                'warp_bypass_google' => (int) ($pool['warp_bypass_google'] ?? 1) === 1,
             ],
             'members' => $members,
             'resolved_ips' => $resolved,

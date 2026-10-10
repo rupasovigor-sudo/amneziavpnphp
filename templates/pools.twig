@@ -33,7 +33,7 @@
     {# Egress policy for the whole pool #}
     <div class="px-5 py-3 border-b border-gray-100 flex items-center justify-between flex-wrap gap-3 text-sm">
       <div class="text-gray-600 leading-snug">
-        <span class="font-medium text-gray-800">Выход в интернет:</span> Cloudflare WARP.
+        <span class="font-medium text-gray-800">Выход в интернет:</span> Cloudflare WARP{% if p.members|filter(m => not m.warp_enabled)|length %} (кроме серверов с пометкой «WARP выкл» — они выходят напрямую){% endif %}.
         {% if pool.warp_bypass_google ?? 1 %}
           Google (поиск, Gemini, YouTube) — <b>напрямую с IP сервера</b>: без капчи и без крюка через другую страну; страна для Google = страна сервера.
         {% else %}
@@ -65,7 +65,7 @@
           {% set ready = m.status == 'active' and not m.sync_pending and m.validated_clean == 1 %}
           <tr class="hover:bg-gray-50">
             <td class="px-4 py-2">
-              <div class="font-medium">{{ m.name }}</div>
+              <div class="font-medium">{{ m.name }}{% if m.warp_enabled is defined and not m.warp_enabled %} <span class="badge-yellow" title="Клиенты этого сервера выходят в интернет напрямую с его IP">WARP выкл</span>{% endif %}</div>
               <div class="text-xs text-gray-500 font-mono">{{ m.host }} · #{{ m.id }} · prio {{ m.priority }}</div>
             </td>
             <td class="px-4 py-2">
