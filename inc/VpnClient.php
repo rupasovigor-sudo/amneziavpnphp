@@ -1301,6 +1301,8 @@ trap cleanup EXIT
 printf '%s\n' "$PRESHARED_KEY" > "$PSK_FILE"
 
 "$WG_TOOL" set "$IFACE_NAME" peer "$PUBLIC_KEY" preshared-key "$PSK_FILE" allowed-ips "$CLIENT_IP/32"
+# Idempotent: a repeated add (restore, retry) must not append a duplicate block.
+if ! grep -qF "PublicKey = $PUBLIC_KEY" "$CONFIG_DIR/$CONFIG_FILE" 2>/dev/null; then
 cat >> "$CONFIG_DIR/$CONFIG_FILE" <<EOF
 
 [Peer]
@@ -1308,6 +1310,7 @@ PublicKey = $PUBLIC_KEY
 PresharedKey = $PRESHARED_KEY
 AllowedIPs = $CLIENT_IP/32
 EOF
+fi
 
 TABLE_JSON=$(cat "$CONFIG_DIR/clientsTable" 2>/dev/null || true)
 if ! printf '%s' "$TABLE_JSON" | grep -q '^[[:space:]]*\['; then
@@ -1630,6 +1633,17 @@ BASH;
                 } catch (Exception $e) {
                     throw new Exception('Failed to restore client on server: ' . $e->getMessage());
                 }
+            } elseif ($serverData) {
+                // Home server down: the peer can't be added now — let the
+                // reconcile pass add it once the server is back.
+                DB::conn()->prepare('UPDATE vpn_servers SET pool_sync_pending = 1 WHERE id = ?')->execute([(int) $serverData['id']]);
+            }
+            // revoke() stripped the peer from EVERY pool member, so restore must
+            // put it back on all of them — otherwise the client stays broken via
+            // the active member until a resync happens to run.
+            $poolId = (int) ($serverData['pool_id'] ?? 0);
+            if ($poolId > 0) {
+                ServerPool::pushPeerToMembers($poolId, (string) $this->data['public_key'], (string) $this->data['client_ip'], (int) $this->data['server_id']);
             }
         }
 
@@ -1671,7 +1685,19 @@ BASH;
         // failed to remove the peer — had its row deleted while the peer lived
         // on forever, invisible to the DB and holding an IP that getNextClientIP
         // would then hand to somebody else.
-        $this->revoke();
+        $removed = $this->revoke();
+
+        // On a standalone server nothing re-syncs peers later, so a peer we
+        // failed to strip would live on invisibly — holding an IP that
+        // getNextClientIP() then hands to the next client. Keep the row (now
+        // disabled) and report. Pool members are flagged for reconcile by
+        // revoke(), which removes the orphan, so deletion can proceed there.
+        if (!$removed && self::isWireguardProtocol((int) ($this->data['protocol_id'] ?? 0))) {
+            $sd = (new VpnServer((int) $this->data['server_id']))->getData();
+            if ($sd && (int) ($sd['pool_id'] ?? 0) === 0) {
+                throw new Exception('Не удалось снять пир клиента с сервера — клиент отключён, но не удалён. Повторите, когда сервер будет доступен.');
+            }
+        }
 
         // Delete from database
         $pdo = DB::conn();
@@ -2385,8 +2411,11 @@ BASH;
             return false;
         }
 
-        // Calculate new expiration from current or now
-        $baseDate = $client['expires_at'] ? strtotime($client['expires_at']) : time();
+        // Extend from the current expiry, or from NOW if it already passed —
+        // "+30 days" on a client that expired 60 days ago must not leave it
+        // expired.
+        $current = $client['expires_at'] ? (int) strtotime((string) $client['expires_at']) : 0;
+        $baseDate = max(time(), $current);
         $newExpiration = date('Y-m-d H:i:s', strtotime("+{$days} days", $baseDate));
 
         return self::setExpiration($clientId, $newExpiration);
