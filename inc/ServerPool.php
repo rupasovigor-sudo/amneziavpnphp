@@ -830,12 +830,22 @@ class ServerPool
             true
         );
 
-        // 3. Rebuild.
+        // 3. Rebuild. activate() THROWS on a failed install (non-zero script
+        //    exit, e.g. a docker build that can't fetch its deps) — an uncaught
+        //    throw here skipped the rollback below and left the member with no
+        //    container at all. Treat it as an ordinary failure.
         $protocol = InstallProtocolManager::getBySlug('awg2');
-        $deploy = InstallProtocolManager::activate(new VpnServer($serverId), $protocol, [
-            'pool_identity' => self::identityOptions($pool),
-            'server_port' => $port,
-        ]);
+        $deployError = '';
+        try {
+            $deploy = InstallProtocolManager::activate(new VpnServer($serverId), $protocol, [
+                'pool_identity' => self::identityOptions($pool),
+                'server_port' => $port,
+            ]);
+        } catch (Throwable $e) {
+            error_log("ServerPool::redeployMember: rebuild threw on {$serverId}: " . $e->getMessage());
+            $deployError = $e->getMessage();
+            $deploy = ['success' => false, 'error' => $deployError];
+        }
 
         // 4. Verify REAL success: a running container with awg0 listening on the
         //    port. Do NOT trust $deploy['success'] alone — activate() returns
@@ -845,6 +855,11 @@ class ServerPool
             //    container back from the (still-present) image, so the member is
             //    left running its previous identity instead of destroyed.
             $restored = self::restoreAwg2Snapshot($server, $port);
+            if ($restored) {
+                // activate() marked the server 'error'; it is serving again.
+                DB::conn()->prepare("UPDATE vpn_servers SET status = 'active', error_message = NULL WHERE id = ?")
+                    ->execute([$serverId]);
+            }
             DB::conn()->prepare(
                 'UPDATE vpn_servers SET pool_sync_pending = 1, validated_clean = NULL, validation_note = ? WHERE id = ?'
             )->execute([
@@ -858,6 +873,7 @@ class ServerPool
                 'message' => $restored
                     ? 'Пересборка awg2 не удалась — сервер восстановлен из снапшота (прежняя версия работает). Снят с failover, перепроверьте.'
                     : 'Пересборка awg2 не удалась, и автоматический откат не сработал. Сервер не обслуживает клиентов — нужно ручное восстановление.',
+                'reason' => $deployError !== '' ? mb_substr($deployError, -400) : null,
             ];
         }
 

@@ -716,7 +716,8 @@ SH;
         self::progress($serverId, 'Пересобираю awg2 из upstream (сборка Go занимает несколько минут)…');
         $res = ServerPool::redeployMember($serverId);
         if (empty($res['success'])) {
-            return ['success' => false, 'message' => (string) $res['message']];
+            $reason = trim((string) ($res['reason'] ?? ''));
+            return ['success' => false, 'message' => (string) $res['message'] . ($reason !== '' ? ' Причина: ' . $reason : '')];
         }
         $verify = self::verifyAfterUpdate($serverId);
         return [
