@@ -84,9 +84,15 @@ class ServerPool
 
         $excluded = array_merge($memberIps, $extra);
         $allowed = CidrMath::complement($excluded);
+        // Full tunnel means IPv6 too — same as the client configs the panel
+        // issues (0.0.0.0/0, ::/0). Without it a dual-stack router sent all
+        // IPv6 traffic around the tunnel. Pool endpoints are IPv4, so nothing
+        // has to be carved out of ::/0.
+        $allowed[] = '::/0';
 
         return [
             'allowed_ips' => implode(', ', $allowed),
+            'prefix_count' => count($allowed),
             'member_ips'  => $memberIps,
             'excluded'    => $excluded,
         ];
