@@ -910,6 +910,10 @@ Router::get('/servers/{id}/clients/live-status', function ($params) {
             $name = $keyToName[(string) $pk] ?? null;
             $peers[$pk]['online'] = $name !== null && isset($onlineNames[$name]);
         }
+        // Front mode: mark clients that bypass the entry relay.
+        if ($poolId > 0) {
+            $peers = PoolFront::stampViaFront($poolId, $peers);
+        }
 
         if ($cacheTtl > 0) {
             @file_put_contents($cacheFile, json_encode(['peers' => $peers, 'at' => time()]));

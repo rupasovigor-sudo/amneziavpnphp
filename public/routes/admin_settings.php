@@ -466,6 +466,19 @@ Router::post('/pools/{id}/front/reinstall', function ($params) {
         return $r;
     });
 });
+// Live clients of the pool: through the front vs connected directly (AJAX).
+Router::get('/pools/{id}/front/clients', function ($params) {
+    requireAdmin();
+    session_write_close();
+    header('Content-Type: application/json');
+    try {
+        echo json_encode(['success' => true] + PoolFront::clientPaths((int) $params['id']), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    } catch (Throwable $e) {
+        http_response_code(500);
+        echo json_encode(['success' => false, 'error' => $e->getMessage()], JSON_UNESCAPED_UNICODE);
+    }
+});
+
 Router::post('/pools/{id}/front/remove', function ($params) {
     poolFrontJson(fn($in) => PoolFront::remove((int) $params['id']));
 });

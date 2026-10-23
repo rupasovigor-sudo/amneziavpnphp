@@ -618,6 +618,82 @@ SH;
         return ['success' => true, 'message' => "Фронт {$front['server_name']} отвязан от пула. Сам сервер остаётся в списке — удалите его там, если больше не нужен."];
     }
 
+    // ---------------------------------------------------------- client paths
+
+    /**
+     * Stamp live peers with via_front: true when the client's packets arrive
+     * from the front's IP, false when it reaches the member directly (it kept
+     * an address resolved before the domain moved to the front — the first to
+     * break when the member's foreign IP is throttled). Untouched (no key)
+     * unless the pool domain currently points at the front.
+     */
+    public static function stampViaFront(int $poolId, array $peers): array
+    {
+        $front = self::forPool($poolId);
+        if (!$front || (int) $front['enabled'] !== 1 || $front['dns_mode'] !== 'front') {
+            return $peers;
+        }
+        $frontIp = (string) $front['server_host'];
+        foreach ($peers as $pk => $info) {
+            $ip = $info['endpoint_ip'] ?? null;
+            if ($ip !== null && $ip !== '') {
+                $peers[$pk]['via_front'] = ($ip === $frontIp);
+            }
+        }
+        return $peers;
+    }
+
+    /**
+     * Live clients of the pool split by path (front vs direct), for the front
+     * card. A client counts as live with a handshake in the last 3 minutes.
+     */
+    public static function clientPaths(int $poolId, int $liveSeconds = 180): array
+    {
+        $front = self::forPool($poolId);
+        $frontMode = $front && (int) $front['enabled'] === 1 && $front['dns_mode'] === 'front';
+        $peers = [];
+        foreach (ServerPool::members($poolId) as $m) {
+            try {
+                $mp = (new VpnServer((int) $m['id']))->liveClientPeers();
+            } catch (Throwable $e) {
+                continue;
+            }
+            foreach ($mp as $pk => $info) {
+                $age = $info['handshake_age'] ?? null;
+                if ($age === null || $age > $liveSeconds) {
+                    continue;
+                }
+                if (!isset($peers[$pk]) || $age < $peers[$pk]['handshake_age']) {
+                    $peers[$pk] = $info + ['server_name' => (string) $m['name']];
+                }
+            }
+        }
+        $peers = self::stampViaFront($poolId, $peers);
+
+        $names = [];
+        $st = DB::conn()->query('SELECT public_key, name FROM vpn_clients');
+        foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $r) {
+            $names[(string) $r['public_key']] = (string) $r['name'];
+        }
+        $via = [];
+        $direct = [];
+        foreach ($peers as $pk => $info) {
+            $row = [
+                'name' => $names[(string) $pk] ?? ('…' . substr((string) $pk, 0, 8)),
+                'server' => $info['server_name'],
+                'ip' => $info['endpoint_ip'] ?? null,
+            ];
+            if (($info['via_front'] ?? null) === false) {
+                $direct[] = $row;
+            } else {
+                $via[] = $row;
+            }
+        }
+        usort($direct, static fn($a, $b) => strcmp($a['name'], $b['name']));
+        usort($via, static fn($a, $b) => strcmp($a['name'], $b['name']));
+        return ['front_mode' => $frontMode, 'via_front' => $via, 'direct' => $direct];
+    }
+
     // -------------------------------------------------------------------- UI
 
     /** Everything the pools page needs to render the front card. */

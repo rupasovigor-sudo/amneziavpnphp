@@ -916,10 +916,19 @@ BASH;
             if ($pub === '') {
                 continue;
             }
+            // Endpoint = where the client's packets come from ("ip:port",
+            // "[v6]:port" or "(none)"): with a front it's the front's IP,
+            // otherwise the client's own address.
+            $endpoint = trim((string) $f[2]);
+            $endpointIp = null;
+            if ($endpoint !== '' && $endpoint !== '(none)') {
+                $endpointIp = preg_match('/^\[([^\]]+)\]:\d+$/', $endpoint, $em) ? $em[1] : preg_replace('/:\d+$/', '', $endpoint);
+            }
             $peers[$pub] = [
                 'handshake_age' => $hs > 0 ? ($now - $hs) : null,
                 'rx' => (int) $f[5],
                 'tx' => (int) $f[6],
+                'endpoint_ip' => $endpointIp,
             ];
         }
         if ($sid > 0) {

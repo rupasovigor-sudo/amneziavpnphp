@@ -202,6 +202,10 @@
           </div>
         </div>
 
+        <div class="js-front-clients mb-4 text-sm rounded border border-gray-100 px-3 py-2" data-pool="{{ pool.id }}">
+          <span class="text-gray-400"><i class="fas fa-spinner fa-spin mr-1"></i>Проверяю, как подключены клиенты…</span>
+        </div>
+
         <div class="overflow-x-auto">
           <table class="min-w-full text-sm">
             <thead class="bg-gray-50 text-gray-600">
@@ -303,6 +307,30 @@
         .catch(function (err) { showToast('Ошибка: ' + err, 'error'); })
         .finally(function () { sel.disabled = false; });
     });
+  });
+
+  // Which live clients come through the front and which bypass it.
+  document.querySelectorAll('.js-front-clients').forEach(function (box) {
+    fetch('/pools/' + box.dataset.pool + '/front/clients', { credentials: 'same-origin' })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (!d.success) { box.innerHTML = '<span class="text-red-600">' + escapeHtml(d.error || 'Ошибка') + '</span>'; return; }
+        if (!d.front_mode) {
+          box.innerHTML = '<span class="text-gray-500">Домен пула указывает на сервер, а не на фронт: все клиенты подключаются напрямую.</span>';
+          return;
+        }
+        var html = '<div><b>Сейчас онлайн:</b> через фронт — ' + d.via_front.length + ', в обход — ' +
+          (d.direct.length ? '<span class="text-amber-700 font-medium">' + d.direct.length + '</span>' : '0') + '</div>';
+        if (d.direct.length) {
+          html += '<div class="mt-1 text-amber-800">' + d.direct.map(function (c) {
+            return '<span class="inline-block mr-3"><i class="fas fa-triangle-exclamation mr-1"></i>' + escapeHtml(c.name) +
+              ' <span class="text-gray-400 font-mono text-xs">' + escapeHtml(c.ip || '') + ' → ' + escapeHtml(c.server) + '</span></span>';
+          }).join('') + '</div>' +
+          '<div class="mt-1 text-xs text-gray-500">Эти устройства держат старый адрес и ходят напрямую на зарубежный сервер — при его блокировке они отвалятся первыми. Переподключите VPN на них, и они пойдут через фронт.</div>';
+        }
+        box.innerHTML = html;
+      })
+      .catch(function (e) { box.innerHTML = '<span class="text-red-600">Ошибка: ' + escapeHtml(String(e)) + '</span>'; });
   });
 
   document.querySelectorAll('.js-aip').forEach(function (box) {

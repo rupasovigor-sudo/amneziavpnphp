@@ -1603,6 +1603,13 @@ function connLine(cell) {
   if (!name) return '';
   const off = cell.dataset.connOffMember === '1';
   const esc = String(name).replace(/[&<>"]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m]));
+  // Pool domain on the RU front: show which path the client actually uses.
+  if (cell.dataset.viaFront === '0') {
+    return `<div class="text-xs text-amber-700 mt-0.5" title="Клиент держит старый адрес и подключён напрямую к зарубежному серверу, минуя RU-фронт. Переподключите VPN на устройстве — он пойдёт через фронт."><i class="fas fa-triangle-exclamation mr-1"></i>в обход фронта → ${esc}</div>`;
+  }
+  if (cell.dataset.viaFront === '1') {
+    return `<div class="text-xs text-gray-500 mt-0.5"><i class="fas fa-right-to-bracket mr-1"></i>через фронт → ${esc}</div>`;
+  }
   return off
     ? `<div class="text-xs text-amber-700 mt-0.5" title="Клиент подключён не к активному серверу пула — переедет при переподключении"><i class="fas fa-arrow-turn-down mr-1"></i>${esc}</div>`
     : `<div class="text-xs text-gray-500 mt-0.5"><i class="fas fa-server mr-1"></i>${esc}</div>`;
@@ -1646,9 +1653,11 @@ async function refreshLiveStatus() {
         if (online && peer && peer.server_name) {
           cell.dataset.connServer = peer.server_name;
           cell.dataset.connOffMember = peer.is_active_member ? '' : '1';
+          cell.dataset.viaFront = peer.via_front === true ? '1' : (peer.via_front === false ? '0' : '');
         } else {
           cell.dataset.connServer = '';
           cell.dataset.connOffMember = '';
+          cell.dataset.viaFront = '';
         }
         cell.innerHTML = html + connLine(cell);
       }
