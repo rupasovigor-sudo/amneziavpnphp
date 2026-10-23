@@ -468,6 +468,11 @@ SH;
                 : "RU-фронт {$front['server_name']} недоступен, и переключить домен на сервер не удалось: " . ($fb['message'] ?? ''), 'critical');
             return ['pool' => $poolId, 'action' => 'front_fallback', 'ok' => $fb['success'], 'message' => $fb['message'] ?? ''];
         }
+        // Keep "front only" in step with membership (new member, changed IPs).
+        if ($front['dns_mode'] === 'front' && (int) ($front['members_front_only'] ?? 0) === 1
+            && function_exists('shouldRunPeriodicTask') && shouldRunPeriodicTask('front_only_enforce', $poolId, 600)) {
+            self::applyFrontOnly($poolId, true);
+        }
         $res = self::sync($poolId);
         if (empty($res['changed'])) {
             return null;
@@ -525,6 +530,9 @@ SH;
             $db->prepare('SELECT RELEASE_LOCK(?)')->execute([$lockName]);
         }
         self::event($front, 'pool_domain_front', "Домен {$domain} переключён на RU-фронт {$front['server_name']} ({$front['server_host']}). " . $sync['message'], 'warning');
+        if ((int) ($front['members_front_only'] ?? 0) === 1) {
+            self::applyFrontOnly($poolId, true);
+        }
         return ['success' => true, 'message' => "Домен {$domain} → фронт {$front['server_host']}. " . $sync['message'] . ' Клиенты переедут при переподключении.'];
     }
 
@@ -541,6 +549,15 @@ SH;
         $target = ServerPool::healthyTarget($poolId);
         if ($target === null) {
             return ['success' => false, 'message' => 'Нет здорового сервера пула для переключения домена'];
+        }
+        // Clients are about to reach a member directly: reopen the VPN port
+        // first (the setting is kept and re-applied when the domain returns).
+        // Best-effort — with the front down, staying locked helps nobody.
+        if ((int) ($front['members_front_only'] ?? 0) === 1) {
+            $lift = self::applyFrontOnly($poolId, false);
+            if (empty($lift['success'])) {
+                self::event($front, 'pool_front_only_lift_failed', 'Не удалось снять ограничение «только через фронт» перед переключением домена на сервер: ' . $lift['message'], 'critical');
+            }
         }
         // Flip first so setActive() repoints DNS (it skips DNS while on the front).
         // On ANY failure — including an exception from SSH inside setActive —
@@ -606,6 +623,7 @@ SH;
         if ($front['dns_mode'] === 'front') {
             return ['success' => false, 'message' => 'Сначала верните домен пула на сервер — иначе клиенты останутся без входа'];
         }
+        self::applyFrontOnly($poolId, false);
         try {
             (new VpnServer((int) $front['server_id']))->executeCommand(
                 'nft delete table ip amnezia_relay 2>/dev/null; printf "add table ip amnezia_relay\ndelete table ip amnezia_relay\ntable ip amnezia_relay {\n}\n" > /etc/amnezia/relay.nft; echo ok',
@@ -616,6 +634,104 @@ SH;
         }
         DB::conn()->prepare('DELETE FROM pool_fronts WHERE id = ?')->execute([(int) $front['id']]);
         return ['success' => true, 'message' => "Фронт {$front['server_name']} отвязан от пула. Сам сервер остаётся в списке — удалите его там, если больше не нужен."];
+    }
+
+    // ------------------------------------------------- members: front only
+
+    /**
+     * Enforce (or lift) "VPN port only from the front" on every active member.
+     * An nft table drops VPN-port packets whose source isn't the front or a
+     * pool member (the reachability probe runs member→member), before docker's
+     * DNAT; a oneshot unit reloads /etc/amnezia/front-only.nft at boot. Lifting
+     * writes an empty ruleset. Enforced only while the domain is on the front.
+     */
+    public static function applyFrontOnly(int $poolId, bool $on): array
+    {
+        $pool = ServerPool::get($poolId);
+        $front = self::forPool($poolId);
+        $port = (int) ($pool['vpn_port'] ?? 443) ?: 443;
+        $members = array_values(array_filter(ServerPool::members($poolId), static fn($m) => ($m['status'] ?? '') === 'active'));
+
+        $allowed = [];
+        if ($front && filter_var((string) $front['server_host'], FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false) {
+            $allowed[] = (string) $front['server_host'];
+        }
+        foreach ($members as $m) {
+            if (filter_var((string) $m['host'], FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false) {
+                $allowed[] = (string) $m['host'];
+            }
+        }
+        $allowed = array_values(array_unique($allowed));
+        // Never lock everyone out: without the front's IP there is nothing to allow.
+        if ($on && ($front === null || !in_array((string) $front['server_host'], $allowed, true))) {
+            return ['success' => false, 'message' => 'Не удалось определить IP фронта — ограничение не включено'];
+        }
+
+        $lines = ['table inet amnezia_frontonly {}', 'delete table inet amnezia_frontonly'];
+        if ($on) {
+            $lines[] = 'table inet amnezia_frontonly {';
+            $lines[] = '  set allowed { type ipv4_addr; elements = { ' . implode(', ', $allowed) . ' } }';
+            $lines[] = '  chain pre {';
+            $lines[] = '    type filter hook prerouting priority -200; policy accept;';
+            // fib daddr type local: only packets addressed to THIS host's VPN
+            // port. Without it the rule also hit the clients' own outbound
+            // UDP/443 (QUIC, HTTP/3) leaving the awg2 container via docker0.
+            $lines[] = '    fib daddr type local udp dport ' . $port . ' ip saddr != @allowed counter drop';
+            $lines[] = '    meta nfproto ipv6 fib daddr type local udp dport ' . $port . ' counter drop';
+            $lines[] = '  }';
+            $lines[] = '}';
+        }
+        $rules = implode("\n", $lines) . "\n";
+        $unit = "[Unit]\nDescription=Amnezia: VPN port only via the pool front\nAfter=network-online.target docker.service\n"
+            . "[Service]\nType=oneshot\nRemainAfterExit=yes\nExecStart=/usr/sbin/nft -f /etc/amnezia/front-only.nft\n"
+            . "[Install]\nWantedBy=multi-user.target\n";
+        $script = "set -e\nmkdir -p /etc/amnezia\n"
+            . 'T=$(mktemp /etc/amnezia/front-only.XXXXXX)' . "\n"
+            . 'echo ' . base64_encode($rules) . ' | base64 -d > "$T"' . "\n"
+            . 'nft -c -f "$T"' . "\n"
+            . 'mv "$T" /etc/amnezia/front-only.nft; chmod 644 /etc/amnezia/front-only.nft' . "\n"
+            . 'echo ' . base64_encode($unit) . ' | base64 -d > /etc/systemd/system/amnezia-front-only.service' . "\n"
+            . "systemctl daemon-reload\nsystemctl enable amnezia-front-only.service >/dev/null 2>&1\n"
+            . "nft -f /etc/amnezia/front-only.nft\necho FRONTONLY_OK\n";
+        $cmd = 'echo ' . base64_encode($script) . ' | base64 -d | bash';
+
+        $ok = true;
+        $lines = [];
+        foreach ($members as $m) {
+            try {
+                $out = (string) (new VpnServer((int) $m['id']))->executeCommand($cmd, true);
+                $mok = str_contains($out, 'FRONTONLY_OK');
+            } catch (Throwable $e) {
+                $mok = false;
+                $out = $e->getMessage();
+            }
+            $ok = $ok && $mok;
+            $lines[] = $m['name'] . ': ' . ($mok ? 'ok' : ('ошибка — ' . trim(substr($out, -200))));
+        }
+        return [
+            'success' => $ok,
+            'message' => ($on ? 'Только через фронт: ' : 'Прямой доступ к серверам открыт: ') . implode('; ', $lines),
+        ];
+    }
+
+    /** UI switch: store the setting and enforce it if the domain is on the front. */
+    public static function setFrontOnly(int $poolId, bool $on): array
+    {
+        $front = self::forPool($poolId);
+        if (!$front) {
+            return ['success' => false, 'message' => 'Фронт не подключён'];
+        }
+        if ($on && $front['dns_mode'] !== 'front') {
+            return ['success' => false, 'message' => 'Сначала направьте домен пула на фронт — иначе клиентам некуда переехать'];
+        }
+        $res = self::applyFrontOnly($poolId, $on);
+        if ($on && empty($res['success'])) {
+            // Partial apply: roll back so no member is left half-locked.
+            self::applyFrontOnly($poolId, false);
+            return ['success' => false, 'message' => 'Не удалось включить, изменения откатены. ' . $res['message']];
+        }
+        DB::conn()->prepare('UPDATE pool_fronts SET members_front_only = ? WHERE id = ?')->execute([$on ? 1 : 0, (int) $front['id']]);
+        return $res;
     }
 
     // ---------------------------------------------------------- client paths

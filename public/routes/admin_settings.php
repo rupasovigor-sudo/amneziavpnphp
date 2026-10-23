@@ -466,6 +466,12 @@ Router::post('/pools/{id}/front/reinstall', function ($params) {
         return $r;
     });
 });
+Router::post('/pools/{id}/front/front-only', function ($params) {
+    @set_time_limit(180);
+    ignore_user_abort(true);
+    poolFrontJson(fn($in) => PoolFront::setFrontOnly((int) $params['id'], !empty($in['enabled'])));
+});
+
 // Live clients of the pool: through the front vs connected directly (AJAX).
 Router::get('/pools/{id}/front/clients', function ($params) {
     requireAdmin();
