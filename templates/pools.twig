@@ -111,7 +111,7 @@
         <summary class="text-sm font-medium text-gray-800 cursor-pointer"><i class="fas fa-route mr-1 text-brand-600"></i>AllowedIPs для роутера — full-tunnel без IP пула</summary>
         <div class="mt-3 space-y-2 text-sm">
           <p class="text-gray-500 leading-snug">
-            Для full-tunnel конфига роутера (MikroTik, Keenetic и т.п.): весь IPv6 (<code>::/0</code>) и весь IPv4, из <code>0.0.0.0/0</code> которого вычитаются IP <b>всех серверов пула</b>
+            Для full-tunnel конфига роутера (MikroTik, Keenetic и т.п.): из <code>0.0.0.0/0</code> вычитаются IP <b>всех серверов пула</b>
             ({% for m in p.members %}<span class="font-mono">{{ m.host }}</span>{{ not loop.last ? ', ' }}{% else %}—{% endfor %}{% if fronts[pool.id] ?? null %}, фронт <span class="font-mono">{{ fronts[pool.id].front.server_host }}</span>{% endif %})
             и локальные исключения ниже, чтобы туннель не заворачивал сам себя. Конфиг переживает переключение активного сервера; <b>перегенерируйте его после добавления нового сервера в пул</b>.
           </p>
@@ -317,7 +317,7 @@
           if (!d.success) { showToast(d.error || 'Ошибка', 'error'); return; }
           result.value = 'AllowedIPs = ' + d.allowed_ips;
           box.querySelector('.js-aip-meta').textContent =
-            'Диапазонов: ' + (d.prefix_count || '?') + ' (IPv4 без исключений + ::/0). ' +
+            'Диапазонов: ' + (d.prefix_count || '?') + '. ' +
             'Исключено IP пула: ' + (d.member_ips || []).length + ' (' + (d.member_ips || []).join(', ') + '); всего исключений: ' + (d.excluded || []).length +
             '. Строка длинная — копируйте кнопкой, а не выделением.';
           box.querySelector('.js-aip-out').hidden = false;
