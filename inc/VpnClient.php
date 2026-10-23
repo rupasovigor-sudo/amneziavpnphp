@@ -1189,6 +1189,11 @@ class VpnClient
         $config = "[Interface]\n";
         $config .= "Address = {$clientIP}/32\n";
         $config .= "DNS = 1.1.1.1, 1.0.0.1\n";
+        // Same MTU as the server's awg0. Without it .conf importers (Keenetic,
+        // WireGuard/AmneziaWG apps, desktops) default to 1420, and on mobile /
+        // PPPoE paths the oversized packets get dropped: "connected, but pages
+        // hang". The Amnezia QR format already defaults to 1280.
+        $config .= "MTU = " . self::clientMtu() . "\n";
         $config .= "PrivateKey = {$privateKey}\n";
 
         // Add AWG parameters (in the order used by Amnezia app)
@@ -1654,6 +1659,13 @@ BASH;
             'server_id' => $this->data['server_id'] ?? null,
             'client_id' => $this->clientId,
         ], fn() => $stmt->execute(['active', $this->clientId]));
+    }
+
+    /** Client tunnel MTU (AMNEZIA_CLIENT_MTU, default 1280 = server awg0). */
+    public static function clientMtu(): int
+    {
+        $mtu = (int) Config::get('AMNEZIA_CLIENT_MTU', '1280');
+        return ($mtu >= 1200 && $mtu <= 1500) ? $mtu : 1280;
     }
 
     private static function isWireguardProtocol(?int $protocolId): bool
