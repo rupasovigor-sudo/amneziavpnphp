@@ -40,7 +40,7 @@ class PoolFront
     {
         try {
             $st = DB::conn()->prepare(
-                'SELECT f.*, s.name AS server_name, s.host AS server_host, s.status AS server_status
+                'SELECT f.*, s.name AS server_name, s.host AS server_host, s.port AS server_port, s.status AS server_status
                  FROM pool_fronts f JOIN vpn_servers s ON s.id = f.server_id
                  WHERE f.pool_id = ? LIMIT 1'
             );
@@ -167,6 +167,22 @@ class PoolFront
                 true
             );
             $ok = str_contains($out, 'FRONT_OK');
+            if ($ok) {
+                // A front sits on a public IP with password SSH, and brute force
+                // against it (thousands of tries a day) made sshd drop the
+                // panel's checks -> false "front down" -> domain fallback. Same
+                // best-effort hardening as members: fail2ban with the panel's
+                // address ignored, NTP, no unattended reboots.
+                $hardening = @file_get_contents(dirname(__DIR__) . '/scripts/awg2_hardening.sh');
+                if (is_string($hardening) && $hardening !== '') {
+                    try {
+                        $server->uploadContent('/tmp/amnezia_hardening.sh', $hardening, 0700);
+                        $server->executeCommand('bash /tmp/amnezia_hardening.sh >/dev/null 2>&1; rm -f /tmp/amnezia_hardening.sh; echo done', true);
+                    } catch (Throwable $e) {
+                        error_log('PoolFront::install: hardening failed: ' . $e->getMessage());
+                    }
+                }
+            }
             return ['success' => $ok, 'message' => trim(substr($out, -400))];
         } catch (Throwable $e) {
             return ['success' => false, 'message' => $e->getMessage()];
@@ -458,6 +474,17 @@ SH;
             if ($front['dns_mode'] !== 'front') {
                 return null;
             }
+            // The health checks are SSH-based, but the relay is kernel NAT and
+            // keeps forwarding while sshd is busy (brute force, MaxStartups,
+            // per-source penalties). Moving the domain off a working front
+            // pushes every client onto the member's foreign IP — so only fall
+            // back when the relay itself shows no sign of life.
+            $sshFailing = self::checksOpen((int) $front['server_id'], ['ssh'], 1);
+            $alive = self::relayEvidentlyAlive($poolId, $front, $sshFailing);
+            if ($alive !== null) {
+                self::event($front, 'pool_front_ssh_degraded', "RU-фронт {$front['server_name']}: панель не может зайти по SSH, но relay работает ({$alive}) — домен не переключаю.", 'warning');
+                return ['pool' => $poolId, 'action' => 'front_ssh_degraded', 'ok' => true, 'message' => $alive];
+            }
             if (!$autoFallback) {
                 self::event($front, 'pool_front_down', "RU-фронт {$front['server_name']} недоступен, а авто-failover выключен — домен остаётся на фронте, переключите вручную.", 'critical');
                 return ['pool' => $poolId, 'action' => 'front_down', 'ok' => false, 'message' => 'auto-failover disabled'];
@@ -634,6 +661,45 @@ SH;
         }
         DB::conn()->prepare('DELETE FROM pool_fronts WHERE id = ?')->execute([(int) $front['id']]);
         return ['success' => true, 'message' => "Фронт {$front['server_name']} отвязан от пула. Сам сервер остаётся в списке — удалите его там, если больше не нужен."];
+    }
+
+    /**
+     * Evidence that the front still relays even though SSH checks fail:
+     * a client handshake on a member arriving from the front's IP within the
+     * last 3 minutes (the relay demonstrably works), else the front's sshd
+     * at least completing a TCP handshake (host and its network are up).
+     * Returns a short description, or null when there's no sign of life.
+     */
+    private static function relayEvidentlyAlive(int $poolId, array $front, bool $sshFailing, int $freshSeconds = 180): ?string
+    {
+        $frontIp = (string) $front['server_host'];
+        foreach (ServerPool::members($poolId) as $m) {
+            if (($m['status'] ?? '') !== 'active') {
+                continue;
+            }
+            try {
+                $peers = (new VpnServer((int) $m['id']))->liveClientPeers(0);
+            } catch (Throwable $e) {
+                continue;
+            }
+            foreach ($peers as $p) {
+                if (($p['endpoint_ip'] ?? null) === $frontIp && ($p['handshake_age'] ?? null) !== null && $p['handshake_age'] <= $freshSeconds) {
+                    return "свежий handshake клиента через фронт на {$m['name']} ({$p['handshake_age']} с назад)";
+                }
+            }
+        }
+        // TCP only speaks for the host when SSH is what's failing; with SSH
+        // fine and the relay check failing, the relay itself is broken.
+        if (!$sshFailing) {
+            return null;
+        }
+        $port = (int) ($front['server_port'] ?? 22) ?: 22;
+        $sock = @fsockopen($frontIp, $port, $errno, $errstr, 4.0);
+        if ($sock) {
+            fclose($sock);
+            return "хост отвечает на TCP {$port}";
+        }
+        return null;
     }
 
     // ------------------------------------------------- members: front only
