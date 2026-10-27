@@ -55,6 +55,9 @@ class FrontProbe
 
         $streak = (int) ($front['e2e_fail_streak'] ?? 0);
         $sid = (int) $front['server_id'];
+        if (!$res['ok'] && ($res['stage'] ?? '') === 'setup') {
+            return $res + ['pool' => $poolId]; // nothing learned about the path
+        }
         $alerts = new AlertManager();
         $alerts->recordCheck($sid, (string) $front['server_name'], 'front_e2e', $res['ok'],
             $res['ok'] ? 'Проверка из России через фронт: ' . $res['message'] : 'Через фронт не проходят данные (проверка из России): ' . $res['message'],
@@ -63,11 +66,11 @@ class FrontProbe
         if ($res['ok'] || !$allowRotate || $streak < self::FAILS_BEFORE_ACTION) {
             return $res + ['pool' => $poolId];
         }
-        // Rotate on the 2nd consecutive failure, then at most once an hour
-        // (every 12th 5-minute run) while it keeps failing: if new ports
-        // didn't help, the block isn't on the port and re-rotating every run
-        // would only churn clients and pollute the blocked list.
-        if (($streak - self::FAILS_BEFORE_ACTION) % 12 !== 0) {
+        // At most one rotation round an hour while it keeps failing: if new
+        // ports didn't help, the block isn't on the port and re-rotating every
+        // run would only churn clients and pollute the blocked list.
+        $last = strtotime((string) ($front['e2e_rotated_at'] ?? '')) ?: 0;
+        if ($last > 0 && time() - $last < 3600) {
             return $res + ['pool' => $poolId];
         }
         if ((int) ($front['auto_port'] ?? 1) !== 1 || $front['dns_mode'] !== 'front' || empty(json_decode((string) $front['backends_json'], true))) {
@@ -78,6 +81,7 @@ class FrontProbe
         if (($res['stage'] ?? '') === 'setup') {
             return $res + ['pool' => $poolId];
         }
+        DB::conn()->prepare('UPDATE pool_fronts SET e2e_rotated_at = NOW() WHERE id = ?')->execute([(int) $front['id']]);
         return self::rotate($poolId, $res) + ['pool' => $poolId];
     }
 
@@ -296,6 +300,13 @@ class FrontProbe
 
     private static function record(int $poolId, array $res): void
     {
+        // Setup failures (busy lock, no image, SSH to a member) say nothing
+        // about the data path: report them, but leave the streak alone.
+        if (!$res['ok'] && ($res['stage'] ?? '') === 'setup') {
+            DB::conn()->prepare('UPDATE pool_fronts SET e2e_checked_at = NOW(), e2e_message = ? WHERE pool_id = ?')
+                ->execute([mb_substr('проверка не выполнена: ' . (string) $res['message'], 0, 300), $poolId]);
+            return;
+        }
         DB::conn()->prepare(
             'UPDATE pool_fronts SET e2e_checked_at = NOW(), e2e_ok = ?, e2e_message = ?,
                     e2e_fail_streak = IF(? = 1, 0, e2e_fail_streak + 1)
