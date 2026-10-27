@@ -287,7 +287,11 @@ class FrontProbe
         // The CLI needs a writable config dir; www-data's HOME isn't writable.
         $cfg = sys_get_temp_dir() . '/amz-docker-config';
         @mkdir($cfg, 0700, true);
-        return (string) shell_exec('DOCKER_CONFIG=' . escapeshellarg($cfg) . ' timeout ' . $timeout . ' docker ' . $args);
+        // cron doesn't pass the container's environment, so DOCKER_HOST
+        // (the docker-in-docker daemon) must be set explicitly.
+        $host = getenv('DOCKER_HOST') ?: (string) Config::get('DOCKER_HOST', 'tcp://dind:2375');
+        return (string) shell_exec('DOCKER_HOST=' . escapeshellarg($host) . ' DOCKER_CONFIG=' . escapeshellarg($cfg)
+            . ' timeout ' . $timeout . ' docker ' . $args);
     }
 
     private static function record(int $poolId, array $res): void
