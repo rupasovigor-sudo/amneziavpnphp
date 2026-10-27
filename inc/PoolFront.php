@@ -1004,6 +1004,7 @@ SH;
             'down' => self::frontDown($sid, 1),
             'calc' => self::computeBackends($poolId, $front),
             'backends' => json_decode((string) ($front['backends_json'] ?? ''), true) ?: [],
+            'blocked_ports' => array_map('intval', json_decode((string) ($front['blocked_ports'] ?? ''), true) ?: []),
         ];
     }
 

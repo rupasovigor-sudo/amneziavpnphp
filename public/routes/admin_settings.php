@@ -466,6 +466,27 @@ Router::post('/pools/{id}/front/reinstall', function ($params) {
         return $r;
     });
 });
+// End-to-end check from Russia, on demand (no auto-rotation from the UI).
+Router::post('/pools/{id}/front/e2e', function ($params) {
+    @set_time_limit(120);
+    poolFrontJson(function () use ($params) {
+        $r = FrontProbe::checkPool((int) $params['id'], false);
+        return ['success' => !empty($r['ok']), 'message' => 'Проверка из России: ' . ($r['message'] ?? '')];
+    });
+});
+
+Router::post('/pools/{id}/front/auto-port', function ($params) {
+    poolFrontJson(function ($in) use ($params) {
+        $front = PoolFront::forPool((int) $params['id']);
+        if (!$front) {
+            return ['success' => false, 'message' => 'Фронт не подключён'];
+        }
+        $on = !empty($in['enabled']) ? 1 : 0;
+        DB::conn()->prepare('UPDATE pool_fronts SET auto_port = ? WHERE id = ?')->execute([$on, (int) $front['id']]);
+        return ['success' => true, 'message' => $on ? 'Автосмена порта включена' : 'Автосмена порта выключена'];
+    });
+});
+
 Router::post('/pools/{id}/front/backend-port', function ($params) {
     @set_time_limit(180);
     ignore_user_abort(true);

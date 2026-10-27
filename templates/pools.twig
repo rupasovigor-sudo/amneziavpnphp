@@ -205,6 +205,29 @@
         <div class="js-front-clients mb-2 text-sm rounded border border-gray-100 px-3 py-2" data-pool="{{ pool.id }}">
           <span class="text-gray-400"><i class="fas fa-spinner fa-spin mr-1"></i>Проверяю, как подключены клиенты…</span>
         </div>
+        <div class="mb-3 text-sm rounded border px-3 py-2 {{ f.e2e_ok is same as(0) ? 'border-red-200 bg-red-50' : 'border-gray-100' }}">
+          <div class="flex items-center gap-2 flex-wrap">
+            <span class="font-medium text-gray-800"><i class="fas fa-satellite-dish mr-1 text-brand-600"></i>Проверка из России:</span>
+            {% if f.e2e_checked_at is null %}
+              <span class="text-gray-400">ещё не запускалась</span>
+            {% elseif f.e2e_ok %}
+              <span class="badge-green">данные проходят</span>
+            {% else %}
+              <span class="badge-red">через фронт не проходят данные</span>
+            {% endif %}
+            {% if f.e2e_message %}<span class="text-gray-600">{{ f.e2e_message }}</span>{% endif %}
+            {% if f.e2e_checked_at %}<span class="text-xs text-gray-400">{{ f.e2e_checked_at }} UTC</span>{% endif %}
+            <button type="button" class="btn-secondary js-front-act ml-auto" data-pool="{{ pool.id }}" data-act="e2e"><i class="fas fa-play"></i>Проверить сейчас</button>
+          </div>
+          <div class="mt-1 flex items-center gap-3 flex-wrap text-xs text-gray-500">
+            <label class="inline-flex items-center gap-1 cursor-pointer">
+              <input type="checkbox" class="js-auto-port rounded border-gray-300 text-brand-600" data-pool="{{ pool.id }}" {{ f.auto_port ? 'checked' }}>
+              автосмена порта фронт → серверы, если данные перестали проходить (2 проверки подряд)
+            </label>
+            {% if fs.blocked_ports %}<span>заблокированные порты: <span class="font-mono">{{ fs.blocked_ports|join(', ') }}</span></span>{% endif %}
+          </div>
+          <div class="mt-1 text-xs text-gray-400">Каждые 5 минут настоящий VPN-клиент из российского дата-центра подключается через фронт и скачивает 3 МБ — как пользователь.</div>
+        </div>
         <div class="mb-3 flex items-center gap-2 flex-wrap text-sm js-bport" data-pool="{{ pool.id }}">
           <span class="text-gray-600">Порт фронт → серверы:</span>
           <input type="number" min="1024" max="65535" class="js-bport-val w-28 px-2 py-1 border rounded font-mono" value="{{ f.backend_port }}" placeholder="{{ pool.vpn_port }}">
@@ -323,6 +346,14 @@
         .then(function (d) { done(d, true); })
         .catch(function (err) { showToast('Ошибка: ' + err, 'error'); })
         .finally(function () { sel.disabled = false; });
+    });
+  });
+
+  document.querySelectorAll('.js-auto-port').forEach(function (cb) {
+    cb.addEventListener('change', function () {
+      post(cb.dataset.pool, 'auto-port', {enabled: cb.checked})
+        .then(function (d) { showToast(d.message || 'Готово', d.success ? 'success' : 'error'); })
+        .catch(function (e) { cb.checked = !cb.checked; showToast('Ошибка: ' + e, 'error'); });
     });
   });
 

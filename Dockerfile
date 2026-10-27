@@ -61,6 +61,7 @@ RUN echo "0 * * * * www-data cd /var/www/html && /usr/local/bin/php bin/check_ex
     && echo "*/3 * * * * root /bin/bash /var/www/html/bin/monitor_metrics.sh >> /var/log/metrics_monitor.log 2>&1" >> /etc/cron.d/amnezia-cron \
     && echo "0 * * * * www-data cd /var/www/html && /usr/local/bin/php bin/backup_cron.php >> /var/log/cron.log 2>&1" >> /etc/cron.d/amnezia-cron \
     && echo "17 5 * * * www-data cd /var/www/html && /usr/local/bin/php bin/update_audit_cron.php >> /var/log/cron.log 2>&1" >> /etc/cron.d/amnezia-cron \
+    && echo "*/5 * * * * www-data cd /var/www/html && /usr/local/bin/php bin/front_e2e_probe.php >> /var/log/cron.log 2>&1" >> /etc/cron.d/amnezia-cron \
     && printf '%s\n' \
        '/var/log/cron.log /var/log/metrics_collector.log /var/log/metrics_collector_errors.log /var/log/metrics_monitor.log /var/log/logrotate.log {' \
        '    daily' '    rotate 7' '    maxsize 20M' '    compress' '    delaycompress' '    missingok' '    notifempty' '    copytruncate' '}' \
