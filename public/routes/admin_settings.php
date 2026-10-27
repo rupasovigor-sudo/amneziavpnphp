@@ -466,6 +466,15 @@ Router::post('/pools/{id}/front/reinstall', function ($params) {
         return $r;
     });
 });
+Router::post('/pools/{id}/front/backend-port', function ($params) {
+    @set_time_limit(180);
+    ignore_user_abort(true);
+    poolFrontJson(function ($in) use ($params) {
+        $raw = trim((string) ($in['port'] ?? ''));
+        return PoolFront::setBackendPort((int) $params['id'], $raw === '' ? null : (int) $raw);
+    });
+});
+
 Router::post('/pools/{id}/front/front-only', function ($params) {
     @set_time_limit(180);
     ignore_user_abort(true);

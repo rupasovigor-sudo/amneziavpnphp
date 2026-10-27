@@ -331,9 +331,12 @@ SH;
     }
 
     /** nftables ruleset for the relay (sticky per client source IP). */
-    public static function renderRuleset(array $backends, int $port): string
+    public static function renderRuleset(array $backends, int $port, ?int $backendPort = null): string
     {
         $port = $port > 0 ? $port : 443;
+        // The leg to the members may use another port than the clients' one
+        // (see migration 118); members DNAT it back to their awg port.
+        $bport = ($backendPort !== null && $backendPort > 0) ? $backendPort : $port;
         $lines = [
             'add table ip amnezia_relay',
             'delete table ip amnezia_relay',
@@ -344,18 +347,23 @@ SH;
         if ($backends) {
             $map = [];
             foreach (array_values($backends) as $i => $ip) {
-                $map[] = "{$i} : {$ip}";
+                $map[] = $bport === $port ? "{$i} : {$ip}" : "{$i} : {$ip} . {$bport}";
             }
-            $lines[] = sprintf(
-                '        fib daddr type local udp dport %d counter dnat to jhash ip saddr mod %d map { %s }',
-                $port, count($backends), implode(', ', $map)
-            );
+            $lines[] = $bport === $port
+                ? sprintf(
+                    '        fib daddr type local udp dport %d counter dnat to jhash ip saddr mod %d map { %s }',
+                    $port, count($backends), implode(', ', $map)
+                )
+                : sprintf(
+                    '        fib daddr type local udp dport %d counter dnat ip addr . port to jhash ip saddr mod %d map { %s }',
+                    $port, count($backends), implode(', ', $map)
+                );
         }
         $lines[] = '    }';
         $lines[] = '    chain postrouting {';
         $lines[] = '        type nat hook postrouting priority srcnat; policy accept;';
         if ($backends) {
-            $lines[] = sprintf('        ip daddr { %s } udp dport %d counter masquerade', implode(', ', $backends), $port);
+            $lines[] = sprintf('        ip daddr { %s } udp dport %d counter masquerade', implode(', ', $backends), $bport);
         }
         $lines[] = '    }';
         $lines[] = '}';
@@ -367,7 +375,7 @@ SH;
      * that were pinned to backends leaving the set (so those clients
      * re-handshake on a live member instead of timing out).
      */
-    public static function push(int $poolId, array $front, array $calc): array
+    public static function push(int $poolId, array $front, array $calc, bool $flushAll = false): array
     {
         $pool = ServerPool::get($poolId);
         $port = (int) ($pool['vpn_port'] ?? 443) ?: 443;
@@ -375,14 +383,15 @@ SH;
         $old = json_decode((string) ($front['backends_json'] ?? ''), true) ?: [];
         $removed = array_values(array_diff($old, $new));
 
-        $b64 = base64_encode(self::renderRuleset($new, $port));
+        $bport = (int) ($front['backend_port'] ?? 0) ?: null;
+        $b64 = base64_encode(self::renderRuleset($new, $port, $bport));
         $flush = '';
         foreach ($removed as $ip) {
             if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false) {
                 $flush .= 'conntrack -D -p udp --reply-src ' . $ip . ' >/dev/null 2>&1; ';
             }
         }
-        if (!$old && $new) {
+        if ($flushAll || (!$old && $new)) {
             // While there were no backends, client retries created un-NATed
             // flows to the front itself; NAT only applies to a flow's first
             // packet and the ~5s retries keep those entries alive, so without
@@ -494,6 +503,12 @@ SH;
                 ? "RU-фронт {$front['server_name']} недоступен — домен пула переключён напрямую на сервер: " . ($fb['message'] ?? '')
                 : "RU-фронт {$front['server_name']} недоступен, и переключить домен на сервер не удалось: " . ($fb['message'] ?? ''), 'critical');
             return ['pool' => $poolId, 'action' => 'front_fallback', 'ok' => $fb['success'], 'message' => $fb['message'] ?? ''];
+        }
+        // Keep the backend-port DNAT on members current (new member, container
+        // recreated with another IP, reboot).
+        if ((int) ($front['backend_port'] ?? 0) > 0
+            && function_exists('shouldRunPeriodicTask') && shouldRunPeriodicTask('front_backend_port', $poolId, 600)) {
+            self::applyBackendPort($poolId);
         }
         // Keep "front only" in step with membership (new member, changed IPs).
         if ($front['dns_mode'] === 'front' && (int) ($front['members_front_only'] ?? 0) === 1
@@ -777,6 +792,99 @@ SH;
         return [
             'success' => $ok,
             'message' => ($on ? 'Только через фронт: ' : 'Прямой доступ к серверам открыт: ') . implode('; ', $lines),
+        ];
+    }
+
+    /**
+     * Member side of the front's backend port: DNAT front-sourced UDP on
+     * backend_port to the awg container's pool port (only from the fronts'
+     * IPs, so it is not a second public entrance). Persisted in
+     * /etc/amnezia/front-port.nft + amnezia-front-port.service. With no
+     * backend port (or equal to the pool port) the table is removed.
+     */
+    public static function applyBackendPort(int $poolId): array
+    {
+        $pool = ServerPool::get($poolId);
+        $front = self::forPool($poolId);
+        $port = (int) ($pool['vpn_port'] ?? 443) ?: 443;
+        $bport = (int) ($front['backend_port'] ?? 0);
+        $on = $front && $bport > 0 && $bport !== $port
+            && filter_var((string) $front['server_host'], FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false;
+
+        $ok = true;
+        $out = [];
+        foreach (ServerPool::members($poolId) as $m) {
+            if (($m['status'] ?? '') !== 'active') {
+                continue;
+            }
+            $md = (new VpnServer((int) $m['id']))->getData();
+            $container = (string) ($md['container_name'] ?? '') ?: 'amnezia-awg2';
+            // The container IP is resolved on the member at apply time.
+            $script = "set -e\nmkdir -p /etc/amnezia\n";
+            if ($on) {
+                $script .= 'CIP=$(docker inspect -f "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}" ' . escapeshellarg($container) . ' | head -c 15)' . "\n"
+                    . 'case "$CIP" in ""|*[!0-9.]*) echo "FRONTPORT_FAIL no container ip"; exit 1;; esac' . "\n"
+                    . 'printf "%s\\n" "table ip amnezia_frontport {}" "delete table ip amnezia_frontport" "table ip amnezia_frontport {" '
+                    . '"  chain pre {" "    type nat hook prerouting priority -110; policy accept;" '
+                    . '"    ip saddr { ' . $front['server_host'] . ' } udp dport ' . $bport . ' counter dnat to $CIP:' . $port . '" "  }" "}" > /etc/amnezia/front-port.nft.new' . "\n";
+            } else {
+                $script .= 'printf "%s\\n" "table ip amnezia_frontport {}" "delete table ip amnezia_frontport" > /etc/amnezia/front-port.nft.new' . "\n";
+            }
+            $unit = "[Unit]\nDescription=Amnezia: front backend port DNAT\nAfter=network-online.target docker.service\n"
+                . "[Service]\nType=oneshot\nRemainAfterExit=yes\nExecStart=/usr/sbin/nft -f /etc/amnezia/front-port.nft\n"
+                . "[Install]\nWantedBy=multi-user.target\n";
+            $script .= "nft -c -f /etc/amnezia/front-port.nft.new\n"
+                . "mv /etc/amnezia/front-port.nft.new /etc/amnezia/front-port.nft\n"
+                . 'echo ' . base64_encode($unit) . ' | base64 -d > /etc/systemd/system/amnezia-front-port.service' . "\n"
+                . "systemctl daemon-reload\nsystemctl enable amnezia-front-port.service >/dev/null 2>&1\n"
+                . "nft -f /etc/amnezia/front-port.nft\necho FRONTPORT_OK\n";
+            try {
+                $o = (string) (new VpnServer((int) $m['id']))->executeCommand('echo ' . base64_encode($script) . ' | base64 -d | bash', true);
+                $mok = str_contains($o, 'FRONTPORT_OK');
+            } catch (Throwable $e) {
+                $mok = false;
+                $o = $e->getMessage();
+            }
+            $ok = $ok && $mok;
+            $out[] = $m['name'] . ': ' . ($mok ? 'ok' : ('ошибка — ' . trim(substr($o, -200))));
+        }
+        return ['success' => $ok, 'message' => implode('; ', $out)];
+    }
+
+    /**
+     * Change the port of the front -> member leg (null = pool port). Members
+     * first (so they accept the new port), then the front, flushing all
+     * relayed flows so every client re-handshakes on the new path at once.
+     */
+    public static function setBackendPort(int $poolId, ?int $bport): array
+    {
+        $front = self::forPool($poolId);
+        $pool = ServerPool::get($poolId);
+        if (!$front || !$pool) {
+            return ['success' => false, 'message' => 'Фронт не подключён'];
+        }
+        $port = (int) ($pool['vpn_port'] ?? 443) ?: 443;
+        if ($bport !== null && ($bport < 1024 || $bport > 65535)) {
+            return ['success' => false, 'message' => 'Порт — от 1024 до 65535'];
+        }
+        if ($bport === $port) {
+            $bport = null;
+        }
+        $prev = $front['backend_port'];
+        $db = DB::conn();
+        $db->prepare('UPDATE pool_fronts SET backend_port = ? WHERE id = ?')->execute([$bport, (int) $front['id']]);
+        $members = self::applyBackendPort($poolId);
+        if (empty($members['success'])) {
+            $db->prepare('UPDATE pool_fronts SET backend_port = ? WHERE id = ?')->execute([$prev, (int) $front['id']]);
+            self::applyBackendPort($poolId);
+            return ['success' => false, 'message' => 'Серверы не приняли порт, откатил: ' . $members['message']];
+        }
+        $front = self::forPool($poolId);
+        $res = self::push($poolId, $front, self::computeBackends($poolId, $front), true);
+        return [
+            'success' => !empty($res['success']),
+            'message' => ($bport ? "Фронт → серверы теперь на порту {$bport}. " : "Фронт → серверы на порту пула {$port}. ")
+                . $res['message'] . ' Серверы: ' . $members['message'],
         ];
     }
 
