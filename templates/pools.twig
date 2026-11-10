@@ -182,7 +182,7 @@
         <div class="flex flex-wrap items-center gap-2">
           {% if fs %}
             {% if fs.down %}<span class="badge-red">фронт недоступен</span>{% else %}<span class="badge-green">relay работает</span>{% endif %}
-            {% if fs.front.e2e_checked_at is null %}<span class="badge-gray">E2E не проверен</span>{% elseif fs.front.e2e_ok %}<span class="badge-green">данные проходят</span>{% else %}<span class="badge-red">данные не проходят</span>{% endif %}
+            {% if fs.front.e2e_checked_at is null %}<span class="badge-gray js-front-summary-status" data-pool="{{ pool.id }}">автотест не запускался</span>{% elseif fs.front.e2e_ok %}<span class="badge-green js-front-summary-status" data-pool="{{ pool.id }}">автотест: данные проходят</span>{% else %}<span class="badge-yellow js-front-summary-status" data-pool="{{ pool.id }}">автотест не подтверждён</span>{% endif %}
           {% else %}
             <span class="badge-gray">не настроен</span>
           {% endif %}
@@ -217,89 +217,88 @@
         </form>
       {% else %}
         {% set f = fs.front %}
-        <div class="grid grid-cols-1 md:grid-cols-4 gap-4 text-sm mb-4">
-          <div>
-            <div class="text-xs uppercase tracking-wide text-gray-400 mb-1">Фронт</div>
-            <div class="font-medium">{{ f.server_name }}</div>
-            <div class="font-mono text-gray-500">{{ f.server_host }}</div>
-            <div class="text-xs mt-1">
-              SSH {{ fs.health.ssh ? '✓' : '✗' }} · relay {{ fs.health.front_relay ? '✓' : '✗' }}
-            </div>
+        <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3 text-sm mb-4">
+          <div class="rounded-lg border bg-gray-50 p-3">
+            <div class="text-[10px] font-semibold uppercase tracking-wide text-gray-500 mb-1">Фронт</div>
+            <div class="font-medium text-gray-900">{{ f.server_name }}</div>
+            <div class="font-mono text-xs text-gray-500 mt-0.5">{{ f.server_host }}</div>
+            <div class="flex gap-1.5 mt-2"><span class="{{ fs.health.ssh ? 'badge-green' : 'badge-red' }}">SSH {{ fs.health.ssh ? 'OK' : 'ошибка' }}</span><span class="{{ fs.health.front_relay ? 'badge-green' : 'badge-red' }}">relay {{ fs.health.front_relay ? 'OK' : 'ошибка' }}</span></div>
           </div>
-          <div>
-            <div class="text-xs uppercase tracking-wide text-gray-400 mb-1">Домен пула указывает на</div>
+          <div class="rounded-lg border bg-gray-50 p-3">
+            <div class="text-[10px] font-semibold uppercase tracking-wide text-gray-500 mb-1">Точка входа домена</div>
             {% if f.dns_mode == 'front' %}
               <span class="badge-brand">RU-фронт</span>
               <div class="mt-2"><button type="button" class="btn-secondary js-front-act" data-pool="{{ pool.id }}" data-act="domain" data-body='{"target":"member"}' data-confirm-text="Вернуть домен пула напрямую на активный сервер? Клиенты перестанут входить через фронт (после переподключения).">Вернуть на сервер</button></div>
             {% else %}
               <span class="badge-gray">активный сервер</span>
-              <div class="mt-2"><button type="button" class="btn-primary js-front-act" data-pool="{{ pool.id }}" data-act="domain" data-body='{"target":"front"}' data-confirm-text="Переключить домен пула на RU-фронт {{ f.server_host }}? Клиенты начнут входить через него после переподключения. Конфиги менять не нужно.">Направить домен на фронт</button></div>
+              <div class="mt-2"><button type="button" class="btn-primary js-front-act" data-pool="{{ pool.id }}" data-act="domain" data-body='{"target":"front"}' data-confirm-text="Переключить домен пула на RU-фронт {{ f.server_host }}? Клиенты начнут входить через него после переподключения. Конфиги менять не нужно.">Направить на фронт</button></div>
             {% endif %}
           </div>
-          <div>
-            <div class="text-xs uppercase tracking-wide text-gray-400 mb-1">Основная страна выхода</div>
-            <div class="flex items-center gap-2">
-              <select class="js-front-country px-2 py-1 border rounded" data-pool="{{ pool.id }}">
-                {% set cl = countries|merge([f.primary_country])|merge(fs.calc.members|map(m => m.egress_country)|filter(c => c))|reduce((acc, c) => c in acc ? acc : acc|merge([c]), []) %}
-                {% for c in cl %}<option value="{{ c }}" {{ c == f.primary_country ? 'selected' }}>{{ c }}</option>{% endfor %}
-              </select>
-            </div>
-            <div class="text-xs text-gray-400 mt-1">серверы этой страны балансируются, остальные — резерв</div>
+          <div class="rounded-lg border bg-gray-50 p-3">
+            <div class="text-[10px] font-semibold uppercase tracking-wide text-gray-500 mb-1">Основная страна выхода</div>
+            <select class="js-front-country mt-1 w-full px-2 py-1.5 border rounded bg-white" data-pool="{{ pool.id }}">
+              {% set cl = countries|merge([f.primary_country])|merge(fs.calc.members|map(m => m.egress_country)|filter(c => c))|reduce((acc, c) => c in acc ? acc : acc|merge([c]), []) %}
+              {% for c in cl %}<option value="{{ c }}" {{ c == f.primary_country ? 'selected' }}>{{ c }}</option>{% endfor %}
+            </select>
+            <div class="text-xs text-gray-500 mt-1">остальные страны используются как резерв</div>
           </div>
-          <div>
-            <div class="text-xs uppercase tracking-wide text-gray-400 mb-1">Сейчас в работе</div>
-            {% if fs.calc.tier == 'primary' %}<span class="badge-green">основная группа</span>
-            {% elseif fs.calc.tier == 'reserve' %}<span class="badge-yellow">резерв (другая страна)</span>
+          <div class="rounded-lg border bg-gray-50 p-3">
+            <div class="text-[10px] font-semibold uppercase tracking-wide text-gray-500 mb-1">Текущая группа</div>
+            {% if fs.calc.tier == 'primary' %}<span class="badge-green">основная</span>
+            {% elseif fs.calc.tier == 'reserve' %}<span class="badge-yellow">резервная</span>
             {% else %}<span class="badge-red">нет здоровых серверов</span>{% endif %}
-            <div class="text-xs text-gray-400 mt-1">{{ f.last_push_msg }}{% if f.last_push_at %} · {{ f.last_push_at }}{% endif %}</div>
+            <div class="text-xs text-gray-500 mt-2 break-words">{{ f.last_push_msg ?: 'нет данных синхронизации' }}{% if f.last_push_at %} · {{ f.last_push_at }}{% endif %}</div>
           </div>
         </div>
 
-        <div class="js-front-clients mb-2 text-sm rounded border border-gray-100 px-3 py-2" data-pool="{{ pool.id }}">
-          <span class="text-gray-400"><i class="fas fa-spinner fa-spin mr-1"></i>Проверяю, как подключены клиенты…</span>
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-3 mb-4">
+          <div class="rounded-lg border border-green-200 bg-green-50/50 p-4">
+            <div class="font-medium text-sm text-gray-900"><i class="fas fa-users mr-1 text-green-700"></i>Реальные подключения</div>
+            <div class="js-front-clients mt-2 text-sm" data-pool="{{ pool.id }}"><span class="text-gray-500"><i class="fas fa-spinner fa-spin mr-1"></i>Проверяю активные подключения…</span></div>
+          </div>
+          <div class="rounded-lg border {{ f.e2e_ok is same as(0) ? 'border-amber-200 bg-amber-50/50' : 'border-gray-200 bg-gray-50' }} p-4">
+            <div class="flex items-center justify-between gap-2">
+              <div class="font-medium text-sm text-gray-900"><i class="fas fa-flask mr-1 text-brand-600"></i>Синтетический тест AWG 2.0</div>
+              <button type="button" class="btn-secondary js-front-act" data-pool="{{ pool.id }}" data-act="e2e"><i class="fas fa-play"></i>Запустить</button>
+            </div>
+            <div class="mt-2 flex items-center gap-2 flex-wrap text-sm">
+              {% if f.e2e_checked_at is null %}<span class="badge-gray">не запускался</span>
+              {% elseif f.e2e_ok %}<span class="badge-green">контрольный трафик прошёл</span>
+              {% else %}<span class="badge-yellow">контрольный объём не набран</span>{% endif %}
+              {% if f.e2e_checked_at %}<span class="text-xs text-gray-400">{{ f.e2e_checked_at }} UTC</span>{% endif %}
+            </div>
+            {% if f.e2e_message %}<div class="text-xs text-gray-600 mt-2 break-words">{{ f.e2e_message }}</div>{% endif %}
+            <div class="text-xs text-gray-500 mt-2">Это отдельный пробный клиент панели. Его ошибка не означает, что реальные клиенты не работают; фактические подключения показаны слева.</div>
+          </div>
         </div>
-        <div class="mb-3 text-sm rounded border px-3 py-2 {{ f.e2e_ok is same as(0) ? 'border-red-200 bg-red-50' : 'border-gray-100' }}">
-          <div class="flex items-center gap-2 flex-wrap">
-            <span class="font-medium text-gray-800"><i class="fas fa-satellite-dish mr-1 text-brand-600"></i>Проверка из России:</span>
-            {% if f.e2e_checked_at is null %}
-              <span class="text-gray-400">ещё не запускалась</span>
-            {% elseif f.e2e_ok %}
-              <span class="badge-green">данные проходят</span>
+
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-3 mb-4">
+          <div class="rounded-lg border p-4">
+            <div class="font-medium text-sm text-gray-900"><i class="fas fa-lock mr-1 text-brand-600"></i>Политика входа</div>
+            <div class="text-xs text-gray-500 mt-1 mb-3">Разрешать прямое подключение к выходным серверам или принимать клиентов только через фронт.</div>
+            {% if f.members_front_only %}
+              <div class="mb-3"><span class="badge-green"><i class="fas fa-lock mr-1"></i>только через фронт</span></div>
+              <button type="button" class="btn-secondary js-front-act" data-pool="{{ pool.id }}" data-act="front-only" data-body='{"enabled":false}' data-confirm-text="Снова разрешить прямые подключения к серверам пула (в обход фронта)?">Разрешить прямой вход</button>
             {% else %}
-              <span class="badge-red">через фронт не проходят данные</span>
+              <div class="mb-3"><span class="badge-yellow">прямой вход разрешён</span></div>
+              <button type="button" class="btn-primary js-front-act" data-pool="{{ pool.id }}" data-act="front-only" data-body='{"enabled":true}' {{ f.dns_mode != 'front' ? 'disabled title="Сначала направьте домен на фронт"' }} data-confirm-text="Серверы пула будут принимать VPN-подключения только от фронта. Устройства, подключённые напрямую, сразу потеряют связь и после переподключения VPN пойдут через фронт. Если фронт упадёт и домен уйдёт на сервер, прямой доступ откроется автоматически. Продолжить?"><i class="fas fa-right-to-bracket"></i>Принимать только через фронт</button>
             {% endif %}
-            {% if f.e2e_message %}<span class="text-gray-600">{{ f.e2e_message }}</span>{% endif %}
-            {% if f.e2e_checked_at %}<span class="text-xs text-gray-400">{{ f.e2e_checked_at }} UTC</span>{% endif %}
-            <button type="button" class="btn-secondary js-front-act ml-auto" data-pool="{{ pool.id }}" data-act="e2e"><i class="fas fa-play"></i>Проверить сейчас</button>
           </div>
-          <div class="mt-1 flex items-center gap-3 flex-wrap text-xs text-gray-500">
-            <label class="inline-flex items-center gap-1 cursor-pointer">
-              <input type="checkbox" class="js-auto-port rounded border-gray-300 text-brand-600" data-pool="{{ pool.id }}" {{ f.auto_port ? 'checked' }}>
-              автосмена порта фронт → серверы, если данные перестали проходить (2 проверки подряд)
-            </label>
-            {% if fs.blocked_ports %}<span>заблокированные порты: <span class="font-mono">{{ fs.blocked_ports|join(', ') }}</span></span>{% endif %}
+          <div class="rounded-lg border p-4 js-bport" data-pool="{{ pool.id }}">
+            <div class="font-medium text-sm text-gray-900"><i class="fas fa-network-wired mr-1 text-brand-600"></i>Транспорт фронт → сервер</div>
+            <div class="text-xs text-gray-500 mt-1">Клиенты входят на {{ pool.domain }}:{{ pool.vpn_port }}. Backend-порт используется только между фронтом и AWG 2.0 на выходном сервере.</div>
+            <div class="flex items-center gap-2 mt-3">
+              <input type="number" min="1024" max="65535" class="js-bport-val w-28 px-2 py-1.5 border rounded font-mono" value="{{ f.backend_port }}" placeholder="{{ pool.vpn_port }}">
+              <button type="button" class="js-bport-save btn-secondary">Применить</button>
+            </div>
+            <label class="mt-3 inline-flex items-start gap-2 text-xs text-gray-600 cursor-pointer"><input type="checkbox" class="js-auto-port mt-0.5 rounded border-gray-300 text-brand-600" data-pool="{{ pool.id }}" {{ f.auto_port ? 'checked' }}><span>Автоматически менять backend-порт AWG 2.0 после двух неудачных синтетических тестов</span></label>
+            {% if fs.blocked_ports %}<div class="text-xs text-gray-500 mt-2">Исключённые порты: <span class="font-mono">{{ fs.blocked_ports|join(', ') }}</span></div>{% endif %}
           </div>
-          <div class="mt-1 text-xs text-gray-400">Каждые 5 минут настоящий VPN-клиент из российского дата-центра подключается через фронт и скачивает 3 МБ — как пользователь.</div>
-        </div>
-        <div class="mb-3 flex items-center gap-2 flex-wrap text-sm js-bport" data-pool="{{ pool.id }}">
-          <span class="text-gray-600">Порт фронт → серверы:</span>
-          <input type="number" min="1024" max="65535" class="js-bport-val w-28 px-2 py-1 border rounded font-mono" value="{{ f.backend_port }}" placeholder="{{ pool.vpn_port }}">
-          <button type="button" class="js-bport-save btn-secondary">Применить</button>
-          <span class="text-xs text-gray-400">клиенты по-прежнему входят на фронт по порту {{ pool.vpn_port }}; этот порт — только участок фронт → сервер. Если провайдер фронта начнёт резать его (подключение есть, данные не идут) — смените на другой высокий порт. Пусто = как у пула.</span>
-        </div>
-        <div class="mb-4 flex items-center gap-3 flex-wrap text-sm">
-          {% if f.members_front_only %}
-            <span class="badge-green"><i class="fas fa-lock mr-1"></i>Серверы принимают клиентов только через фронт</span>
-            <button type="button" class="btn-secondary js-front-act" data-pool="{{ pool.id }}" data-act="front-only" data-body='{"enabled":false}'
-              data-confirm-text="Снова разрешить прямые подключения к серверам пула (в обход фронта)?">Снова пускать напрямую</button>
-          {% else %}
-            <button type="button" class="btn-primary js-front-act" data-pool="{{ pool.id }}" data-act="front-only" data-body='{"enabled":true}' {{ f.dns_mode != 'front' ? 'disabled title="Сначала направьте домен на фронт"' }}
-              data-confirm-text="Серверы пула будут принимать VPN-подключения только от фронта. Устройства, подключённые напрямую, сразу потеряют связь и после переподключения VPN пойдут через фронт. Если фронт упадёт и домен уйдёт на сервер, прямой доступ откроется автоматически. Продолжить?"><i class="fas fa-right-to-bracket"></i>Согнать клиентов на фронт</button>
-            <span class="text-xs text-gray-400">закрывает обход фронта; клиентам в обход нужно будет переподключить VPN</span>
-          {% endif %}
         </div>
 
-        <div class="overflow-x-auto">
+        <details class="rounded-lg border bg-gray-50 px-4 py-3">
+          <summary class="cursor-pointer text-sm font-medium text-gray-800"><i class="fas fa-gears mr-1 text-brand-600"></i>Ротация серверов и техническое обслуживание</summary>
+          <div class="mt-3 overflow-x-auto rounded border bg-white">
           <table class="min-w-full text-sm">
             <thead class="bg-gray-50 text-gray-600">
               <tr>
@@ -332,17 +331,15 @@
               {% endfor %}
             </tbody>
           </table>
-        </div>
-
-        <div class="mt-3 flex items-center gap-2 flex-wrap">
-          <button type="button" class="btn-secondary js-front-act" data-pool="{{ pool.id }}" data-act="sync"><i class="fas fa-rotate"></i>Синхронизировать</button>
-          <button type="button" class="btn-secondary js-front-act" data-pool="{{ pool.id }}" data-act="detect"><i class="fas fa-earth-europe"></i>Определить страны</button>
-          <button type="button" class="btn-secondary js-front-act" data-pool="{{ pool.id }}" data-act="reinstall" data-confirm-text="Переустановить relay на фронте (идемпотентно)?"><i class="fas fa-screwdriver-wrench"></i>Переустановить relay</button>
-          <button type="button" class="btn-danger js-front-act" data-pool="{{ pool.id }}" data-act="remove" data-confirm-text="Отвязать фронт от пула? Relay на нём будет очищен. Домен должен уже указывать на сервер."><i class="fas fa-link-slash"></i>Отвязать фронт</button>
-        </div>
-        <p class="mt-2 text-xs text-gray-400 leading-snug">
-          Панель каждую минуту пересчитывает бэкенды: упавший или не синхронизированный сервер выбывает, его сессии перекидываются на живые. Если недоступен сам фронт, домен автоматически уходит напрямую на здоровый сервер (обратно — кнопкой).
-        </p>
+          </div>
+          <div class="mt-3 flex items-center gap-2 flex-wrap">
+            <button type="button" class="btn-secondary js-front-act" data-pool="{{ pool.id }}" data-act="sync"><i class="fas fa-rotate"></i>Синхронизировать</button>
+            <button type="button" class="btn-secondary js-front-act" data-pool="{{ pool.id }}" data-act="detect"><i class="fas fa-earth-europe"></i>Определить страны</button>
+            <button type="button" class="btn-secondary js-front-act" data-pool="{{ pool.id }}" data-act="reinstall" data-confirm-text="Переустановить relay на фронте (идемпотентно)?"><i class="fas fa-screwdriver-wrench"></i>Переустановить relay</button>
+            <button type="button" class="btn-danger js-front-act sm:ml-auto" data-pool="{{ pool.id }}" data-act="remove" data-confirm-text="Отвязать фронт от пула? Relay на нём будет очищен. Домен должен уже указывать на сервер."><i class="fas fa-link-slash"></i>Отвязать фронт</button>
+          </div>
+          <p class="mt-2 text-xs text-gray-500 leading-snug">Панель каждую минуту исключает из ротации упавшие или рассинхронизированные серверы. Если недоступен сам фронт, домен автоматически возвращается на здоровый сервер.</p>
+        </details>
       {% endif %}
         </div>
       </details>
@@ -427,6 +424,13 @@
   });
 
   // Which live clients come through the front and which bypass it.
+  function formatBytes(bytes) {
+    bytes = Number(bytes || 0);
+    if (bytes < 1024) return bytes + ' Б';
+    if (bytes < 1048576) return Math.round(bytes / 1024) + ' КБ';
+    if (bytes < 1073741824) return (bytes / 1048576).toFixed(1) + ' МБ';
+    return (bytes / 1073741824).toFixed(1) + ' ГБ';
+  }
   document.querySelectorAll('.js-front-clients').forEach(function (box) {
     fetch('/pools/' + box.dataset.pool + '/front/clients', { credentials: 'same-origin' })
       .then(function (r) { return r.json(); })
@@ -436,10 +440,27 @@
           box.innerHTML = '<span class="text-gray-500">Домен пула указывает на сервер, а не на фронт: все клиенты подключаются напрямую.</span>';
           return;
         }
-        var html = '<div><b>Сейчас онлайн:</b> через фронт — ' + d.via_front.length + ', в обход — ' +
-          (d.direct.length ? '<span class="text-amber-700 font-medium">' + d.direct.length + '</span>' : '0') + '</div>';
-        if (d.direct.length) {
-          html += '<div class="mt-1 text-amber-800">' + d.direct.map(function (c) {
+        var via = d.via_front || [];
+        var direct = d.direct || [];
+        var summary = document.querySelector('.js-front-summary-status[data-pool="' + box.dataset.pool + '"]');
+        if (via.length && summary) {
+          summary.className = 'badge-green js-front-summary-status';
+          summary.textContent = 'через фронт подключено: ' + via.length;
+        }
+        var html = '<div class="flex flex-wrap items-center gap-2">' +
+          '<span class="badge-green">через фронт: ' + via.length + '</span>' +
+          (direct.length ? '<span class="badge-yellow">в обход: ' + direct.length + '</span>' : '<span class="badge-gray">в обход: 0</span>') +
+          '</div>';
+        if (via.length) {
+          html += '<div class="mt-2 text-xs text-green-800"><i class="fas fa-circle-check mr-1"></i>Свежие handshake приходят с IP фронта; счётчики туннелей: ' + formatBytes(d.via_front_bytes) + '.</div>';
+          html += '<div class="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-gray-600">' + via.map(function (c) {
+            return '<span><b>' + escapeHtml(c.name) + '</b> <span class="text-gray-400">' + escapeHtml(c.protocol || '') + ' → ' + escapeHtml(c.server) + '</span></span>';
+          }).join('') + '</div>';
+        } else {
+          html += '<div class="mt-2 text-xs text-gray-500">За последние 3 минуты подключений через фронт не найдено. Это не ошибка, если клиенты сейчас выключены.</div>';
+        }
+        if (direct.length) {
+          html += '<div class="mt-2 text-amber-800">' + direct.map(function (c) {
             return '<span class="inline-block mr-3"><i class="fas fa-triangle-exclamation mr-1"></i>' + escapeHtml(c.name) +
               ' <span class="text-gray-400 font-mono text-xs">' + escapeHtml(c.ip || '') + ' → ' + escapeHtml(c.server) + '</span></span>';
           }).join('') + '</div>' +

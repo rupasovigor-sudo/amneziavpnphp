@@ -19,7 +19,11 @@ class FrontProbe
 {
     private const IMAGE = 'amz-front-probe';
     private const DL_BYTES = 3000000;
-    private const MIN_OK_BYTES = 1000000;
+    // This is a reachability probe, not a bandwidth benchmark. A partial
+    // Cloudflare download still proves that payload traffic crosses the
+    // tunnel; requiring 1 MB produced false failures on slow/throttled links
+    // even while real clients were actively using the same front.
+    private const MIN_OK_BYTES = 256000;
     private const FAILS_BEFORE_ACTION = 2;
     private const ROTATE_ATTEMPTS = 3;
     private const PROBE_SPORT = 51999;
@@ -60,7 +64,9 @@ class FrontProbe
         }
         $alerts = new AlertManager();
         $alerts->recordCheck($sid, (string) $front['server_name'], 'front_e2e', $res['ok'],
-            $res['ok'] ? 'Проверка из России через фронт: ' . $res['message'] : 'Через фронт не проходят данные (проверка из России): ' . $res['message'],
+            $res['ok']
+                ? 'Синтетическая проверка AWG 2.0 через фронт: ' . $res['message']
+                : 'Синтетическая проверка AWG 2.0 не подтвердила контрольный трафик: ' . $res['message'],
             'critical', self::FAILS_BEFORE_ACTION);
 
         if ($res['ok'] || !$allowRotate || $streak < self::FAILS_BEFORE_ACTION) {
@@ -226,7 +232,7 @@ class FrontProbe
                 return $fail('handshake', 'handshake через фронт не прошёл');
             }
             if ($bytes < self::MIN_OK_BYTES) {
-                return $fail('data', 'handshake есть, но данные не идут (' . round($bytes / 1024) . ' КБ)');
+                return $fail('data', 'handshake есть, контрольный объём не набран (' . round($bytes / 1024) . ' КБ)');
             }
             $mbit = $secs > 0 ? round($bytes * 8 / $secs / 1e6, 1) : 0;
             return [

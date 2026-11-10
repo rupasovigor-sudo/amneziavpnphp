@@ -471,7 +471,7 @@ Router::post('/pools/{id}/front/e2e', function ($params) {
     @set_time_limit(120);
     poolFrontJson(function () use ($params) {
         $r = FrontProbe::checkPool((int) $params['id'], false);
-        return ['success' => !empty($r['ok']), 'message' => 'Проверка из России: ' . ($r['message'] ?? '')];
+        return ['success' => !empty($r['ok']), 'message' => 'Синтетический тест AWG 2.0: ' . ($r['message'] ?? '')];
     });
 });
 

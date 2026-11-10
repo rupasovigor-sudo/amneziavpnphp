@@ -1022,6 +1022,9 @@ SH;
                 'name' => $names[(string) $pk] ?? ('…' . substr((string) $pk, 0, 8)),
                 'server' => $info['server_name'],
                 'ip' => $info['endpoint_ip'] ?? null,
+                'rx' => (int) ($info['rx'] ?? 0),
+                'tx' => (int) ($info['tx'] ?? 0),
+                'protocol' => ($info['interface'] ?? '') === 'awg31' ? 'AWG 3.1' : 'AWG 2.0',
             ];
             if (($info['via_front'] ?? null) === false) {
                 $direct[] = $row;
@@ -1031,7 +1034,17 @@ SH;
         }
         usort($direct, static fn($a, $b) => strcmp($a['name'], $b['name']));
         usort($via, static fn($a, $b) => strcmp($a['name'], $b['name']));
-        return ['front_mode' => $frontMode, 'via_front' => $via, 'direct' => $direct];
+        $sumBytes = static fn(array $rows): int => array_sum(array_map(
+            static fn(array $row): int => (int) $row['rx'] + (int) $row['tx'],
+            $rows
+        ));
+        return [
+            'front_mode' => $frontMode,
+            'via_front' => $via,
+            'direct' => $direct,
+            'via_front_bytes' => $sumBytes($via),
+            'direct_bytes' => $sumBytes($direct),
+        ];
     }
 
     // -------------------------------------------------------------------- UI
