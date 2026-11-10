@@ -258,8 +258,10 @@ cleanup_runtime() {
   set -e
 }
 
-detect_vpn_port() {
+detect_vpn_ports() {
   local port
+
+  # Legacy AWG 2.0 interface.
   port="$(grep -E '^[[:space:]]*ListenPort[[:space:]]*=' "$HOST_CONFIG_DIR/$CONFIG_FILE" 2>/dev/null | head -1 | cut -d= -f2 | tr -d '[:space:]' || true)"
   if [ -z "$port" ]; then
     port="$(docker exec "$CONTAINER_NAME" sh -c "grep -E '^[[:space:]]*ListenPort[[:space:]]*=' /opt/amnezia/awg/$CONFIG_FILE 2>/dev/null | head -1 | cut -d= -f2 | tr -d '[:space:]'" || true)"
@@ -267,7 +269,20 @@ detect_vpn_port() {
   if [ -z "$port" ]; then
     port="$(docker port "$CONTAINER_NAME" 2>/dev/null | awk '/\/udp/ { sub(/.*:/,"",$NF); print $NF; exit }')"
   fi
-  echo "${port:-0}"
+  [ -n "$port" ] && printf '%s\n' "$port"
+
+  # Parallel AWG 3.1 sidecar. Its encrypted handshake/replies must leave via
+  # the server's normal route, just like legacy AWG 2.0. Marking source port
+  # 444 for WARP changes the reply source address and silently breaks the
+  # tunnel through a pool front.
+  port="$(grep -E '^[[:space:]]*ListenPort[[:space:]]*=' /opt/amnezia/awg31/awg31.conf 2>/dev/null | head -1 | cut -d= -f2 | tr -d '[:space:]' || true)"
+  if [ -z "$port" ]; then
+    port="$(docker exec "$AWG31_CONTAINER_NAME" sh -c "grep -E '^[[:space:]]*ListenPort[[:space:]]*=' /opt/amnezia/awg/awg31.conf 2>/dev/null | head -1 | cut -d= -f2 | tr -d '[:space:]'" || true)"
+  fi
+  if [ -z "$port" ]; then
+    port="$(docker port "$AWG31_CONTAINER_NAME" 2>/dev/null | awk '/\/udp/ { sub(/.*:/,"",$NF); print $NF; exit }')"
+  fi
+  [ -n "$port" ] && printf '%s\n' "$port"
 }
 
 # Read a field (PrivateKey / PublicKey) from the active profile.
@@ -354,13 +369,15 @@ wait_for_warp() {
 }
 
 install_client_routing() {
-  local ips="$1" vpn_port="$2" ip net
+  local ips="$1" vpn_ports="$2" ip net port
   iptables -t mangle -N "$CHAIN" 2>/dev/null || true
   iptables -t mangle -F "$CHAIN"
   for net in 0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16 172.16.0.0/12 192.168.0.0/16 224.0.0.0/4 240.0.0.0/4; do
     iptables -t mangle -A "$CHAIN" -d "$net" -j RETURN
   done
-  [ "$vpn_port" != "0" ] && iptables -t mangle -A "$CHAIN" -p udp --sport "$vpn_port" -j RETURN
+  for port in $vpn_ports; do
+    [ "$port" != "0" ] && iptables -t mangle -A "$CHAIN" -p udp --sport "$port" -j RETURN
+  done
   iptables -t mangle -A "$CHAIN" -j MARK --set-mark "$MARK"
   for ip in $ips; do
     iptables -t mangle -C PREROUTING -s "$ip/32" -j "$CHAIN" 2>/dev/null || \
@@ -370,7 +387,9 @@ install_client_routing() {
     ip rule add fwmark "$MARK" table "$TABLE" priority 11888
   ip route replace default via "$NS_VETH_IP" dev "$VETH_HOST" table "$TABLE"
   printf '%s\n' $ips > "$STATE_DIR/container_ips"
-  echo "$vpn_port" > "$STATE_DIR/vpn_port"
+  printf '%s\n' $vpn_ports > "$STATE_DIR/vpn_ports"
+  # Retain the historical state file for older monitoring/uninstall code.
+  echo "$vpn_ports" | head -1 > "$STATE_DIR/vpn_port"
 }
 
 # ---------------------------------------------------------------------------
@@ -474,7 +493,7 @@ warp_tx_bytes() {
 }
 
 print_variables() {
-  local ips="$1" vpn_port="$2" trace warp_ip warp_on slot rotations
+  local ips="$1" vpn_ports="$2" trace warp_ip warp_on slot rotations
   trace="$(cat "$STATE_DIR/last_trace" 2>/dev/null || true)"
   warp_ip="$(echo "$trace" | awk -F= '$1=="ip"{print $2; exit}')"
   warp_on="$(echo "$trace" | awk -F= '$1=="warp"{print $2; exit}')"
@@ -484,7 +503,7 @@ print_variables() {
   echo "Variable: routing_scope=awg2_client_egress_tcp_udp"
   echo "Variable: awg2_container=$CONTAINER_NAME"
   echo "Variable: awg2_container_ips=$(echo "$ips" | tr '\n' ' ')"
-  echo "Variable: awg2_vpn_port=$vpn_port"
+  echo "Variable: awg2_vpn_ports=$(echo "$vpn_ports" | tr '\n' ' ')"
   echo "Variable: warp_namespace=$NS"
   echo "Variable: warp_pool_size=$(count_profiles)"
   echo "Variable: warp_active_profile=$slot"
@@ -501,7 +520,7 @@ bring_up_active() {
 }
 
 start_egress() {
-  local ips vpn_port
+  local ips vpn_ports
   if [ "$WARP_ENABLED" != "1" ]; then
     log "WARP disabled in the panel (WARP_ENABLED=0): client egress goes directly via the server IP"
     cleanup_runtime
@@ -521,7 +540,8 @@ start_egress() {
 
   ips="$(container_ips)"
   [ -z "$ips" ] && { log "ERROR: no Docker IP for $CONTAINER_NAME"; exit 1; }
-  vpn_port="$(detect_vpn_port)"
+  vpn_ports="$(detect_vpn_ports | sort -nu)"
+  [ -z "$vpn_ports" ] && vpn_ports=0
 
   bring_up_active || { log "ERROR: failed to bring up active WARP profile"; cleanup_runtime; exit 22; }
 
@@ -534,10 +554,10 @@ start_egress() {
     fi
   fi
 
-  install_client_routing "$ips" "$vpn_port"
+  install_client_routing "$ips" "$vpn_ports"
   apply_direct_bypass || true
   echo "$(warp_tx_bytes)" > "$STATE_DIR/traffic_baseline"
-  print_variables "$ips" "$vpn_port"
+  print_variables "$ips" "$vpn_ports"
 }
 
 # ---------------------------------------------------------------------------
