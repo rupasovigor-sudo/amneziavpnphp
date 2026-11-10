@@ -458,6 +458,8 @@ class ServerPool
                 'domain' => $domain,
                 'vpn_port' => (int) ($pool['vpn_port'] ?? 443),
                 'vpn_subnet' => $pool['vpn_subnet'],
+                'awg31_port' => (int) ($pool['awg31_port'] ?? 444),
+                'awg31_subnet' => $pool['awg31_subnet'] ?? '10.8.31.0/24',
                 'active_server_id' => $activeId,
                 'warp_bypass_google' => (int) ($pool['warp_bypass_google'] ?? 1) === 1,
                 'peer_source_pool_id' => ($sid = (int) ($pool['peer_source_pool_id'] ?? 0)) > 0 ? $sid : null,
