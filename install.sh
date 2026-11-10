@@ -11,7 +11,7 @@ set -Eeuo pipefail
 
 SCRIPT_VERSION="1.0.0"
 DEFAULT_REPO="https://github.com/rupasovigor-sudo/amneziavpnphp.git"
-DEFAULT_BRANCH="master"
+DEFAULT_BRANCH="fix/awg2"
 DEFAULT_INSTALL_DIR="/opt/amnezia-panel"
 
 ACTION="install"
@@ -61,7 +61,7 @@ Options:
                            to /root/.amnezia-panel-initial-credentials.
   --certbot-email EMAIL    Let's Encrypt email; defaults to --admin-email.
   --repo URL               Git repository for a new install.
-  --branch BRANCH          Git branch for a new install (default: master).
+  --branch BRANCH          Git branch for a new install (default: fix/awg2).
   --install-dir PATH       Installation directory (default: /opt/amnezia-panel).
   --with-front             Prepare the same host to be used as an RU-front.
   --no-https               Do not request a certificate. Intended for a temporary

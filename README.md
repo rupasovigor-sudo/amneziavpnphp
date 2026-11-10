@@ -46,7 +46,7 @@ For the automated `install.sh`, production deployment, HTTPS, backups, and the p
 Quick install on a clean Ubuntu host:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/rupasovigor-sudo/amneziavpnphp/master/install.sh -o /tmp/amnezia-panel-install.sh
+curl -fsSL https://raw.githubusercontent.com/rupasovigor-sudo/amneziavpnphp/fix/awg2/install.sh -o /tmp/amnezia-panel-install.sh
 sudo bash /tmp/amnezia-panel-install.sh install --domain panel.example.com --admin-email admin@example.com
 ```
 
@@ -55,7 +55,7 @@ Update with a database backup: `sudo /opt/amnezia-panel/install.sh update`.
 Manual installation:
 
 ```bash
-git clone https://github.com/rupasovigor-sudo/amneziavpnphp.git
+git clone --branch fix/awg2 --single-branch https://github.com/rupasovigor-sudo/amneziavpnphp.git
 cd amneziavpnphp
 cp .env.example .env
 

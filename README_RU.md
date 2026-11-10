@@ -45,7 +45,7 @@
 Быстрая установка на чистую Ubuntu:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/rupasovigor-sudo/amneziavpnphp/master/install.sh -o /tmp/amnezia-panel-install.sh
+curl -fsSL https://raw.githubusercontent.com/rupasovigor-sudo/amneziavpnphp/fix/awg2/install.sh -o /tmp/amnezia-panel-install.sh
 sudo bash /tmp/amnezia-panel-install.sh install --domain panel.example.com --admin-email admin@example.com
 ```
 
@@ -54,7 +54,7 @@ sudo bash /tmp/amnezia-panel-install.sh install --domain panel.example.com --adm
 Ручной способ:
 
 ```bash
-git clone https://github.com/rupasovigor-sudo/amneziavpnphp.git
+git clone --branch fix/awg2 --single-branch https://github.com/rupasovigor-sudo/amneziavpnphp.git
 cd amneziavpnphp
 cp .env.example .env
 

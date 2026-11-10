@@ -30,7 +30,7 @@ DNS-имя VPN-пула переключайте на фронт только и
 Рекомендуемый способ для чистого сервера — скачать скрипт, проверить его и запустить:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/rupasovigor-sudo/amneziavpnphp/master/install.sh \
+curl -fsSL https://raw.githubusercontent.com/rupasovigor-sudo/amneziavpnphp/fix/awg2/install.sh \
   -o /tmp/amnezia-panel-install.sh
 less /tmp/amnezia-panel-install.sh
 sudo bash /tmp/amnezia-panel-install.sh install \
@@ -132,7 +132,7 @@ sudo usermod -aG docker "$USER"
 ## 4. Установка панели
 
 ```bash
-sudo git clone https://github.com/rupasovigor-sudo/amneziavpnphp.git /opt/amnezia-panel
+sudo git clone --branch fix/awg2 --single-branch https://github.com/rupasovigor-sudo/amneziavpnphp.git /opt/amnezia-panel
 sudo chown -R "$USER":"$USER" /opt/amnezia-panel
 cd /opt/amnezia-panel
 cp .env.example .env
