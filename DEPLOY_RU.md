@@ -67,6 +67,58 @@ sudo bash /tmp/amnezia-panel-install.sh auto \
 
 Полный список параметров: `bash install.sh --help`. Ручная установка описана ниже и остается полезной для нестандартной инфраструктуры.
 
+### Если nginx не запускается: порт 80 уже занят
+
+Ошибка `bind() to 0.0.0.0:80 failed (98: Address already in use)` означает, что на хосте уже работает другой HTTP-сервер или Docker-контейнер. Это не конфликт с панелью: контейнер панели публикуется только на `127.0.0.1:8082`.
+
+Узнайте владельца TCP 80 и 443:
+
+```bash
+sudo ss -ltnp '( sport = :80 or sport = :443 )'
+sudo docker ps --format 'table {{.Names}}\t{{.Ports}}'
+```
+
+Если это неиспользуемый Apache:
+
+```bash
+sudo systemctl disable --now apache2
+sudo dpkg --configure -a
+sudo apt-get -f install
+```
+
+Если порт занимает нужный HAProxy, Caddy, Apache или Docker-сервис, не удаляйте его. Поскольку предыдущий запуск уже оставил nginx недонастроенным, сначала удалите только неудавшуюся установку nginx и завершите настройку пакетов:
+
+```bash
+sudo apt-get remove -y nginx nginx-common
+sudo dpkg --configure -a
+sudo apt-get -f install
+```
+
+Затем установите панель в режиме существующего reverse proxy. Панель останется на `127.0.0.1:8082`, а secure-cookie и proxy-заголовки будут настроены для внешнего HTTPS:
+
+```bash
+sudo bash /tmp/amnezia-panel-install.sh auto \
+  --existing-proxy \
+  --domain panel.example.com \
+  --admin-email admin@example.com
+```
+
+Добавьте в существующий reverse proxy маршрут `panel.example.com → http://127.0.0.1:8082`. Не копируйте готовый пример HAProxy вслепую: правило зависит от того, завершается ли TLS в HAProxy (`mode http`) или используется TCP/SNI passthrough (`mode tcp`). Для безопасной диагностики покажите только структуру frontend/backend:
+
+```bash
+sudo grep -nE '^[[:space:]]*(frontend|listen|backend|bind|mode|acl|use_backend|default_backend|server)[[:space:]]' /etc/haproxy/haproxy.cfg
+```
+
+После освобождения порта повторите обычную установку безопасным режимом `auto`:
+
+```bash
+sudo bash /tmp/amnezia-panel-install.sh auto \
+  --domain panel.example.com \
+  --admin-email admin@example.com
+```
+
+Новая версия установщика проверяет TCP 80/443 заранее и выводит конфликтующий процесс до запуска `apt`.
+
 ## 2. Сетевые порты
 
 ### Сервер только с панелью

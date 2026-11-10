@@ -9,7 +9,7 @@
 
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.0.0"
+SCRIPT_VERSION="1.2.0"
 DEFAULT_REPO="https://github.com/rupasovigor-sudo/amneziavpnphp.git"
 DEFAULT_BRANCH="fix/awg2"
 DEFAULT_INSTALL_DIR="/opt/amnezia-panel"
@@ -24,6 +24,7 @@ PANEL_ADMIN_PASSWORD="${PANEL_ADMIN_PASSWORD:-}"
 CERTBOT_EMAIL="${CERTBOT_EMAIL:-}"
 WITH_FRONT=0
 NO_HTTPS=0
+EXISTING_PROXY=0
 SKIP_BACKUP=0
 PASSWORD_GENERATED=0
 
@@ -45,6 +46,7 @@ Amnezia VPN Panel installer/updater
 
 Usage:
   install.sh install --domain DOMAIN --admin-email EMAIL [options]
+  install.sh install --existing-proxy --domain DOMAIN --admin-email EMAIL
   install.sh install --no-https --admin-email EMAIL [options]
   install.sh update [options]
   install.sh auto [options]
@@ -64,6 +66,9 @@ Options:
   --branch BRANCH          Git branch for a new install (default: fix/awg2).
   --install-dir PATH       Installation directory (default: /opt/amnezia-panel).
   --with-front             Prepare the same host to be used as an RU-front.
+  --existing-proxy         Keep the existing HAProxy/Caddy/Apache on TCP 80/443.
+                           The panel stays on 127.0.0.1:8082; HTTPS is terminated
+                           by the existing proxy.
   --no-https               Do not request a certificate. Intended for a temporary
                            local/SSH-tunnel installation.
   --skip-backup            Update without the update.sh database backup.
@@ -90,6 +95,7 @@ while [[ $# -gt 0 ]]; do
         --branch) PANEL_BRANCH="${2:-}"; shift 2 ;;
         --install-dir) PANEL_INSTALL_DIR="${2:-}"; shift 2 ;;
         --with-front) WITH_FRONT=1; shift ;;
+        --existing-proxy) EXISTING_PROXY=1; shift ;;
         --no-https) NO_HTTPS=1; shift ;;
         --skip-backup) SKIP_BACKUP=1; shift ;;
         -h|--help) usage; exit 0 ;;
@@ -104,6 +110,7 @@ done
 [[ "$PANEL_INSTALL_DIR" != *"/../"* && "$PANEL_INSTALL_DIR" != */.. ]] || die "--install-dir не должен содержать .."
 [[ "$PANEL_BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]] || die "Недопустимое имя Git-ветки"
 [[ "$PANEL_REPO_URL" =~ ^https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+(\.git)?$ ]] || die "Поддерживается только HTTPS URL репозитория GitHub"
+[[ "$EXISTING_PROXY" -eq 0 || "$NO_HTTPS" -eq 0 ]] || die "--existing-proxy и --no-https нельзя использовать одновременно"
 
 if [[ "$ACTION" == "auto" ]]; then
     if [[ -d "$PANEL_INSTALL_DIR/.git" ]]; then ACTION="update"; else ACTION="install"; fi
@@ -128,7 +135,42 @@ install_base_packages() {
     log "Устанавливаю системные зависимости"
     export DEBIAN_FRONTEND=noninteractive
     apt-get update
-    apt-get install -y ca-certificates curl gnupg git jq openssl nginx certbot python3-certbot-nginx
+    apt-get install -y ca-certificates curl gnupg git jq openssl
+}
+
+reverse_proxy_preflight() {
+    [[ -n "$PANEL_DOMAIN" ]] || return 0
+    if [[ "$EXISTING_PROXY" -eq 1 ]]; then
+        log "Сохраняю существующий reverse proxy; панель будет слушать только 127.0.0.1:8082"
+        return 0
+    fi
+    command -v ss >/dev/null 2>&1 || die "Команда ss не найдена; установите iproute2 и повторите запуск"
+
+    local port listener
+    for port in 80 443; do
+        listener="$(ss -H -ltnp "sport = :$port" 2>/dev/null || true)"
+        [[ -z "$listener" ]] && continue
+        # An already running nginx is reusable: configure_nginx adds a separate
+        # server_name and reloads it. Apache/Caddy/docker-proxy must not be
+        # stopped automatically because they may serve an existing site.
+        if grep -q 'users:(("nginx"' <<<"$listener"; then
+            log "TCP $port уже обслуживается nginx — использую существующий reverse proxy"
+            continue
+        fi
+        die "TCP-порт $port уже занят и nginx не сможет запуститься. Освободите порт либо используйте существующий reverse proxy. Процесс: $listener"
+    done
+}
+
+install_reverse_proxy_packages() {
+    [[ -n "$PANEL_DOMAIN" ]] || return 0
+    [[ "$EXISTING_PROXY" -eq 0 ]] || return 0
+    log "Устанавливаю nginx$([[ "$NO_HTTPS" -eq 0 ]] && echo ' и Certbot' || true)"
+    export DEBIAN_FRONTEND=noninteractive
+    if [[ "$NO_HTTPS" -eq 0 ]]; then
+        apt-get install -y nginx certbot python3-certbot-nginx
+    else
+        apt-get install -y nginx
+    fi
 }
 
 install_docker() {
@@ -239,6 +281,7 @@ wait_for_database() {
 
 configure_nginx() {
     [[ -n "$PANEL_DOMAIN" ]] || return 0
+    [[ "$EXISTING_PROXY" -eq 0 ]] || return 0
     local nginx_file="/etc/nginx/sites-available/amnezia-panel"
     log "Настраиваю nginx для $PANEL_DOMAIN"
     cat > "$nginx_file" <<'NGINX'
@@ -317,9 +360,19 @@ install_panel() {
         die "Некорректное DNS-имя панели"
     fi
     CERTBOT_EMAIL="${CERTBOT_EMAIL:-$PANEL_ADMIN_EMAIL}"
+    if [[ "$EXISTING_PROXY" -eq 1 && -z "$PANEL_DOMAIN" ]]; then
+        die "Для --existing-proxy нужен --domain панели"
+    fi
 
+    # Check before ANY apt invocation: after a failed nginx postinst, even an
+    # unrelated apt-get install retries nginx configuration and fails again.
+    reverse_proxy_preflight
     install_base_packages
     install_docker
+    # Install the reverse proxy last. Even if its postinst fails because a new
+    # listener appeared after preflight, Docker and the base tools are ready and
+    # the panel can still be recovered with --no-https.
+    install_reverse_proxy_packages
     [[ "$WITH_FRONT" -eq 1 ]] && prepare_front_host
 
     log "Клонирую $PANEL_REPO_URL, ветка $PANEL_BRANCH"
@@ -342,6 +395,9 @@ install_panel() {
     ok "Панель установлена"
     if [[ -n "$PANEL_DOMAIN" ]]; then
         log "Адрес: $([[ "$NO_HTTPS" -eq 1 ]] && echo http || echo https)://$PANEL_DOMAIN"
+        if [[ "$EXISTING_PROXY" -eq 1 ]]; then
+            log "Настройте существующий proxy: $PANEL_DOMAIN → http://127.0.0.1:8082"
+        fi
     else
         log "Панель доступна локально: http://127.0.0.1:8082"
         log "SSH-туннель: ssh -L 8082:127.0.0.1:8082 <user>@<server>"
