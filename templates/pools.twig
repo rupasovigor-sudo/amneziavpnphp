@@ -3,106 +3,142 @@
 {% block title %}Пулы{% endblock %}
 
 {% block content %}
-{{ ui.page_header('Здоровье пулов', 'Активный/резерв, DNS, готовность к failover — по всем пулам одним экраном') }}
+{{ ui.page_header('Пулы серверов', 'Точки входа, маршруты, серверы выхода и готовность резерва') }}
 
 <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+  <div class="card p-4 mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+    <div>
+      <div class="font-semibold text-gray-900">Общая схема подключения</div>
+      <div class="text-sm text-gray-500 mt-0.5">Клиент → домен пула → RU-фронт или прямой вход → активный сервер → WARP или прямой интернет</div>
+    </div>
+    <div class="flex flex-wrap gap-2 text-xs">
+      <span class="badge-brand"><i class="fas fa-layer-group mr-1"></i>{{ pools|length }} пул(а)</span>
+      <span class="badge-gray"><i class="fas fa-right-to-bracket mr-1"></i>{{ fronts|filter(f => f)|length }} с фронтом</span>
+    </div>
+  </div>
+
   {% for p in pools %}
   {% set pool = p.pool %}
+  {% set fs = fronts[pool.id] ?? null %}
+  {% set active = p.members|filter(m => m.role == 'active')|first %}
+  {% set ready_standby = p.members|filter(m => m.role == 'standby' and m.status == 'active' and not m.sync_pending and m.validated_clean == 1)|length %}
+  {% set sync_errors = p.members|filter(m => m.sync_pending)|length %}
   <div class="card mb-6 overflow-hidden">
-    <div class="px-5 py-4 border-b border-gray-100 bg-gray-50 flex items-center justify-between flex-wrap gap-2">
-      <div>
-        <h2 class="text-lg font-semibold text-gray-900">{{ pool.name }}</h2>
-        <div class="text-sm text-gray-500">
-          домен <span class="font-mono">{{ pool.domain ?: '—' }}</span>
-          · порт {{ pool.vpn_port }} · подсеть <span class="font-mono">{{ pool.vpn_subnet }}</span>
+    <div class="px-5 py-4 border-b border-gray-100 bg-gray-50 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div class="min-w-0">
+        <div class="flex flex-wrap items-center gap-2">
+          <h2 class="text-lg font-semibold text-gray-900">{{ pool.name }}</h2>
+          <span class="badge-gray">#{{ pool.id }}</span>
+          {% if fs and fs.front.dns_mode == 'front' %}<span class="badge-brand">через RU-фронт</span>{% else %}<span class="badge-gray">прямой вход</span>{% endif %}
+          {% if sync_errors %}<span class="badge-yellow"><i class="fas fa-triangle-exclamation mr-1"></i>рассинхрон: {{ sync_errors }}</span>{% endif %}
         </div>
+        <div class="text-sm text-gray-500 mt-1">{{ p.members|length }} сервер(а) · ACTIVE: <span class="font-medium text-gray-700">{{ active.name|default('не выбран') }}</span>{% if ready_standby %} · готовых резервов: {{ ready_standby }}{% endif %}</div>
       </div>
-      <div class="text-sm text-right">
-        {% if p.provider_configured %}
-          <span class="badge-green">DNS-провайдер настроен</span>
-        {% else %}
-          <span class="badge-yellow">DNS-провайдер не настроен</span>
-        {% endif %}
-        <div class="text-gray-500 mt-1">DNS указывает на: <span class="font-mono">{{ p.resolved_ips|join(', ') ?: '—' }}</span></div>
+      <div class="flex items-center gap-2 flex-shrink-0">
+        {% if active %}<a href="/servers/{{ active.id }}" class="btn-primary"><i class="fas fa-server"></i>Открыть ACTIVE</a>{% endif %}
+      </div>
+    </div>
+
+    <div class="p-5 border-b border-gray-100">
+      <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
+        <div class="rounded-lg border border-sky-200 bg-sky-50 p-3 min-w-0">
+          <div class="text-[10px] font-semibold uppercase tracking-wide text-sky-700 mb-2"><i class="fas fa-link mr-1"></i>Адреса подключения</div>
+          <div class="space-y-1.5">
+            <div class="flex items-center gap-2 min-w-0"><span class="px-1.5 py-0.5 rounded bg-white border border-sky-200 text-[10px] font-semibold text-sky-700 flex-shrink-0">AWG 2.0</span><span class="font-mono font-semibold text-xs truncate">{{ pool.domain ?: 'домен не задан' }}:{{ pool.vpn_port|default(443) }}</span></div>
+            <div class="flex items-center gap-2 min-w-0"><span class="px-1.5 py-0.5 rounded bg-white border border-indigo-200 text-[10px] font-semibold text-indigo-700 flex-shrink-0">AWG 3.1</span><span class="font-mono font-semibold text-xs truncate">{{ pool.domain ?: 'домен не задан' }}:{{ pool.awg31_port|default(444) }}</span></div>
+          </div>
+          <div class="text-xs text-gray-500 mt-2">Сети: <span class="font-mono">{{ pool.vpn_subnet }}</span> / <span class="font-mono">{{ pool.awg31_subnet|default('10.8.31.0/24') }}</span></div>
+        </div>
+
+        <div class="rounded-lg border border-indigo-200 bg-indigo-50 p-3 min-w-0">
+          <div class="text-[10px] font-semibold uppercase tracking-wide text-indigo-700 mb-1"><i class="fas fa-route mr-1"></i>Маршрут</div>
+          {% if fs and fs.front.dns_mode == 'front' %}
+            <div class="font-semibold text-sm text-gray-900 truncate">{{ fs.front.server_name }}</div>
+            <div class="text-xs text-gray-600 mt-1 truncate"><span class="font-mono">{{ fs.front.server_host }}</span> → {{ active.name|default('ACTIVE') }}</div>
+          {% else %}
+            <div class="font-semibold text-sm text-gray-900">Прямой вход</div>
+            <div class="text-xs text-gray-600 mt-1 truncate">{{ pool.domain ?: 'домен' }} → {{ active.name|default('ACTIVE не выбран') }}</div>
+          {% endif %}
+          <div class="text-xs mt-2 {{ active.status|default('') == 'active' ? 'text-green-700' : 'text-red-700' }}"><i class="fas fa-circle text-[7px] mr-1"></i>выходной сервер {{ active.status|default('не определён') }}</div>
+        </div>
+
+        <div class="rounded-lg border border-gray-200 bg-gray-50 p-3 min-w-0">
+          <div class="text-[10px] font-semibold uppercase tracking-wide text-gray-500 mb-1"><i class="fas fa-globe mr-1"></i>DNS</div>
+          <div class="font-mono font-semibold text-xs text-gray-900 break-all">{{ p.resolved_ips|join(', ') ?: 'IP не найден' }}</div>
+          <div class="text-xs mt-2 {{ p.provider_configured ? 'text-green-700' : 'text-amber-700' }}">{% if p.provider_configured %}<i class="fas fa-check-circle mr-1"></i>провайдер подключён{% else %}<i class="fas fa-triangle-exclamation mr-1"></i>провайдер не настроен{% endif %}</div>
+        </div>
+
+        <div class="rounded-lg border {{ ready_standby ? 'border-green-200 bg-green-50' : 'border-amber-200 bg-amber-50' }} p-3 min-w-0">
+          <div class="text-[10px] font-semibold uppercase tracking-wide {{ ready_standby ? 'text-green-700' : 'text-amber-700' }} mb-1"><i class="fas fa-shield-halved mr-1"></i>Отказоустойчивость</div>
+          {% if p.members|length == 1 %}
+            <div class="font-semibold text-sm text-gray-900">Один сервер</div><div class="text-xs text-gray-600 mt-1">Резервного выхода пока нет</div>
+          {% elseif ready_standby %}
+            <div class="font-semibold text-sm text-gray-900">Резерв готов</div><div class="text-xs text-gray-600 mt-1">{{ ready_standby }} сервер(а) готовы к failover</div>
+          {% else %}
+            <div class="font-semibold text-sm text-gray-900">Резерв не готов</div><div class="text-xs text-gray-600 mt-1">Проверьте синхрон и репутацию</div>
+          {% endif %}
+        </div>
       </div>
     </div>
 
     {# Egress policy for the whole pool #}
-    <div class="px-5 py-3 border-b border-gray-100 flex items-center justify-between flex-wrap gap-3 text-sm">
-      <div class="text-gray-600 leading-snug">
-        <span class="font-medium text-gray-800">Выход в интернет:</span> Cloudflare WARP{% if p.members|filter(m => not m.warp_enabled)|length %} (кроме серверов с пометкой «WARP выкл» — они выходят напрямую){% endif %}.
-        {% if pool.warp_bypass_google ?? 1 %}
-          Google (поиск, Gemini, YouTube) — <b>напрямую с IP сервера</b>: без капчи и без крюка через другую страну; страна для Google = страна сервера.
-        {% else %}
-          Google тоже через WARP — общие IP Cloudflare Google иногда принимает за ботов (капча).
-        {% endif %}
+    <div class="px-5 py-4 border-b border-gray-100 bg-white flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+      <div class="min-w-0">
+        <div class="font-medium text-sm text-gray-900"><i class="fas fa-arrow-up-right-from-square mr-1 text-brand-600"></i>Выход в интернет</div>
+        <div class="text-xs text-gray-500 mt-1 leading-relaxed">Cloudflare WARP{% if p.members|filter(m => not m.warp_enabled)|length %}; на части серверов выбран прямой выход{% endif %}. Google {% if pool.warp_bypass_google ?? 1 %}идёт напрямую с IP выходного сервера{% else %}также идёт через WARP{% endif %}.</div>
       </div>
-      <label class="inline-flex items-center gap-2 cursor-pointer select-none">
+      <label class="inline-flex items-center gap-2 px-3 py-2 rounded-lg border bg-gray-50 cursor-pointer select-none text-sm flex-shrink-0">
         <input type="checkbox" class="js-warp-bypass rounded border-gray-300 text-brand-600 focus:ring-brand-500" data-pool="{{ pool.id }}" {{ (pool.warp_bypass_google ?? 1) ? 'checked' }}>
         <span>Google напрямую</span>
       </label>
     </div>
 
-    <div class="overflow-x-auto">
-      <table class="min-w-full text-sm">
-        <thead class="bg-gray-50 text-gray-600">
-          <tr>
-            <th class="px-4 py-2 text-left font-medium">Сервер</th>
-            <th class="px-4 py-2 text-left font-medium">Роль</th>
-            <th class="px-4 py-2 text-left font-medium">DNS→сюда</th>
-            <th class="px-4 py-2 text-left font-medium">Чистый</th>
-            <th class="px-4 py-2 text-left font-medium">Синхрон</th>
-            <th class="px-4 py-2 text-left font-medium">Статус</th>
-            <th class="px-4 py-2 text-left font-medium">Репутация IP</th>
-            <th class="px-4 py-2 text-left font-medium">Готов к failover</th>
-          </tr>
-        </thead>
-        <tbody class="divide-y divide-gray-100">
-          {% for m in p.members %}
-          {% set ready = m.status == 'active' and not m.sync_pending and m.validated_clean == 1 %}
-          <tr class="hover:bg-gray-50">
-            <td class="px-4 py-2">
-              <div class="font-medium">{{ m.name }}{% if m.warp_enabled is defined and not m.warp_enabled %} <span class="badge-yellow" title="Клиенты этого сервера выходят в интернет напрямую с его IP">WARP выкл</span>{% endif %}</div>
-              <div class="text-xs text-gray-500 font-mono">{{ m.host }} · #{{ m.id }} · prio {{ m.priority }}</div>
-            </td>
-            <td class="px-4 py-2">
-              {% if m.role == 'active' %}<span class="badge-brand">active</span>{% else %}<span class="badge-gray">standby</span>{% endif %}
-            </td>
-            <td class="px-4 py-2">{{ m.dns_points_here ? '✓' : '—' }}</td>
-            <td class="px-4 py-2">
-              {% if m.validated_clean == 1 %}<span class="text-green-700">✓ чистый</span>
-              {% elseif m.validated_clean is null %}<span class="text-gray-400">— не проверен</span>
-              {% else %}<span class="text-red-700">✗ не чистый</span>{% endif %}
-              {% if m.validation_note %}<div class="text-xs text-gray-400">{{ m.validation_note }}</div>{% endif %}
-            </td>
-            <td class="px-4 py-2">
-              {% if m.sync_pending %}<span class="text-red-700">ожидает</span>{% else %}<span class="text-green-700">ок</span>{% endif %}
-            </td>
-            <td class="px-4 py-2">{{ m.status }}</td>
-            <td class="px-4 py-2">
-              {% set rep = reputation[m.id] %}
-              {% if rep is null %}
-                <span class="text-gray-400">— не проверялось</span>
-              {% else %}
-                {% set listed = rep.listed_on %}
-                {% set score = rep.abuse_score %}
-                {% if listed|length > 0 or (score is not null and score >= 50) %}
-                  <span class="badge-red" title="{{ listed|join(', ') }}">в блок-листах{% if score is not null %} ({{ score }}){% endif %}</span>
+    <div class="px-5 py-4 border-b border-gray-100">
+      <div class="flex items-center justify-between gap-3 mb-3">
+        <div><div class="font-semibold text-gray-900"><i class="fas fa-server mr-1 text-brand-600"></i>Серверы пула</div><div class="text-xs text-gray-500 mt-0.5">Роль, синхронизация, репутация IP и готовность к переключению</div></div>
+        <span class="badge-gray">{{ p.members|length }}</span>
+      </div>
+      <div class="grid grid-cols-1 xl:grid-cols-2 gap-3">
+        {% for m in p.members %}
+        {% set ready = m.status == 'active' and not m.sync_pending and m.validated_clean == 1 %}
+        {% set rep = reputation[m.id] %}
+        <div class="rounded-lg border p-3 bg-white">
+          <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div class="min-w-0">
+              <div class="flex flex-wrap items-center gap-2">
+                <a href="/servers/{{ m.id }}" class="font-semibold text-gray-900 hover:text-brand-600">{{ m.name }}</a>
+                {% if m.role == 'active' %}<span class="badge-brand">ACTIVE</span>{% else %}<span class="badge-gray">STANDBY</span>{% endif %}
+                {% if fs and fs.front.dns_mode == 'front' and m.role == 'active' %}<span class="badge-brand"><i class="fas fa-right-to-bracket mr-1"></i>через фронт</span>{% elseif m.dns_points_here %}<span class="badge-green">DNS сюда</span>{% endif %}
+              </div>
+              <div class="text-xs text-gray-500 font-mono mt-1">{{ m.host }} · #{{ m.id }} · приоритет {{ m.priority }}</div>
+              <div class="flex flex-wrap gap-1.5 mt-2">
+                <span class="{{ m.status == 'active' ? 'badge-green' : 'badge-red' }}">{{ m.status }}</span>
+                {% if m.sync_pending %}<span class="badge-red">ожидает синхронизации</span>{% else %}<span class="badge-green">синхрон OK</span>{% endif %}
+                {% if m.warp_enabled %}<span class="px-2 py-0.5 rounded text-xs bg-violet-100 text-violet-700">выход WARP</span>{% else %}<span class="badge-gray">прямой выход</span>{% endif %}
+              </div>
+            </div>
+            <div class="sm:text-right flex-shrink-0">
+              {% if m.role == 'active' %}<span class="text-xs text-gray-500">текущий выход</span>
+              {% elseif ready %}<span class="badge-green">готов к failover</span>
+              {% else %}<span class="badge-red">не готов к failover</span>{% endif %}
+              <div class="mt-2 text-xs">
+                {% if m.validated_clean == 1 %}<span class="text-green-700"><i class="fas fa-check mr-1"></i>канарейка: чистый</span>
+                {% elseif m.validated_clean is null %}<span class="text-gray-500">канарейка: не проверен</span>
+                {% else %}<span class="text-red-700"><i class="fas fa-xmark mr-1"></i>канарейка: не прошёл</span>{% endif %}
+              </div>
+              <div class="mt-1 text-xs">
+                {% if rep is null %}<span class="text-gray-500">репутация: не проверялась</span>
                 {% else %}
-                  <span class="badge-green">чист</span>
+                  {% set listed = rep.listed_on %}{% set score = rep.abuse_score %}
+                  {% if listed|length > 0 or (score is not null and score >= 50) %}<span class="text-red-700" title="{{ listed|join(', ') }}">репутация: блок-листы{% if score is not null %} ({{ score }}){% endif %}</span>{% else %}<span class="text-green-700">репутация: чист</span>{% endif %}
                 {% endif %}
-                <div class="text-xs text-gray-400">{{ rep.checked_at }}</div>
-              {% endif %}
-            </td>
-            <td class="px-4 py-2">
-              {% if m.role == 'active' %}<span class="text-gray-400">— (активный)</span>
-              {% elseif ready %}<span class="badge-green">готов</span>
-              {% else %}<span class="badge-red">не готов</span>{% endif %}
-            </td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
+              </div>
+            </div>
+          </div>
+          {% if m.validation_note %}<div class="mt-2 pt-2 border-t text-xs text-gray-400 break-words">{{ m.validation_note }}</div>{% endif %}
+        </div>
+        {% endfor %}
+      </div>
     </div>
 
     {# ── Router AllowedIPs (full tunnel minus every pool endpoint) ── #}
@@ -132,16 +168,29 @@
     </div>
 
     {# ── RU-фронт (entry relay) ── #}
-    {% set fs = fronts[pool.id] ?? null %}
     {% set countries = ['DE','US','FI','SE','NL','GB','FR','PL','EE','LV','LT','TR','KZ'] %}
-    <div class="border-t border-gray-100 px-5 py-4">
-      <h3 class="section-title justify-between">
-        <span class="flex items-center gap-2"><i class="fas fa-right-to-bracket"></i>RU-фронт — вход через российский IP</span>
-        {% if fs %}
-          {% if fs.down %}<span class="badge-red">фронт недоступен</span>{% else %}<span class="badge-green">relay работает</span>{% endif %}
-        {% endif %}
-      </h3>
-
+    <div class="border-t border-gray-100 px-5 py-4 bg-gray-50/50">
+      <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <div class="font-semibold text-gray-900"><i class="fas fa-right-to-bracket mr-1 text-brand-600"></i>RU-фронт</div>
+          {% if fs %}
+            <div class="text-xs text-gray-500 mt-1"><span class="font-medium text-gray-700">{{ fs.front.server_name }}</span> · <span class="font-mono">{{ fs.front.server_host }}</span> · домен {% if fs.front.dns_mode == 'front' %}на фронте{% else %}на активном сервере{% endif %}</div>
+          {% else %}
+            <div class="text-xs text-gray-500 mt-1">Фронт не подключён — клиенты входят напрямую на сервер пула.</div>
+          {% endif %}
+        </div>
+        <div class="flex flex-wrap items-center gap-2">
+          {% if fs %}
+            {% if fs.down %}<span class="badge-red">фронт недоступен</span>{% else %}<span class="badge-green">relay работает</span>{% endif %}
+            {% if fs.front.e2e_checked_at is null %}<span class="badge-gray">E2E не проверен</span>{% elseif fs.front.e2e_ok %}<span class="badge-green">данные проходят</span>{% else %}<span class="badge-red">данные не проходят</span>{% endif %}
+          {% else %}
+            <span class="badge-gray">не настроен</span>
+          {% endif %}
+        </div>
+      </div>
+      <details class="mt-3 rounded-lg border bg-white px-4 py-3">
+        <summary class="cursor-pointer text-sm font-medium text-gray-800 select-none"><i class="fas fa-sliders mr-1 text-brand-600"></i>{% if fs %}Настройки и диагностика фронта{% else %}Подключить RU-фронт{% endif %}</summary>
+        <div class="mt-4">
       {% if not fs %}
         <p class="text-sm text-gray-500 mb-3 leading-snug">
           Клиенты подключаются к серверу-фронту (например, в РФ), а он прозрачно пересылает трафик на серверы этого пула — выход в интернет остаётся через пул и WARP.
@@ -295,6 +344,8 @@
           Панель каждую минуту пересчитывает бэкенды: упавший или не синхронизированный сервер выбывает, его сессии перекидываются на живые. Если недоступен сам фронт, домен автоматически уходит напрямую на здоровый сервер (обратно — кнопкой).
         </p>
       {% endif %}
+        </div>
+      </details>
     </div>
   </div>
   {% else %}
