@@ -2,7 +2,11 @@
 {% block title %}{{ client.name }}{% endblock %}
 {% block content %}
 <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-  <h1 class="text-2xl font-bold text-gray-900 mb-6">{{ client.name }}</h1>
+  <div class="flex flex-wrap items-center gap-3 mb-6">
+    <h1 class="text-2xl font-bold text-gray-900">{{ client.name }}</h1>
+    <span id="clientConnectionRoute" class="hidden text-xs px-2.5 py-1 rounded bg-gray-100 text-gray-600"
+          data-server-id="{{ client.server_id }}" data-public-key="{{ client.public_key }}"></span>
+  </div>
   
   <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
     <div class="card p-6">
@@ -29,7 +33,10 @@
               <a href="/clients/{{ client.id }}/download?pool_id={{ endpoint.pool_id }}"
                  class="flex items-center justify-between gap-3 px-4 py-3 rounded-lg border {{ endpoint.selected ? 'bg-brand-600 border-brand-600 text-white hover:bg-brand-700' : 'bg-sky-50 border-sky-200 text-sky-800 hover:bg-sky-100' }}"
                  title="{{ endpoint.domain }}:{{ endpoint.port }}">
-                <span class="inline-flex items-center gap-2 font-medium"><i class="fas fa-download"></i>Config {{ endpoint.name }}</span>
+                <span>
+                  <span class="inline-flex items-center gap-2 font-medium"><i class="fas fa-download"></i>Config {{ endpoint.name }}</span>
+                  {% if endpoint.via_front %}<span class="block text-[10px] mt-1 {{ endpoint.selected ? 'text-brand-100' : 'text-indigo-600' }}"><i class="fas fa-right-to-bracket mr-1"></i>через {{ endpoint.front_name }}</span>{% endif %}
+                </span>
                 <span class="text-xs font-mono {{ endpoint.selected ? 'text-brand-100' : 'text-sky-600' }}">{{ endpoint.domain }}:{{ endpoint.port }}</span>
               </a>
             {% endfor %}
@@ -165,6 +172,7 @@
         <button type="button" role="tab" data-action="selectClientProfile" data-profile-key="{{ profile.key }}" aria-selected="{{ profile.selected ? 'true' : 'false' }}"
                 class="client-profile-tab flex-shrink-0 px-4 py-3 border-b-2 text-sm font-medium {{ profile.selected ? 'border-brand-600 text-brand-700 bg-brand-50' : 'border-transparent text-gray-500 hover:text-gray-800' }}">
           <i class="fas fa-server mr-1"></i>{{ profile.name }}
+          {% if profile.via_front %}<span class="ml-1 px-1.5 py-0.5 rounded text-[10px] bg-indigo-100 text-indigo-700"><i class="fas fa-right-to-bracket mr-1"></i>RU-фронт</span>{% endif %}
           {% if profile.endpoint %}<span class="block text-[10px] font-mono font-normal mt-0.5">{{ profile.endpoint }}</span>{% endif %}
         </button>
       {% endfor %}
@@ -218,6 +226,36 @@
 </div>
 
 <script nonce="{{ csp_nonce }}">
+async function refreshClientConnectionRoute() {
+  const badge = document.getElementById('clientConnectionRoute');
+  if (!badge) return;
+  try {
+    const response = await fetch(`/servers/${badge.dataset.serverId}/clients/live-status`, {credentials: 'same-origin'});
+    const data = await response.json();
+    const peer = data && data.peers ? data.peers[badge.dataset.publicKey] : null;
+    if (!peer || !peer.online || !peer.server_name) return;
+    const exitName = peer.server_name;
+    badge.replaceChildren();
+    const bypass = peer.via_front !== true && !!peer.front_name;
+    const icon = document.createElement('i');
+    icon.className = peer.via_front === true
+      ? 'fas fa-right-to-bracket mr-1'
+      : (bypass ? 'fas fa-triangle-exclamation mr-1' : 'fas fa-arrow-right-to-bracket mr-1');
+    badge.appendChild(icon);
+    badge.appendChild(document.createTextNode(peer.via_front === true
+      ? `${peer.front_name || 'RU-фронт'} → ${exitName}`
+      : (bypass ? `В обход фронта → ${exitName}` : `Напрямую → ${exitName}`)));
+    badge.className = peer.via_front === true
+      ? 'text-xs px-2.5 py-1 rounded bg-indigo-100 text-indigo-700'
+      : (bypass ? 'text-xs px-2.5 py-1 rounded bg-amber-100 text-amber-700' : 'text-xs px-2.5 py-1 rounded bg-gray-100 text-gray-600');
+    badge.title = peer.via_front === true
+      ? 'Вход через RU-фронт, выход через VPN-сервер'
+      : (bypass ? 'Клиент подключён напрямую, минуя настроенный RU-фронт' : 'Подключение напрямую к VPN-серверу');
+  } catch (_) {}
+}
+refreshClientConnectionRoute();
+setInterval(refreshClientConnectionRoute, 45000);
+
 function selectClientProfile() {
   const key = this.dataset.profileKey;
   document.querySelectorAll('.client-profile-tab').forEach(tab => {

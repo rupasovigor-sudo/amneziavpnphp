@@ -185,12 +185,22 @@ Router::get('/clients', function () {
 
     $clients = [];
     $onlineLogins = [];
+    $selectedFront = null;
     if ($selectedServer !== null) {
         $poolId = (int) ($selectedServer['pool_id'] ?? 0);
         $clients = $poolId > 0
             ? VpnClient::listByPool($poolId)
             : VpnClient::listByServer((int) $selectedServer['id']);
         $onlineLogins = ServerMonitoring::getOnlineClientsForServer($selectedServer);
+        if ($poolId > 0) {
+            $front = PoolFront::forPool($poolId);
+            if ($front && (int) ($front['enabled'] ?? 0) === 1 && ($front['dns_mode'] ?? '') === 'front') {
+                $selectedFront = [
+                    'name' => (string) ($front['server_name'] ?? 'RU-фронт'),
+                    'host' => (string) ($front['server_host'] ?? ''),
+                ];
+            }
+        }
     }
 
     View::render('clients/index.twig', [
@@ -201,6 +211,7 @@ Router::get('/clients', function () {
         'clients' => $clients,
         'online_logins' => $onlineLogins,
         'online_window' => ServerMonitoring::onlineWindow(),
+        'selected_front' => $selectedFront,
     ]);
 });
 
@@ -1036,6 +1047,8 @@ Router::get('/servers/{id}/clients/live-status', function ($params) {
                 $front = $fronts[$connectionPoolId];
                 if ($front && (int) $front['enabled'] === 1 && $front['dns_mode'] === 'front') {
                     $peers[$pk]['via_front'] = (string) ($info['endpoint_ip'] ?? '') === (string) $front['server_host'];
+                    $peers[$pk]['front_name'] = (string) ($front['server_name'] ?? 'RU-фронт');
+                    $peers[$pk]['front_host'] = (string) ($front['server_host'] ?? '');
                 }
             }
         }
@@ -1881,6 +1894,10 @@ Router::get('/clients/{id}', function ($params) {
             foreach ($groupPoolIds as $endpointPoolId) {
                 $ep = ServerPool::get($endpointPoolId);
                 if ($ep && trim((string) ($ep['domain'] ?? '')) !== '') {
+                    $endpointFront = PoolFront::forPool($endpointPoolId);
+                    $viaFront = $endpointFront
+                        && (int) ($endpointFront['enabled'] ?? 0) === 1
+                        && ($endpointFront['dns_mode'] ?? '') === 'front';
                     $clientEndpoints[] = [
                         'pool_id' => $endpointPoolId,
                         'name' => $ep['name'],
@@ -1888,6 +1905,9 @@ Router::get('/clients/{id}', function ($params) {
                         'port' => ServerPool::endpointPort($ep, $isAwg31Client ? '3.1' : '2.0'),
                         'current' => $endpointPoolId === $homePoolId,
                         'selected' => $endpointPoolId === $selectedEndpointPoolId,
+                        'via_front' => $viaFront,
+                        'front_name' => $viaFront ? (string) ($endpointFront['server_name'] ?? 'RU-фронт') : '',
+                        'front_host' => $viaFront ? (string) ($endpointFront['server_host'] ?? '') : '',
                     ];
                 }
             }

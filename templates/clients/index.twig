@@ -42,6 +42,7 @@
       <span class="font-semibold text-gray-900">{{ selected_server.name }}</span>
       <span class="font-mono text-gray-500">{{ selected_server.domain ?: selected_server.host }}</span>
       {% if selected_server.pool_name %}<span class="badge-gray"><i class="fas fa-layer-group mr-1"></i>{{ selected_server.pool_name }}</span>{% endif %}
+      {% if selected_front %}<span class="badge-brand" title="{{ selected_front.host }}"><i class="fas fa-right-to-bracket mr-1"></i>Endpoint через {{ selected_front.name }}</span>{% endif %}
       <span class="{{ selected_server.status == 'active' ? 'badge-green' : (selected_server.status == 'error' ? 'badge-red' : 'badge-yellow') }}">{{ selected_server.status }}</span>
       {% if selected_server.pool_id %}<span class="text-xs text-gray-400">Клиенты пула общие для его серверов</span>{% endif %}
     </div>
@@ -127,7 +128,11 @@
               <tr class="border-t client-row hover:bg-gray-50" data-search="{{ (client.name ~ ' ' ~ client.client_ip ~ ' ' ~ awg_version)|lower }}" data-public-key="{{ client.public_key }}">
                 <td class="px-4 py-3">
                   <a href="/clients/{{ client.id }}{% if selected_server.pool_id %}?pool_id={{ selected_server.pool_id }}{% endif %}" class="font-medium text-gray-900 hover:text-brand-600 hover:underline">{{ client.name }}</a>
-                  <div class="flex items-center gap-2 mt-0.5"><span class="text-xs text-gray-400 font-mono">{{ client.client_ip }}</span><span class="px-1.5 py-0.5 rounded text-[10px] bg-sky-100 text-sky-700">AWG {{ awg_version }}</span></div>
+                  <div class="flex flex-wrap items-center gap-2 mt-0.5">
+                    <span class="text-xs text-gray-400 font-mono">{{ client.client_ip }}</span>
+                    <span class="px-1.5 py-0.5 rounded text-[10px] bg-sky-100 text-sky-700">AWG {{ awg_version }}</span>
+                    {% if selected_front %}<span class="px-1.5 py-0.5 rounded text-[10px] bg-indigo-100 text-indigo-700" title="Endpoint {{ selected_front.host }}">через RU-фронт</span>{% endif %}
+                  </div>
                 </td>
                 <td class="px-4 py-3" data-status-cell data-client-status="{{ client.status }}">
                   {% if is_online %}<span class="inline-flex items-center gap-1 px-2 py-1 bg-green-100 text-green-800 rounded text-xs"><i class="fas fa-wifi"></i>Online</span>
@@ -240,8 +245,19 @@
           const badge = online
             ? '<span class="inline-flex items-center gap-1 px-2 py-1 bg-green-100 text-green-800 rounded text-xs"><i class="fas fa-wifi"></i>Online</span>'
             : (active ? '<span class="inline-flex items-center gap-1 px-2 py-1 bg-gray-100 text-gray-600 rounded text-xs">{{ t("status.active") }}</span>' : '<span class="inline-flex items-center gap-1 px-2 py-1 bg-red-100 text-red-800 rounded text-xs">{{ t("status.disabled") }}</span>');
-          const via = online && peer.server_name ? `<div class="text-xs text-gray-500 mt-1"><i class="fas fa-server mr-1"></i>${escapeHtml(peer.server_name)}</div>` : '';
-          statusCell.innerHTML = badge + via;
+          let route = '';
+          if (online && peer.server_name) {
+            const exit = escapeHtml(peer.server_name);
+            if (peer.via_front === true) {
+              const front = escapeHtml(peer.front_name || 'RU-фронт');
+              route = `<div class="text-xs text-indigo-700 mt-1 whitespace-nowrap" title="Вход через ${front}, выход через ${exit}"><i class="fas fa-right-to-bracket mr-1"></i>${front} <i class="fas fa-arrow-right mx-1"></i><i class="fas fa-server mr-1"></i>${exit}</div>`;
+            } else if (peer.front_name) {
+              route = `<div class="text-xs text-amber-700 mt-1 whitespace-nowrap" title="Клиент подключён напрямую, минуя настроенный RU-фронт. Переподключите VPN на устройстве."><i class="fas fa-triangle-exclamation mr-1"></i>В обход фронта <i class="fas fa-arrow-right mx-1"></i><i class="fas fa-server mr-1"></i>${exit}</div>`;
+            } else {
+              route = `<div class="text-xs text-gray-500 mt-1 whitespace-nowrap" title="Подключение напрямую к выходному серверу"><i class="fas fa-arrow-right-to-bracket mr-1"></i>Напрямую <i class="fas fa-arrow-right mx-1"></i><i class="fas fa-server mr-1"></i>${exit}</div>`;
+            }
+          }
+          statusCell.innerHTML = badge + route;
         }
         const hs = row.querySelector('[data-hs-cell]');
         if (hs && peer && peer.handshake_age != null) hs.textContent = handshakeAge(peer.handshake_age);
