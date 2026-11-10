@@ -27,22 +27,27 @@
       </dl>
       <div class="mb-4">
         <div class="text-sm font-medium text-gray-700 mb-2">Конфиги по серверам</div>
-        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+        <div class="space-y-2">
           {% if client_endpoints|default([])|length > 0 %}
             {% for endpoint in client_endpoints %}
-              <a href="/clients/{{ client.id }}/download?pool_id={{ endpoint.pool_id }}"
-                 class="flex items-center justify-between gap-3 px-4 py-3 rounded-lg border {{ endpoint.selected ? 'bg-brand-600 border-brand-600 text-white hover:bg-brand-700' : 'bg-sky-50 border-sky-200 text-sky-800 hover:bg-sky-100' }}"
-                 title="{{ endpoint.domain }}:{{ endpoint.port }}">
-                <span>
-                  <span class="inline-flex items-center gap-2 font-medium"><i class="fas fa-download"></i>Config {{ endpoint.name }}</span>
-                  {% if endpoint.via_front %}<span class="block text-[10px] mt-1 {{ endpoint.selected ? 'text-brand-100' : 'text-indigo-600' }}"><i class="fas fa-right-to-bracket mr-1"></i>через {{ endpoint.front_name }}</span>{% endif %}
-                </span>
-                <span class="text-xs font-mono {{ endpoint.selected ? 'text-brand-100' : 'text-sky-600' }}">{{ endpoint.domain }}:{{ endpoint.port }}</span>
-              </a>
+              <div class="flex items-center justify-between gap-3 px-3 py-2.5 rounded-lg border {{ endpoint.selected ? 'bg-brand-50 border-brand-200' : 'bg-gray-50 border-gray-200' }}">
+                <div class="min-w-0">
+                  <div class="font-medium text-sm text-gray-900 truncate">{{ endpoint.name }}</div>
+                  <div class="flex flex-wrap items-center gap-x-2 text-[11px] text-gray-500">
+                    {% if endpoint.via_front %}<span class="text-indigo-600"><i class="fas fa-right-to-bracket mr-1"></i>{{ endpoint.front_name }}</span>{% endif %}
+                    <span class="font-mono">{{ endpoint.domain }}:{{ endpoint.port }}</span>
+                  </div>
+                </div>
+                <a href="/clients/{{ client.id }}/download?pool_id={{ endpoint.pool_id }}"
+                   class="btn-primary flex-shrink-0 whitespace-nowrap px-3 py-2 text-sm"
+                   title="Скачать конфиг {{ endpoint.name }} ({{ endpoint.domain }}:{{ endpoint.port }})">
+                  <i class="fas fa-download"></i><span>Скачать конфиг</span>
+                </a>
+              </div>
             {% endfor %}
           {% else %}
-            <a href="/clients/{{ client.id }}/download" class="flex items-center justify-center gap-2 bg-brand-600 hover:bg-brand-700 text-white px-4 py-3 rounded-lg">
-              <i class="fas fa-download"></i>Download Config
+            <a href="/clients/{{ client.id }}/download" class="btn-primary inline-flex items-center whitespace-nowrap px-3 py-2 text-sm">
+              <i class="fas fa-download"></i>Скачать конфиг
             </a>
           {% endif %}
         </div>
@@ -181,8 +186,8 @@
     {% for profile in client_profiles %}
       <div class="client-profile-panel {{ profile.selected ? '' : 'hidden' }}" data-profile-panel="{{ profile.key }}" role="tabpanel">
         <div class="flex justify-end mb-4">
-          <a href="/clients/{{ client.id }}/download{% if profile.pool_id %}?pool_id={{ profile.pool_id }}{% endif %}" class="inline-flex items-center gap-2 bg-brand-600 hover:bg-brand-700 text-white px-4 py-2 rounded">
-            <i class="fas fa-download"></i>Скачать Config {{ profile.name }}
+          <a href="/clients/{{ client.id }}/download{% if profile.pool_id %}?pool_id={{ profile.pool_id }}{% endif %}" class="btn-primary inline-flex items-center whitespace-nowrap px-3 py-2 text-sm" title="Скачать конфиг {{ profile.name }}">
+            <i class="fas fa-download"></i>Скачать конфиг
           </a>
         </div>
 

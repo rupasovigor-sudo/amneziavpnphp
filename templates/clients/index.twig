@@ -47,22 +47,22 @@
       {% if selected_server.pool_id %}<span class="text-xs text-gray-400">Клиенты пула общие для его серверов</span>{% endif %}
     </div>
 
-    <div class="grid grid-cols-1 xl:grid-cols-3 gap-6 items-start">
-      <div class="card p-6 xl:sticky xl:top-20">
-        <h2 class="section-title"><i class="fas fa-user-plus"></i>{{ t('clients.create') }}</h2>
+    <div class="space-y-4">
+      <div class="card p-4">
+        <h2 class="font-bold text-gray-900 mb-3"><i class="fas fa-user-plus text-brand-600 mr-2"></i>{{ t('clients.create') }}</h2>
         {% if selected_server.status == 'active' %}
-        <form method="POST" action="/servers/{{ selected_server.id }}/clients/create" class="space-y-4" id="createClientForm">
+        <form method="POST" action="/servers/{{ selected_server.id }}/clients/create" class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-3 items-end" id="createClientForm">
           <div>
-            <label for="clientName" class="block text-sm font-medium text-gray-700 mb-1">{{ t('clients.name') }}</label>
-            <input name="name" id="clientName" required class="w-full px-3 py-2 border rounded" placeholder="Например, iPhone Иван">
+            <label for="clientName" class="block text-xs font-medium text-gray-600 mb-1">{{ t('clients.name') }}</label>
+            <input name="name" id="clientName" required class="w-full px-3 py-1.5 border rounded text-sm" placeholder="Например, iPhone Иван">
           </div>
           <div>
-            <label for="clientLogin" class="block text-sm font-medium text-gray-700 mb-1">Логин</label>
-            <input name="login" id="clientLogin" class="w-full px-3 py-2 border rounded" placeholder="Пусто — сформировать из имени">
+            <label for="clientLogin" class="block text-xs font-medium text-gray-600 mb-1">Логин</label>
+            <input name="login" id="clientLogin" class="w-full px-3 py-1.5 border rounded text-sm" placeholder="Пусто — из имени">
           </div>
           <div>
-            <label for="expirationSelect" class="block text-sm font-medium text-gray-700 mb-1">{{ t('clients.expiration') }}</label>
-            <select name="expires_in_days" class="w-full px-3 py-2 border rounded" id="expirationSelect">
+            <label for="expirationSelect" class="block text-xs font-medium text-gray-600 mb-1">{{ t('clients.expiration') }}</label>
+            <select name="expires_in_days" class="w-full px-3 py-1.5 border rounded text-sm" id="expirationSelect">
               <option value="" selected>{{ t('clients.never_expires') }}</option>
               <option value="7">7 {{ t('common.days') }}</option>
               <option value="30">30 {{ t('common.days') }}</option>
@@ -72,21 +72,21 @@
               <option value="365">365 {{ t('common.days') }}</option>
               <option value="custom">{{ t('clients.custom_seconds') }}</option>
             </select>
-            <input type="number" name="expires_in_seconds" id="expirationSeconds" class="w-full px-3 py-2 border rounded mt-2 hidden" placeholder="{{ t('clients.enter_seconds') }}" min="1">
+            <input type="number" name="expires_in_seconds" id="expirationSeconds" class="w-full px-3 py-1.5 border rounded mt-2 hidden text-sm" placeholder="{{ t('clients.enter_seconds') }}" min="1">
           </div>
           <div>
-            <label for="trafficSelect" class="block text-sm font-medium text-gray-700 mb-1">{{ t('clients.traffic_limit') }}</label>
-            <select name="traffic_limit_gb" class="w-full px-3 py-2 border rounded" id="trafficSelect">
+            <label for="trafficSelect" class="block text-xs font-medium text-gray-600 mb-1">{{ t('clients.traffic_limit') }}</label>
+            <select name="traffic_limit_gb" class="w-full px-3 py-1.5 border rounded text-sm" id="trafficSelect">
               <option value="" selected>{{ t('clients.unlimited') }}</option>
               <option value="1">1 GB</option><option value="5">5 GB</option><option value="10">10 GB</option>
               <option value="25">25 GB</option><option value="50">50 GB</option><option value="100">100 GB</option>
               <option value="250">250 GB</option><option value="500">500 GB</option><option value="1000">1000 GB (1 TB)</option>
               <option value="custom">{{ t('clients.custom_mb') }}</option>
             </select>
-            <input type="number" name="traffic_limit_mb" id="trafficMegabytes" class="w-full px-3 py-2 border rounded mt-2 hidden" placeholder="{{ t('clients.enter_megabytes') }}" min="1">
+            <input type="number" name="traffic_limit_mb" id="trafficMegabytes" class="w-full px-3 py-1.5 border rounded mt-2 hidden text-sm" placeholder="{{ t('clients.enter_megabytes') }}" min="1">
           </div>
-          <button type="submit" class="btn-primary w-full justify-center" id="createClientBtn" data-loading-text="Создание…">
-            <span>{{ t('form.create') }}</span>
+          <button type="submit" class="btn-primary w-full justify-center whitespace-nowrap min-h-[34px]" id="createClientBtn" data-loading-text="Создание…">
+            <i class="fas fa-plus"></i><span>{{ t('form.create') }}</span>
           </button>
         </form>
         {% else %}
@@ -96,29 +96,29 @@
         {% endif %}
       </div>
 
-      <div class="card xl:col-span-2 overflow-hidden">
-        <div class="px-5 py-4 border-b flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div class="card overflow-hidden">
+        <div class="px-4 py-3 border-b flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <h2 class="font-bold text-gray-900">{{ t('clients.title') }} <span class="text-gray-400 font-normal">({{ clients|length }})</span></h2>
           {% if clients|length > 0 %}
           <div class="relative">
             <i class="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm"></i>
-            <input id="clientSearch" type="search" placeholder="Поиск по имени, IP или версии" class="pl-9 pr-3 py-2 border rounded text-sm w-full sm:w-64">
+            <input id="clientSearch" type="search" placeholder="Поиск по имени, IP или версии" class="pl-9 pr-3 py-1.5 border rounded text-sm w-full sm:w-64">
           </div>
           {% endif %}
         </div>
 
         {% if clients|length > 0 %}
         <div class="w-full overflow-x-auto">
-          <table class="w-full" style="min-width: 850px">
+          <table class="w-full text-sm" style="min-width: 780px">
             <thead class="bg-gray-50">
               <tr>
-                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('clients.name') }}</th>
-                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('clients.status') }}</th>
-                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('clients.expiration') }}</th>
-                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('clients.traffic') }}</th>
-                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('common.speed') }}</th>
-                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('clients.last_handshake') }}</th>
-                <th class="sticky right-0 bg-gray-50 px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase shadow-[-8px_0_12px_-12px_rgba(0,0,0,0.35)]">{{ t('clients.actions') }}</th>
+                <th class="px-3 py-2 text-left text-[11px] font-medium text-gray-500 uppercase">{{ t('clients.name') }}</th>
+                <th class="px-3 py-2 text-left text-[11px] font-medium text-gray-500 uppercase">{{ t('clients.status') }}</th>
+                <th class="px-3 py-2 text-left text-[11px] font-medium text-gray-500 uppercase">{{ t('clients.expiration') }}</th>
+                <th class="px-3 py-2 text-left text-[11px] font-medium text-gray-500 uppercase">{{ t('clients.traffic') }}</th>
+                <th class="px-3 py-2 text-left text-[11px] font-medium text-gray-500 uppercase">{{ t('common.speed') }}</th>
+                <th class="px-3 py-2 text-left text-[11px] font-medium text-gray-500 uppercase">{{ t('clients.last_handshake') }}</th>
+                <th class="sticky right-0 bg-gray-50 px-3 py-2 text-right text-[11px] font-medium text-gray-500 uppercase shadow-[-8px_0_12px_-12px_rgba(0,0,0,0.35)]">{{ t('clients.actions') }}</th>
               </tr>
             </thead>
             <tbody id="clientsTableBody">
@@ -126,20 +126,20 @@
               {% set is_online = client.name in online_logins %}
               {% set awg_version = client.awg_version|default('2.0') %}
               <tr class="border-t client-row hover:bg-gray-50" data-search="{{ (client.name ~ ' ' ~ client.client_ip ~ ' ' ~ awg_version)|lower }}" data-public-key="{{ client.public_key }}">
-                <td class="px-4 py-3">
+                <td class="px-3 py-2">
                   <a href="/clients/{{ client.id }}{% if selected_server.pool_id %}?pool_id={{ selected_server.pool_id }}{% endif %}" class="font-medium text-gray-900 hover:text-brand-600 hover:underline">{{ client.name }}</a>
-                  <div class="flex flex-wrap items-center gap-2 mt-0.5">
+                  <div class="flex flex-wrap items-center gap-1.5 mt-0.5">
                     <span class="text-xs text-gray-400 font-mono">{{ client.client_ip }}</span>
                     <span class="px-1.5 py-0.5 rounded text-[10px] bg-sky-100 text-sky-700">AWG {{ awg_version }}</span>
                     {% if selected_front %}<span class="px-1.5 py-0.5 rounded text-[10px] bg-indigo-100 text-indigo-700" title="Endpoint {{ selected_front.host }}">через RU-фронт</span>{% endif %}
                   </div>
                 </td>
-                <td class="px-4 py-3" data-status-cell data-client-status="{{ client.status }}">
+                <td class="px-3 py-2" data-status-cell data-client-status="{{ client.status }}">
                   {% if is_online %}<span class="inline-flex items-center gap-1 px-2 py-1 bg-green-100 text-green-800 rounded text-xs"><i class="fas fa-wifi"></i>Online</span>
                   {% elseif client.status == 'active' %}<span class="inline-flex items-center gap-1 px-2 py-1 bg-gray-100 text-gray-600 rounded text-xs"><i class="fas fa-circle text-[7px]"></i>{{ t('status.active') }}</span>
                   {% else %}<span class="inline-flex items-center gap-1 px-2 py-1 bg-red-100 text-red-800 rounded text-xs"><i class="fas fa-ban"></i>{{ t('status.disabled') }}</span>{% endif %}
                 </td>
-                <td class="px-4 py-3 text-sm">
+                <td class="px-3 py-2 text-xs">
                   {% if client.expires_at %}
                     {% set diff_days = ((client.expires_at|date('U') - "now"|date('U')) / 86400)|round %}
                     {% if diff_days < 0 %}<span class="badge-red">{{ t('clients.expired') }}</span>
@@ -147,7 +147,7 @@
                     {% else %}<span class="text-gray-600">{{ client.expires_at|date('Y-m-d') }}</span>{% endif %}
                   {% else %}<span class="text-green-500 text-lg" title="{{ t('clients.never_expires') }}">&infin;</span>{% endif %}
                 </td>
-                <td class="px-4 py-3 text-xs">
+                <td class="px-3 py-2 text-xs">
                   <div class="text-gray-600 font-mono whitespace-nowrap">&uarr;{{ client.bytes_sent|default(0)|bytes_format }} &darr;{{ client.bytes_received|default(0)|bytes_format }}</div>
                   {% if client.traffic_limit %}
                     {% set total_traffic = client.bytes_sent|default(0) + client.bytes_received|default(0) %}
@@ -156,9 +156,9 @@
                     <div class="text-[10px] text-gray-400 mt-0.5 whitespace-nowrap">{{ total_traffic|bytes_format }} / {{ client.traffic_limit|bytes_format }}</div></div>
                   {% else %}<div class="text-[10px] text-gray-400 mt-0.5">{{ t('clients.unlimited') }}</div>{% endif %}
                 </td>
-                <td class="px-4 py-3 text-xs"><div id="client-speed-{{ client.id }}" class="font-mono leading-tight whitespace-nowrap"><div class="text-green-600">&uarr;{{ ((client.speed_up|default(0) * 8) / 1000000)|number_format(2) }} Mbit</div><div class="text-blue-600">&darr;{{ ((client.speed_down|default(0) * 8) / 1000000)|number_format(2) }} Mbit</div></div></td>
-                <td class="px-4 py-3 text-xs whitespace-nowrap" data-hs-cell>{% if client.last_handshake %}<span class="text-gray-600 block">{{ client.last_handshake|split(' ')|first }}</span><span class="text-gray-400 block">{{ client.last_handshake|split(' ')|last }}</span>{% else %}<span class="text-gray-400">{{ t('clients.never') }}</span>{% endif %}</td>
-                <td class="sticky right-0 bg-white px-4 py-3 text-right whitespace-nowrap shadow-[-8px_0_12px_-12px_rgba(0,0,0,0.35)]">
+                <td class="px-3 py-2 text-xs"><div id="client-speed-{{ client.id }}" class="font-mono leading-tight whitespace-nowrap"><div class="text-green-600">&uarr;{{ ((client.speed_up|default(0) * 8) / 1000000)|number_format(2) }} Mbit</div><div class="text-blue-600">&darr;{{ ((client.speed_down|default(0) * 8) / 1000000)|number_format(2) }} Mbit</div></div></td>
+                <td class="px-3 py-2 text-xs whitespace-nowrap" data-hs-cell>{% if client.last_handshake %}<span class="text-gray-600 block">{{ client.last_handshake|split(' ')|first }}</span><span class="text-gray-400 block">{{ client.last_handshake|split(' ')|last }}</span>{% else %}<span class="text-gray-400">{{ t('clients.never') }}</span>{% endif %}</td>
+                <td class="sticky right-0 bg-white px-3 py-2 text-right whitespace-nowrap shadow-[-8px_0_12px_-12px_rgba(0,0,0,0.35)]">
                   <a href="/clients/{{ client.id }}{% if selected_server.pool_id %}?pool_id={{ selected_server.pool_id }}{% endif %}" class="text-brand-600 hover:text-brand-800 px-1.5" title="{{ t('servers.view') }}"><i class="fas fa-eye"></i></a>
                   <a href="/clients/{{ client.id }}/download{% if selected_server.pool_id %}?pool_id={{ selected_server.pool_id }}{% endif %}" class="text-sky-600 hover:text-sky-800 px-1.5" title="Скачать Config {{ selected_server.pool_name ?: selected_server.name }}"><i class="fas fa-download"></i></a>
                   <button type="button" class="js-diagnose text-blue-600 hover:text-blue-800 px-1.5" data-client-id="{{ client.id }}" title="Диагностика"><i class="fas fa-stethoscope"></i></button>
