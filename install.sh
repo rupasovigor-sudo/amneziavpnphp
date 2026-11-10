@@ -396,7 +396,7 @@ install_panel() {
     if [[ -n "$PANEL_DOMAIN" ]]; then
         log "Адрес: $([[ "$NO_HTTPS" -eq 1 ]] && echo http || echo https)://$PANEL_DOMAIN"
         if [[ "$EXISTING_PROXY" -eq 1 ]]; then
-            log "Настройте существующий proxy: $PANEL_DOMAIN → http://127.0.0.1:8082"
+            warn "ПУБЛИКАЦИЯ НЕ ЗАВЕРШЕНА: настройте существующий proxy: $PANEL_DOMAIN → http://127.0.0.1:8082"
         fi
     else
         log "Панель доступна локально: http://127.0.0.1:8082"
@@ -413,6 +413,14 @@ update_panel() {
     command -v docker >/dev/null 2>&1 || die "Docker не установлен"
     docker compose version >/dev/null 2>&1 || die "Docker Compose v2 не установлен"
 
+    if [[ "$EXISTING_PROXY" -eq 1 ]]; then
+        [[ -n "$PANEL_DOMAIN" ]] || die "Для --existing-proxy нужен --domain панели"
+        [[ "$PANEL_DOMAIN" =~ ^([A-Za-z0-9-]+\.)+[A-Za-z]{2,63}$ ]] || die "Некорректное DNS-имя панели"
+        [[ -f "$PANEL_INSTALL_DIR/.env" ]] || die "$PANEL_INSTALL_DIR/.env не найден"
+        set_env_value "$PANEL_INSTALL_DIR/.env" SESSION_COOKIE_SECURE 1
+        set_env_value "$PANEL_INSTALL_DIR/.env" TRUST_PROXY_HEADERS 1
+    fi
+
     if [[ "$WITH_FRONT" -eq 1 ]]; then
         command -v jq >/dev/null 2>&1 || { apt-get update; apt-get install -y jq; }
         prepare_front_host
@@ -428,6 +436,9 @@ update_panel() {
     [[ -f /etc/systemd/system/amnezia-relay.service ]] && systemctl is-active --quiet amnezia-relay.service \
         && ok "RU-фронт активен" || true
     ok "Панель обновлена"
+    if [[ "$EXISTING_PROXY" -eq 1 ]]; then
+        warn "ПУБЛИКАЦИЯ НЕ ЗАВЕРШЕНА: настройте существующий proxy: $PANEL_DOMAIN → http://127.0.0.1:8082"
+    fi
 }
 
 log "Amnezia VPN Panel installer v$SCRIPT_VERSION — $ACTION"

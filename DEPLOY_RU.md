@@ -109,6 +109,81 @@ sudo bash /tmp/amnezia-panel-install.sh auto \
 sudo grep -nE '^[[:space:]]*(frontend|listen|backend|bind|mode|acl|use_backend|default_backend|server)[[:space:]]' /etc/haproxy/haproxy.cfg
 ```
 
+#### HAProxy в `mode tcp`: Element и панель на одном IP
+
+Если HAProxy передает TLS Element-серверу без расшифровки, нельзя направлять внешний TCP 443 прямо на HTTP панели `127.0.0.1:8082`. Используйте SNI-маршрут и второй локальный frontend HAProxy:
+
+```text
+443/TCP → HAProxy SNI → 127.0.0.1:8443 (TLS termination) → 127.0.0.1:8082 (панель)
+                    ↘ прежний Element backend для остальных доменов
+```
+
+Сначала добавьте обработку HTTP и backend панели, заменив `panel.example.com`:
+
+```haproxy
+frontend ess_http
+    bind *:80
+    mode http
+    acl panel_host hdr(host) -i panel.example.com
+    acl panel_acme path_beg /.well-known/acme-challenge/
+    use_backend panel_app if panel_host panel_acme
+    http-request redirect scheme https code 301 if panel_host !panel_acme
+    default_backend ess_http_origin
+
+backend ess_http_origin
+    mode http
+    server origin 10.254.88.1:80 check inter 3s fall 3 rise 2
+
+backend panel_app
+    mode http
+    option httpchk GET /login
+    server panel 127.0.0.1:8082 check
+```
+
+Проверьте конфиг, перезагрузите HAProxy и выпустите сертификат через webroot панели:
+
+```bash
+sudo haproxy -c -f /etc/haproxy/haproxy.cfg
+sudo systemctl reload haproxy
+sudo apt-get install -y certbot
+sudo certbot certonly --webroot -w /opt/amnezia-panel/public \
+  -d panel.example.com -m admin@example.com --agree-tos --non-interactive
+sudo install -m 0700 -d /etc/haproxy/certs
+sudo sh -c 'cat /etc/letsencrypt/live/panel.example.com/fullchain.pem /etc/letsencrypt/live/panel.example.com/privkey.pem > /etc/haproxy/certs/panel.example.com.pem'
+sudo chmod 600 /etc/haproxy/certs/panel.example.com.pem
+```
+
+В HTTPS frontend добавьте SNI ACL, сохранив прежний backend Element по умолчанию:
+
+```haproxy
+frontend ess_https
+    bind *:443
+    mode tcp
+    tcp-request inspect-delay 5s
+    tcp-request content accept if { req.ssl_hello_type 1 }
+    acl panel_sni req.ssl_sni -i panel.example.com
+    use_backend panel_tls_loop if panel_sni
+    default_backend ess_https_origin
+
+backend ess_https_origin
+    mode tcp
+    server origin 10.254.88.1:443 check inter 3s fall 3 rise 2
+
+backend panel_tls_loop
+    mode tcp
+    server panel_tls 127.0.0.1:8443 check
+
+frontend panel_https_local
+    bind 127.0.0.1:8443 ssl crt /etc/haproxy/certs/panel.example.com.pem alpn h2,http/1.1
+    mode http
+    option forwardfor
+    http-request set-header X-Forwarded-Proto https
+    http-request set-header X-Forwarded-Port 443
+    default_backend panel_app
+```
+
+Перед reload всегда выполняйте `haproxy -c -f /etc/haproxy/haproxy.cfg`. Для продления сертификата нужен deploy-hook, который заново объединяет `fullchain.pem` и `privkey.pem`, проверяет конфиг и перезагружает HAProxy.
+
 После освобождения порта повторите обычную установку безопасным режимом `auto`:
 
 ```bash
