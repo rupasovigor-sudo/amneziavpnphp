@@ -23,8 +23,14 @@ class Router {
   public static function dispatch(string $method, string $uri): void {
     $path = parse_url($uri, PHP_URL_PATH) ?: '/';
     $path = '/' . trim($path, '/');
+    $requestMethod = strtoupper($method);
     foreach (self::$routes as $route) {
-      if ($route['method'] !== strtoupper($method)) continue;
+      // HTTP HEAD has the same routing semantics as GET; Apache/PHP suppresses
+      // the response body. Without this fallback every curl -I/load-balancer
+      // health check received a misleading 404 while a normal browser GET was
+      // healthy.
+      if ($route['method'] !== $requestMethod
+          && !($requestMethod === 'HEAD' && $route['method'] === 'GET')) continue;
       if (preg_match($route['pattern'], $path, $matches)) {
         $params = [];
         foreach ($matches as $k => $v) { if (!is_int($k)) $params[$k] = $v; }
