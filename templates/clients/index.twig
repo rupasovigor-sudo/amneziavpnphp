@@ -128,8 +128,8 @@
               <tr class="border-t client-row hover:bg-gray-50" data-search="{{ (client.name ~ ' ' ~ client.client_ip ~ ' ' ~ awg_version)|lower }}" data-public-key="{{ client.public_key }}">
                 <td class="px-3 py-2">
                   <a href="/clients/{{ client.id }}{% if selected_server.pool_id %}?pool_id={{ selected_server.pool_id }}{% endif %}" class="font-medium text-gray-900 hover:text-brand-600 hover:underline">{{ client.name }}</a>
-                  <div class="flex flex-wrap items-center gap-1.5 mt-0.5">
-                    <span class="text-xs text-gray-400 font-mono">{{ client.client_ip }}</span>
+                  <div class="text-xs text-gray-400 font-mono mt-0.5">{{ client.client_ip }}</div>
+                  <div class="flex flex-wrap items-center gap-1.5 mt-1">
                     <span class="px-1.5 py-0.5 rounded text-[10px] bg-sky-100 text-sky-700">AWG {{ awg_version }}</span>
                     {% if selected_front %}<span class="px-1.5 py-0.5 rounded text-[10px] bg-indigo-100 text-indigo-700" title="Endpoint {{ selected_front.host }}">через RU-фронт</span>{% endif %}
                   </div>
