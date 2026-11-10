@@ -275,6 +275,17 @@
                 </h2>
             </div>
             <div class="px-6 py-5">
+                {% if alert_settings.env_writable %}
+                <div class="mb-5 flex items-start gap-3 rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-800">
+                    <i class="fas fa-circle-check mt-0.5"></i>
+                    <div><span class="font-medium">Конфигурация доступна для записи.</span> Сохранённые параметры применяются к панели и фоновому мониторингу.</div>
+                </div>
+                {% else %}
+                <div class="mb-5 flex items-start gap-3 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+                    <i class="fas fa-triangle-exclamation mt-0.5"></i>
+                    <div><span class="font-medium">Панель не может записать настройки в .env.</span> Запустите <code>update.sh</code> или задайте файлу владельца <code>root:www-data</code> и права <code>660</code>.</div>
+                </div>
+                {% endif %}
                 <form method="POST" action="/settings/alerts/save" class="space-y-6">
                     <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
                         <div class="space-y-4">

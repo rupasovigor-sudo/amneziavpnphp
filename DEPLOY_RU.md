@@ -313,7 +313,8 @@ AWG_RELEASE_VERSION=3.1.20260828
 Защитите файл и запустите стек:
 
 ```bash
-chmod 640 .env
+chown root:www-data .env
+chmod 660 .env
 docker compose up -d --build
 docker compose exec -T web composer install --no-dev --no-interaction --prefer-dist --optimize-autoloader
 docker compose ps

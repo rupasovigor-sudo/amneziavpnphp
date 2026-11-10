@@ -520,6 +520,15 @@ else
     NEW_COMMIT="$CURRENT_COMMIT"
 fi
 
+# The alerts form is served by Apache as www-data and persists its settings in
+# .env. Keep secrets unavailable to other users while allowing the web process
+# to update the group-owned file. Older installs used 0640, which made saving
+# alert settings impossible for the web process.
+if [ -f .env ]; then
+    chown root:www-data .env 2>/dev/null || log_warning "Could not set .env owner to root:www-data"
+    chmod 660 .env 2>/dev/null || log_warning "Could not make .env writable by www-data"
+fi
+
 # ==========================================
 # 7. INSTALL DEPENDENCIES
 # ==========================================

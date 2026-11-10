@@ -127,7 +127,8 @@ set_env_value() {
     tmp_file="$(mktemp "${env_file}.XXXXXX")"
     grep -v -E "^${key}=" "$env_file" > "$tmp_file" || true
     printf '%s=%s\n' "$key" "$value" >> "$tmp_file"
-    chmod 640 "$tmp_file"
+    chown root:www-data "$tmp_file" 2>/dev/null || true
+    chmod 660 "$tmp_file"
     mv "$tmp_file" "$env_file"
 }
 
@@ -264,7 +265,8 @@ configure_env() {
     set_env_value "$env_file" ADMIN_EMAIL "$PANEL_ADMIN_EMAIL"
     set_env_value "$env_file" ADMIN_PASSWORD "$PANEL_ADMIN_PASSWORD"
     set_env_value "$env_file" JWT_SECRET "$(openssl rand -hex 32)"
-    chmod 640 "$env_file"
+    chown root:www-data "$env_file" 2>/dev/null || true
+    chmod 660 "$env_file"
 }
 
 wait_for_database() {

@@ -265,6 +265,7 @@ class SettingsController {
             'SMTP_FROM_NAME' => $get('SMTP_FROM_NAME', 'Amnezia VPN Panel'),
             'SMTP_TLS' => $get('SMTP_TLS', '1'),
             'smtp_password_set' => trim($get('SMTP_PASSWORD', '')) !== '',
+            'env_writable' => is_file(__DIR__ . '/../.env') && is_writable(__DIR__ . '/../.env'),
         ];
     }
 
@@ -293,7 +294,7 @@ class SettingsController {
 
         $envPath = __DIR__ . '/../.env';
         if (!is_file($envPath) || !is_writable($envPath)) {
-            $_SESSION['settings_error'] = '.env недоступен для записи';
+            $_SESSION['settings_error'] = '.env недоступен для записи пользователю www-data. Выполните update.sh или установите root:www-data и права 660.';
             header('Location: /settings#alerts');
             exit;
         }
