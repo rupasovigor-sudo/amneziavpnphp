@@ -156,7 +156,11 @@
             </select></label>
           <label class="block">SSH-порт <input name="port" type="number" value="22" class="mt-1 w-full px-2 py-1.5 border rounded"></label>
           <label class="block">Пользователь <input name="username" value="root" class="mt-1 w-full px-2 py-1.5 border rounded"></label>
-          <label class="block">Пароль <input name="password" type="password" autocomplete="new-password" class="mt-1 w-full px-2 py-1.5 border rounded"></label>
+          <label class="block">Пароль <input name="password" type="password" autocomplete="new-password" class="mt-1 w-full px-2 py-1.5 border rounded" placeholder="или SSH-ключ ниже"></label>
+          <label class="block md:col-span-3">Приватный SSH-ключ
+            <textarea name="ssh_key" rows="5" class="mt-1 w-full px-2 py-1.5 border rounded font-mono text-xs" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea>
+            <span class="block mt-1 text-xs text-gray-500">Укажите пароль или ключ. Для production рекомендуется отдельный ключ без passphrase.</span>
+          </label>
           <div class="md:col-span-3">
             <button type="submit" class="btn-primary"><i class="fas fa-plug"></i>Подключить фронт</button>
             <span class="text-xs text-gray-400 ml-2">установка занимает до пары минут</span>

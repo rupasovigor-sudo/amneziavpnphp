@@ -38,6 +38,8 @@ class ServerUpdateManager
         } catch (Exception $e) {
             return ['ok' => false, 'error' => 'Сервер не найден: ' . $e->getMessage()];
         }
+        $serverData = $server->getData() ?? [];
+        $awg31Expected = (string) ($serverData['role'] ?? 'vpn') !== 'front';
 
         // Strictly read-only: cached apt lists only, no `apt-get update`.
         $script = <<<'SH'
@@ -83,6 +85,20 @@ if command -v docker >/dev/null 2>&1; then
   echo "docker_version=$(docker --version 2>/dev/null | sed 's/,.*//' | awk '{print $3}')"
   echo "awg2_running=$(docker ps --filter name=amnezia-awg2 --format '{{.Names}}' 2>/dev/null | grep -c amnezia-awg2 || true)"
   echo "awg2_image_created=$(docker inspect -f '{{.Created}}' "$(docker inspect -f '{{.Image}}' amnezia-awg2 2>/dev/null)" 2>/dev/null | cut -c1-19)"
+  if [ "$(docker inspect -f '{{.State.Running}}' amnezia-awg31 2>/dev/null)" = "true" ]; then
+    echo "awg31_running=1"
+    echo "awg31_image_created=$(docker inspect -f '{{.Created}}' "$(docker inspect -f '{{.Image}}' amnezia-awg31 2>/dev/null)" 2>/dev/null | cut -c1-19)"
+    echo "awg31_interface=$(docker exec amnezia-awg31 awg show awg31 >/dev/null 2>&1 && echo 1 || echo 0)"
+    echo "awg31_port=$(docker exec amnezia-awg31 awg show awg31 listen-port 2>/dev/null | head -1)"
+    echo "awg31_peers=$(docker exec amnezia-awg31 awg show awg31 peers 2>/dev/null | grep -c . || true)"
+    echo "awg31_params=$(grep -Ec '^(HeaderProtectionKey|ContentPaddingAddition|RekeyAfterTime|RekeyTimeout|RejectAfterTime|KeepaliveTimeout|MaxHandshakeAttempts|RandomTrailers|DisableCookies)[[:space:]]*=' /opt/amnezia/awg31/awg31.conf 2>/dev/null || true)"
+  else
+    echo "awg31_running=0"
+    echo "awg31_interface=0"
+    echo "awg31_port=0"
+    echo "awg31_peers=0"
+    echo "awg31_params=0"
+  fi
 fi
 if command -v systemctl >/dev/null 2>&1; then
   echo "warp_active=$(systemctl is-active awg2-warp-egress.service 2>/dev/null || echo inactive)"
@@ -140,6 +156,12 @@ SH;
             'docker_version'    => $values['docker_version'] ?? '',
             'awg2_running'      => (int) ($values['awg2_running'] ?? 0) > 0,
             'awg2_image_created' => $values['awg2_image_created'] ?? '',
+            'awg31_running'     => ($values['awg31_running'] ?? '0') === '1',
+            'awg31_interface'   => ($values['awg31_interface'] ?? '0') === '1',
+            'awg31_port'        => (int) ($values['awg31_port'] ?? 0),
+            'awg31_peers'       => (int) ($values['awg31_peers'] ?? 0),
+            'awg31_params'      => (int) ($values['awg31_params'] ?? 0),
+            'awg31_image_created' => $values['awg31_image_created'] ?? '',
             'warp_active'       => ($values['warp_active'] ?? '') === 'active',
             'unattended'        => ($values['unattended'] ?? '0') === '1',
             'audited_at'        => date('Y-m-d H:i:s'),
@@ -154,6 +176,21 @@ SH;
         $audit['awg2_update_available'] = ($localHead !== '' && $upstreamHead !== null)
             ? ($localHead !== $upstreamHead)
             : null; // null = не смогли определить
+        $audit['awg31_expected'] = $awg31Expected;
+        $releaseVersion = trim((string) Config::get('AWG_RELEASE_VERSION', '3.1')) ?: '3.1';
+        $audit['awg31_version'] = $awg31Expected ? $releaseVersion : '';
+        $audit['awg31_ready'] = $awg31Expected
+            ? ($audit['awg31_running']
+                && $audit['awg31_interface']
+                && $audit['awg31_port'] > 0
+                && $audit['awg31_params'] >= 9)
+            : null;
+        // Both containers use the same pinned amneziawg-go image/source. Keep a
+        // separate field for the UI so an absent/broken 3.1 sidecar is visible
+        // even while the shared engine itself is current.
+        $audit['awg31_update_available'] = !$awg31Expected
+            ? null
+            : ($audit['awg31_ready'] ? $audit['awg2_update_available'] : true);
 
         // cf-warp: our own runtime script is the only thing that can go stale.
         $installedSha = $values['warp_script_sha'] ?? '';
@@ -256,7 +293,7 @@ SH;
             );
             $prefix = $shipped ? 'runtime обновлён; ' : '';
 
-            if ($enabled !== $wasEnabled) {
+            if ($enabled !== $wasEnabled || ($enabled && $shipped)) {
                 // On/off flips need the unit to (re)build or tear down routing.
                 // Never block on it (a start can wait minutes on apt locks):
                 // fire --no-block and poll briefly for the ip rule.

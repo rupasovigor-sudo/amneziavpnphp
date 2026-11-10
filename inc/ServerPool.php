@@ -12,6 +12,15 @@
  */
 class ServerPool
 {
+    /** Listener advertised to a client of the requested AWG generation. */
+    public static function endpointPort(array $pool, string $awgVersion = '2.0'): int
+    {
+        $is31 = $awgVersion === '3.1';
+        $fallback = $is31 ? 444 : 443;
+        $port = (int) ($pool[$is31 ? 'awg31_port' : 'vpn_port'] ?? $fallback);
+        return $port >= 1 && $port <= 65535 ? $port : $fallback;
+    }
+
     /** Return a pool row with secrets decrypted, or null. */
     public static function get(int $poolId): ?array
     {
@@ -28,6 +37,179 @@ class ServerPool
         $stmt->execute([$serverId]);
         $poolId = (int) $stmt->fetchColumn();
         return $poolId > 0 ? self::get($poolId) : null;
+    }
+
+    /**
+     * Return (and, once per pool, create) the parallel AWG 3.1 profile.
+     *
+     * HeaderProtectionKey changes the wire format for the whole interface, so
+     * it must never be added to the legacy awg0 interface. Linked pools use the
+     * root pool's profile because they share one client/peer identity.
+     */
+    public static function ensureAwg31Profile(int $poolId): array
+    {
+        $rootId = self::peerRootPoolId($poolId);
+        $db = DB::conn();
+        $lock = 'amnezia_awg31_profile_' . $rootId;
+        $st = $db->prepare('SELECT GET_LOCK(?, 10)');
+        $st->execute([$lock]);
+        if ((int) $st->fetchColumn() !== 1) {
+            throw new RuntimeException('AWG 3.1 profile is busy; retry shortly');
+        }
+
+        try {
+            $pool = self::get($rootId);
+            if (!$pool) {
+                throw new RuntimeException("Pool {$rootId} not found");
+            }
+
+            $headerKey = trim((string) ($pool['awg31_header_key'] ?? ''));
+            $params = $pool['awg31_params'] ?? [];
+            if (is_string($params)) {
+                $params = json_decode($params, true) ?: [];
+            }
+            $params = array_merge(self::awg31Defaults(), is_array($params) ? $params : []);
+
+            if ($headerKey === '') {
+                $headerKey = base64_encode(random_bytes(32));
+            }
+
+            $port = (int) ($pool['awg31_port'] ?? 444);
+            if ($port < 1 || $port > 65535) {
+                $port = 444;
+            }
+            $subnet = trim((string) ($pool['awg31_subnet'] ?? '10.8.31.0/24'));
+            if (!preg_match('#^\d+\.\d+\.\d+\.\d+/\d{1,2}$#', $subnet)) {
+                $subnet = '10.8.31.0/24';
+            }
+
+            $db->prepare(
+                'UPDATE server_pools SET awg31_port = ?, awg31_subnet = ?, awg31_header_key = ?, awg31_params = ? WHERE id = ?'
+            )->execute([
+                $port,
+                $subnet,
+                SecretBox::encryptNullable($headerKey),
+                json_encode($params, JSON_UNESCAPED_SLASHES),
+                $rootId,
+            ]);
+
+            $params['HeaderProtectionKey'] = $headerKey;
+            return [
+                'pool_id' => $rootId,
+                'port' => $port,
+                'subnet' => $subnet,
+                'params' => $params,
+                'server_public_key' => (string) ($pool['server_public_key'] ?? ''),
+                'server_private_key' => (string) ($pool['server_private_key'] ?? ''),
+                'preshared_key' => (string) ($pool['preshared_key'] ?? ''),
+            ];
+        } finally {
+            $db->prepare('SELECT RELEASE_LOCK(?)')->execute([$lock]);
+        }
+    }
+
+    /** Point generic peer-management code at the parallel AWG 3.1 sidecar. */
+    public static function decorateServerDataForAwg31(array $serverData): array
+    {
+        $poolId = (int) ($serverData['pool_id'] ?? 0);
+        if ($poolId <= 0) {
+            throw new RuntimeException('AWG 3.1 clients require a server pool');
+        }
+        $profile = self::ensureAwg31Profile($poolId);
+        $serverData['container_name'] = 'amnezia-awg31';
+        $serverData['vpn_port'] = $profile['port'];
+        $serverData['vpn_subnet'] = $profile['subnet'];
+        $serverData['server_public_key'] = $profile['server_public_key'];
+        $serverData['preshared_key'] = $profile['preshared_key'];
+        $serverData['awg_params'] = json_encode($profile['params'], JSON_UNESCAPED_SLASHES);
+        $serverData['awg_version'] = '3.1';
+        $serverData['awg_config_file'] = 'awg31.conf';
+        return $serverData;
+    }
+
+    /** Install/recreate the AWG 3.1 sidecar without touching legacy awg0. */
+    public static function deployAwg31Sidecar(int $serverId): array
+    {
+        $server = new VpnServer($serverId);
+        $data = $server->getData();
+        if (!$data || (int) ($data['pool_id'] ?? 0) <= 0) {
+            return ['success' => false, 'message' => 'AWG 3.1 sidecar requires a pool member'];
+        }
+        $profile = self::ensureAwg31Profile((int) $data['pool_id']);
+        foreach (['server_private_key', 'server_public_key', 'preshared_key'] as $key) {
+            if (trim((string) ($profile[$key] ?? '')) === '') {
+                throw new RuntimeException("AWG 3.1 profile is missing {$key}");
+            }
+        }
+
+        $gateway = self::subnetGateway((string) $profile['subnet']);
+        $p = $profile['params'];
+        $lines = [
+            '[Interface]',
+            'PrivateKey = ' . $profile['server_private_key'],
+            'Address = ' . $gateway,
+            'ListenPort = ' . $profile['port'],
+            'MTU = 1280',
+        ];
+        foreach (array_keys(self::awg31Defaults()) as $key) {
+            $lines[] = $key . ' = ' . (string) $p[$key];
+        }
+        $lines[] = 'HeaderProtectionKey = ' . $p['HeaderProtectionKey'];
+        $lines[] = 'PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -A FORWARD -o %i -j ACCEPT; iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE';
+        $lines[] = 'PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -j ACCEPT; iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE';
+        $config = implode("\n", $lines) . "\n";
+
+        $installer = (string) file_get_contents(dirname(__DIR__) . '/scripts/awg31_sidecar_install.sh');
+        if ($installer === '') {
+            throw new RuntimeException('Local AWG 3.1 sidecar installer is missing');
+        }
+        $remoteInstaller = '/tmp/amnezia-awg31-sidecar-install.sh';
+        $remoteConfig = '/tmp/.amnezia-awg31-interface.conf';
+        $server->uploadContent($remoteInstaller, $installer, 0700);
+        $server->uploadContent($remoteConfig, $config, 0600);
+        try {
+            $cmd = 'AWG31_PORT=' . escapeshellarg((string) $profile['port'])
+                . ' AWG31_CONFIG_FILE=' . escapeshellarg($remoteConfig)
+                . ' bash ' . escapeshellarg($remoteInstaller);
+            $out = (string) $server->executeCommand($cmd, true, 180);
+        } finally {
+            try {
+                $server->executeCommand('rm -f ' . escapeshellarg($remoteInstaller) . ' ' . escapeshellarg($remoteConfig), true);
+            } catch (Throwable $ignored) {
+            }
+        }
+        if (strpos($out, 'AWG31_SIDECAR_OK') === false) {
+            throw new RuntimeException('AWG 3.1 sidecar failed: ' . trim(substr($out, -500)));
+        }
+        return ['success' => true, 'port' => $profile['port'], 'subnet' => $profile['subnet'], 'message' => 'AWG 3.1 sidecar is active'];
+    }
+
+    /** Official AWG 3.1 client/server defaults from AmneziaVPN 5.1.0.6. */
+    public static function awg31Defaults(): array
+    {
+        return [
+            'Jc' => '3', 'Jmin' => '10', 'Jmax' => '30',
+            'S1' => '12', 'S2' => '12', 'S3' => '12', 'S4' => '12',
+            'H1' => '1', 'H2' => '2', 'H3' => '3', 'H4' => '4',
+            'ContentPaddingAddition' => '10-100',
+            'RekeyAfterTime' => '100-120',
+            'RekeyTimeout' => '3-7',
+            'RejectAfterTime' => '150-180',
+            'KeepaliveTimeout' => '5-15',
+            'MaxHandshakeAttempts' => '15-20',
+            'RandomTrailers' => 'on',
+            'DisableCookies' => 'on',
+        ];
+    }
+
+    private static function subnetGateway(string $subnet): string
+    {
+        [$network, $cidr] = array_pad(explode('/', $subnet, 2), 2, '24');
+        $long = ip2long($network);
+        if ($long === false) {
+            throw new RuntimeException('Invalid AWG 3.1 subnet: ' . $subnet);
+        }
+        return long2ip($long + 1) . '/' . (int) $cidr;
     }
 
     /** Member servers of a pool, ordered by failover priority then id. */
@@ -97,6 +279,113 @@ class ServerPool
     public static function list(): array
     {
         return DB::conn()->query('SELECT * FROM server_pools ORDER BY name')->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    /** Root pool that owns the shared client set (linked pools are one level). */
+    public static function peerRootPoolId(int $poolId): int
+    {
+        $pool = self::get($poolId);
+        if (!$pool) {
+            return $poolId;
+        }
+        $source = (int) ($pool['peer_source_pool_id'] ?? 0);
+        return $source > 0 ? $source : $poolId;
+    }
+
+    /** Every pool sharing the same AWG identity/client set. */
+    public static function peerGroupPoolIds(int $poolId): array
+    {
+        $root = self::peerRootPoolId($poolId);
+        $st = DB::conn()->prepare('SELECT id FROM server_pools WHERE id = ? OR peer_source_pool_id = ? ORDER BY id');
+        $st->execute([$root, $root]);
+        return array_map('intval', $st->fetchAll(PDO::FETCH_COLUMN));
+    }
+
+    /** Every server that must carry the shared peer set. */
+    public static function peerGroupServerIds(int $poolId): array
+    {
+        $poolIds = self::peerGroupPoolIds($poolId);
+        if (!$poolIds) {
+            return [];
+        }
+        $in = implode(',', array_fill(0, count($poolIds), '?'));
+        $st = DB::conn()->prepare("SELECT id FROM vpn_servers WHERE pool_id IN ($in) ORDER BY id");
+        $st->execute($poolIds);
+        return array_map('intval', $st->fetchAll(PDO::FETCH_COLUMN));
+    }
+
+    /** Pools whose identity matches and can safely be used as a client source. */
+    public static function compatiblePeerSources(int $poolId): array
+    {
+        $pool = self::get($poolId);
+        if (!$pool) {
+            return [];
+        }
+        $out = [];
+        foreach (self::list() as $row) {
+            $id = (int) $row['id'];
+            if ($id === $poolId || !empty($row['peer_source_pool_id'])) {
+                continue;
+            }
+            $candidate = self::get($id);
+            if ($candidate && self::sameIdentity($pool, $candidate)) {
+                $out[] = ['id' => $id, 'name' => $candidate['name'], 'domain' => $candidate['domain']];
+            }
+        }
+        return $out;
+    }
+
+    private static function sameIdentity(array $a, array $b): bool
+    {
+        $normJson = static function ($v): string {
+            $d = is_array($v) ? $v : json_decode((string) $v, true);
+            if (!is_array($d)) {
+                return trim((string) $v);
+            }
+            ksort($d);
+            return json_encode($d, JSON_UNESCAPED_SLASHES);
+        };
+        return trim((string) ($a['server_public_key'] ?? '')) === trim((string) ($b['server_public_key'] ?? ''))
+            && trim((string) ($a['preshared_key'] ?? '')) === trim((string) ($b['preshared_key'] ?? ''))
+            && trim((string) ($a['vpn_subnet'] ?? '')) === trim((string) ($b['vpn_subnet'] ?? ''))
+            && (int) ($a['vpn_port'] ?? 443) === (int) ($b['vpn_port'] ?? 443)
+            && $normJson($a['awg_params'] ?? null) === $normJson($b['awg_params'] ?? null);
+    }
+
+    /** Change/clear the client source for an existing compatible pool. */
+    public static function setPeerSource(int $poolId, ?int $sourcePoolId): array
+    {
+        $pool = self::get($poolId);
+        if (!$pool) {
+            return ['success' => false, 'message' => 'Пул не найден'];
+        }
+        if ($sourcePoolId !== null) {
+            if ($sourcePoolId === $poolId) {
+                return ['success' => false, 'message' => 'Пул не может быть источником сам для себя'];
+            }
+            $source = self::get($sourcePoolId);
+            if (!$source || !empty($source['peer_source_pool_id'])) {
+                return ['success' => false, 'message' => 'Источник должен быть корневым пулом'];
+            }
+            if (!self::sameIdentity($pool, $source)) {
+                return ['success' => false, 'message' => 'Идентичность AWG не совпадает — такие клиенты не смогут авторизоваться'];
+            }
+        }
+        DB::conn()->prepare('UPDATE server_pools SET peer_source_pool_id = ? WHERE id = ?')
+            ->execute([$sourcePoolId, $poolId]);
+        $failed = [];
+        foreach (self::members($poolId) as $m) {
+            $r = self::reconcilePeers((int) $m['id']);
+            if (empty($r['success'])) {
+                $failed[] = (string) $m['name'];
+            }
+        }
+        return [
+            'success' => !$failed,
+            'message' => $failed
+                ? 'Источник сохранён, но ре-синк не удался: ' . implode(', ', $failed)
+                : ($sourcePoolId ? 'Источник клиентов подключён, пиры синхронизированы.' : 'Связь с источником удалена, пиры пересобраны.'),
+        ];
     }
 
     /**
@@ -171,8 +460,14 @@ class ServerPool
                 'vpn_subnet' => $pool['vpn_subnet'],
                 'active_server_id' => $activeId,
                 'warp_bypass_google' => (int) ($pool['warp_bypass_google'] ?? 1) === 1,
+                'peer_source_pool_id' => ($sid = (int) ($pool['peer_source_pool_id'] ?? 0)) > 0 ? $sid : null,
+                'peer_source' => $sid > 0 ? (function () use ($sid) {
+                    $p = self::get($sid);
+                    return $p ? ['id' => $sid, 'name' => $p['name'], 'domain' => $p['domain']] : null;
+                })() : null,
             ],
             'members' => $members,
+            'compatible_peer_sources' => self::compatiblePeerSources($poolId),
             'resolved_ips' => $resolved,
             'provider_configured' => DnsManager::isConfigured(),
             // Entry relay, if any. When dns_mode = front the domain resolves to
@@ -254,6 +549,31 @@ class ServerPool
             return ['success' => false, 'message' => 'Failed to create pool: ' . $e->getMessage()];
         }
 
+        // A freshly adopted standalone server only has the legacy awg0
+        // interface. Bring up the parallel AWG 3.1 sidecar now, while the new
+        // pool identity is already authoritative, then rebuild both peer sets
+        // from the DB. Without this step, joining an existing pool worked but
+        // creating a brand-new pool left its first 3.1 client with no listener.
+        $awg31Partial = false;
+        $awg31Msg = '';
+        try {
+            self::deployAwg31Sidecar($serverId);
+            $sync = self::reconcilePeers($serverId);
+            if (empty($sync['success'])) {
+                throw new RuntimeException((string) ($sync['message'] ?? 'peer reconciliation failed'));
+            }
+        } catch (Throwable $e) {
+            $awg31Partial = true;
+            $awg31Msg = ' ВНИМАНИЕ: пул создан и legacy AWG 2.0 работает, но AWG 3.1 не готов: '
+                . $e->getMessage();
+            DB::conn()->prepare(
+                'UPDATE vpn_servers SET pool_sync_pending = 1, validated_clean = NULL, validation_note = ? WHERE id = ?'
+            )->execute([
+                'AWG 3.1 sidecar нового пула не готов: ' . mb_substr($e->getMessage(), 0, 300),
+                $serverId,
+            ]);
+        }
+
         // Point the pool domain at the founding (active) member so the pool is
         // usable at once — otherwise clients/the badge see "домен ≠ активный".
         $domain = trim((string) ($data['domain'] ?? ''));
@@ -268,7 +588,12 @@ class ServerPool
                 $dnsMsg = ' DNS-репойнт не удался: ' . $e->getMessage();
             }
         }
-        return ['success' => true, 'pool_id' => $poolId, 'message' => "Pool '{$poolName}' created from server {$serverId}." . $dnsMsg];
+        return [
+            'success' => true,
+            'partial' => $awg31Partial,
+            'pool_id' => $poolId,
+            'message' => "Pool '{$poolName}' created from server {$serverId}." . $awg31Msg . $dnsMsg,
+        ];
     }
 
     /**
@@ -321,7 +646,7 @@ class ServerPool
         // pool_sync_pending = 0 (they live in clientsTable/`awg set`, not awg0.conf,
         // so a container restart drops them). Activating a peer-less member
         // black-holes every client — this exact gap caused a full outage.
-        $memberIds = array_map(static fn($m) => (int) $m['id'], self::members($poolId));
+        $memberIds = self::peerGroupServerIds($poolId);
         $expectedPeers = 0;
         if (!empty($memberIds)) {
             $in = implode(',', array_fill(0, count($memberIds), '?'));
@@ -882,6 +1207,18 @@ class ServerPool
         // Success — the rebuilt container is healthy, drop the snapshot.
         $server->executeCommand('rm -rf /opt/amnezia/awg2/.rebuild-snapshot; echo cleaned', true);
 
+        try {
+            self::deployAwg31Sidecar($serverId);
+            ServerUpdateManager::applyWarpSettings($serverId);
+        } catch (Throwable $e) {
+            DB::conn()->prepare('UPDATE vpn_servers SET pool_sync_pending = 1, validation_note = ? WHERE id = ?')
+                ->execute(['AWG 3.1 sidecar не запустился: ' . mb_substr($e->getMessage(), 0, 300), $serverId]);
+            return [
+                'success' => false,
+                'message' => 'Движок обновлён и legacy AWG 2.0 работает, но параллельный AWG 3.1 не запустился: ' . $e->getMessage(),
+            ];
+        }
+
         $failed = 0;
         $synced = self::syncClientsToServer($poolId, $serverId, $failed);
         if ($failed > 0) {
@@ -1000,7 +1337,19 @@ class ServerPool
             ];
         }
 
-        // 4. Sync every existing pool client peer onto the new member.
+        // 4. Bring up the separate AWG 3.1 interface, then sync both generations.
+        try {
+            self::deployAwg31Sidecar($serverId);
+        } catch (Throwable $e) {
+            DB::conn()->prepare('UPDATE vpn_servers SET pool_sync_pending = 1 WHERE id = ?')->execute([$serverId]);
+            return [
+                'success' => true,
+                'partial' => true,
+                'message' => "Server {$serverId} joined the pool with legacy AWG 2.0, but AWG 3.1 sidecar failed: " . $e->getMessage(),
+                'deploy' => ['success' => true],
+            ];
+        }
+
         $failed = 0;
         $synced = self::syncClientsToServer($poolId, $serverId, $failed);
 
@@ -1106,7 +1455,7 @@ class ServerPool
         }
 
         $members = self::members($poolId);
-        $memberIds = array_map(static fn($m) => (int) $m['id'], $members);
+        $memberIds = self::peerGroupServerIds($poolId);
 
         // Safety: the active must be able to serve everyone before we kick clients
         // off the others (mirror the setActive live-peer guard).
@@ -1146,7 +1495,9 @@ class ServerPool
                 $c = (string) ($md['container_name'] ?? '') ?: 'amnezia-awg2';
                 (new VpnServer($id))->executeCommand(
                     'C=' . escapeshellarg($c) . '; for p in $(docker exec "$C" awg show awg0 peers 2>/dev/null); do '
-                    . 'docker exec "$C" awg set awg0 peer "$p" remove 2>/dev/null; done; echo kicked',
+                    . 'docker exec "$C" awg set awg0 peer "$p" remove 2>/dev/null; done; '
+                    . 'for p in $(docker exec amnezia-awg31 awg show awg31 peers 2>/dev/null); do '
+                    . 'docker exec amnezia-awg31 awg set awg31 peer "$p" remove 2>/dev/null; done; echo kicked',
                     true
                 );
                 // pool_sync_pending_at starts the auto-resync grace period (the
@@ -1195,14 +1546,15 @@ class ServerPool
         $psk = trim((string) ($pool['preshared_key'] ?? ''));
         $container = (string) ($data['container_name'] ?? '') ?: 'amnezia-awg2';
 
-        // Authoritative peer list = every active client across all pool members.
-        $memberIds = array_map(static fn($m) => (int) $m['id'], self::members($poolId));
+        // Authoritative peer list = active clients across this linked-pool group.
+        $memberIds = self::peerGroupServerIds($poolId);
         $peerRows = [];
         if (!empty($memberIds)) {
             $in = implode(',', array_fill(0, count($memberIds), '?'));
             $stmt = DB::conn()->prepare(
                 "SELECT DISTINCT public_key, client_ip FROM vpn_clients
-                 WHERE server_id IN ($in) AND status = 'active' AND public_key <> '' AND client_ip <> ''"
+                 WHERE server_id IN ($in) AND status = 'active' AND public_key <> '' AND client_ip <> ''
+                   AND COALESCE(awg_version, '2.0') = '2.0'"
             );
             $stmt->execute($memberIds);
             $peerRows = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -1251,8 +1603,12 @@ class ServerPool
         if (preg_match('/LIVE=(\d+)/', $out, $m)) {
             $live = (int) $m[1];
         }
-        $expected = count($peerRows);
-        $ok = $live === $expected;
+        $expectedLegacy = count($peerRows);
+        $okLegacy = $live === $expectedLegacy;
+        $v31 = self::reconcileAwg31Peers($server, $poolId);
+        $expected = $expectedLegacy + $v31['expected'];
+        $liveTotal = $live + max(0, $v31['live']);
+        $ok = $okLegacy && $v31['ok'];
         // Keep the failover-eligibility flag honest.
         // A successful rebuild also ends any force-migrate grace period.
         DB::conn()->prepare('UPDATE vpn_servers SET pool_sync_pending = ?, pool_sync_pending_at = IF(? = 0, NULL, pool_sync_pending_at) WHERE id = ?')
@@ -1261,36 +1617,273 @@ class ServerPool
         return [
             'success' => $ok,
             'peers' => $expected,
-            'live' => $live,
+            'live' => $liveTotal,
             'message' => $ok
-                ? "Пиры пересобраны из БД: {$live} на живом интерфейсе и в awg0.conf (переживут рестарт)."
-                : "Рассинхрон: ожидалось {$expected}, на интерфейсе {$live}. Проверьте контейнер {$container}.",
+                ? "Пиры пересобраны из БД: AWG2={$live}, AWG3.1={$v31['live']} (переживут рестарт)."
+                : "Рассинхрон: ожидалось AWG2={$expectedLegacy}/AWG3.1={$v31['expected']}, живых {$live}/{$v31['live']}.",
         ];
+    }
+
+    /** Rebuild the parallel awg31 peer set; interface block stays untouched. */
+    private static function reconcileAwg31Peers(VpnServer $server, int $poolId): array
+    {
+        $memberIds = self::peerGroupServerIds($poolId);
+        $rows = [];
+        if ($memberIds) {
+            $in = implode(',', array_fill(0, count($memberIds), '?'));
+            $st = DB::conn()->prepare(
+                "SELECT DISTINCT public_key, client_ip FROM vpn_clients
+                 WHERE server_id IN ($in) AND status = 'active' AND public_key <> '' AND client_ip <> ''
+                   AND awg_version = '3.1'"
+            );
+            $st->execute($memberIds);
+            $rows = $st->fetchAll(PDO::FETCH_ASSOC);
+        }
+        $profile = self::ensureAwg31Profile($poolId);
+        $peers = '';
+        foreach ($rows as $row) {
+            $peers .= "\n[Peer]\nPublicKey = " . trim((string) $row['public_key']) . "\n";
+            if ($profile['preshared_key'] !== '') {
+                $peers .= 'PresharedKey = ' . $profile['preshared_key'] . "\n";
+            }
+            $peers .= 'AllowedIPs = ' . trim((string) $row['client_ip']) . "/32\n";
+        }
+
+        $conf = (string) $server->executeCommand('cat /opt/amnezia/awg31/awg31.conf 2>/dev/null', true);
+        if (strpos($conf, '[Interface]') === false) {
+            return ['expected' => count($rows), 'live' => -1, 'ok' => false];
+        }
+        $head = preg_split('/^\s*\[Peer\]/m', $conf, 2)[0];
+        $newConf = rtrim($head, "\n") . "\n" . $peers;
+        $b64 = base64_encode($newConf);
+        $script = 'cp /opt/amnezia/awg31/awg31.conf /opt/amnezia/awg31/awg31.conf.bak-reconcile 2>/dev/null; '
+            . 'if echo ' . $b64 . ' | base64 -d > /opt/amnezia/awg31/awg31.conf.new && [ -s /opt/amnezia/awg31/awg31.conf.new ]; then '
+            . 'mv /opt/amnezia/awg31/awg31.conf.new /opt/amnezia/awg31/awg31.conf; '
+            . 'docker exec amnezia-awg31 sh -c '
+            . escapeshellarg(
+                'awg-quick strip /opt/amnezia/awg/awg31.conf > /tmp/awg31.strip 2>/dev/null; '
+                . 'awg syncconf awg31 /tmp/awg31.strip 2>&1; rm -f /tmp/awg31.strip; '
+                . 'echo "LIVE=$(awg show awg31 allowed-ips 2>/dev/null | grep -c /32)"'
+            )
+            . '; else rm -f /opt/amnezia/awg31/awg31.conf.new; echo "LIVE=-1"; fi';
+        $out = (string) $server->executeCommand($script, true);
+        $live = preg_match('/LIVE=(-?\d+)/', $out, $m) ? (int) $m[1] : -1;
+        return ['expected' => count($rows), 'live' => $live, 'ok' => $live === count($rows)];
     }
 
     /**
      * Add one client peer to every pool member except $exceptServerId.
      * Called from VpnClient::create so a new client lands on all members.
      */
-    public static function pushPeerToMembers(int $poolId, string $publicKey, string $clientIp, int $exceptServerId): void
+    public static function pushPeerToMembers(int $poolId, string $publicKey, string $clientIp, int $exceptServerId, string $awgVersion = '2.0'): void
     {
-        foreach (self::members($poolId) as $m) {
-            if ((int) $m['id'] === $exceptServerId) {
+        foreach (self::peerGroupServerIds($poolId) as $memberId) {
+            if ($memberId === $exceptServerId) {
                 continue;
             }
             try {
-                $memberData = (new VpnServer((int) $m['id']))->getData();
+                $memberData = (new VpnServer($memberId))->getData();
+                if ($awgVersion === '3.1') {
+                    $memberData = self::decorateServerDataForAwg31($memberData);
+                }
                 VpnClient::addClientToServer($memberData, $publicKey, $clientIp);
             } catch (Throwable $e) {
-                error_log("ServerPool::pushPeerToMembers: failed on server {$m['id']}: " . $e->getMessage());
+                error_log("ServerPool::pushPeerToMembers: failed on server {$memberId}: " . $e->getMessage());
                 // Member is now missing this client's peer — mark it incomplete so
                 // it isn't chosen for failover until re-synced.
                 try {
-                    DB::conn()->prepare('UPDATE vpn_servers SET pool_sync_pending = 1 WHERE id = ?')->execute([(int) $m['id']]);
+                    DB::conn()->prepare('UPDATE vpn_servers SET pool_sync_pending = 1 WHERE id = ?')->execute([$memberId]);
                 } catch (Throwable $e2) {
                     // best effort
                 }
             }
+        }
+    }
+
+    /** Remove a peer from all other members in the linked client group. */
+    public static function removePeerFromMembers(int $poolId, string $publicKey, int $exceptServerId = 0, string $awgVersion = '2.0'): array
+    {
+        $failed = [];
+        foreach (self::peerGroupServerIds($poolId) as $memberId) {
+            if ($memberId === $exceptServerId) {
+                continue;
+            }
+            try {
+                $data = (new VpnServer($memberId))->getData();
+                if (!$data || ($data['status'] ?? '') !== 'active') {
+                    throw new RuntimeException('server inactive');
+                }
+                if ($awgVersion === '3.1') {
+                    $data = self::decorateServerDataForAwg31($data);
+                }
+                VpnClient::removeClientFromServer($data, $publicKey);
+            } catch (Throwable $e) {
+                $failed[] = $memberId;
+                try {
+                    DB::conn()->prepare('UPDATE vpn_servers SET pool_sync_pending = 1 WHERE id = ?')->execute([$memberId]);
+                } catch (Throwable $ignored) {
+                }
+                error_log("ServerPool::removePeerFromMembers: failed on server {$memberId}: " . $e->getMessage());
+            }
+        }
+        return $failed;
+    }
+
+    /**
+     * Move one standby member into a new direct pool without redeploying AWG.
+     * The new pool copies the exact shared identity and links its client set to
+     * the source pool, so existing keys work on both endpoints.
+     */
+    public static function splitMemberToLinkedPool(int $serverId, string $name, string $domain, bool $repointDns = true): array
+    {
+        $name = trim($name);
+        $domain = strtolower(trim($domain, ". \t\n"));
+        if ($name === '' || mb_strlen($name) > 255) {
+            return ['success' => false, 'message' => 'Название пула обязательно (до 255 символов)'];
+        }
+        if (!preg_match('/^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/', $domain)) {
+            return ['success' => false, 'message' => 'Неверный домен нового пула'];
+        }
+        if ($repointDns && !DnsManager::isConfigured()) {
+            return ['success' => false, 'message' => 'DNS provider token не настроен'];
+        }
+
+        $server = new VpnServer($serverId);
+        $data = $server->getData();
+        $sourcePoolId = (int) ($data['pool_id'] ?? 0);
+        if (!$data || $sourcePoolId <= 0) {
+            return ['success' => false, 'message' => 'Сервер не состоит в пуле'];
+        }
+        $source = self::get($sourcePoolId);
+        if (!$source) {
+            return ['success' => false, 'message' => 'Исходный пул не найден'];
+        }
+        if (!empty($source['peer_source_pool_id'])) {
+            return ['success' => false, 'message' => 'Отделять сервер можно только от корневого пула'];
+        }
+        if ((int) ($source['active_server_id'] ?? 0) === $serverId) {
+            return ['success' => false, 'message' => 'Сначала сделайте активным другой сервер пула'];
+        }
+        if (count(self::members($sourcePoolId)) < 2) {
+            return ['success' => false, 'message' => 'В исходном пуле должен остаться хотя бы один сервер'];
+        }
+        $existing = self::findByDomain($domain);
+        if ($existing) {
+            return ['success' => false, 'message' => 'Этот домен уже используется пулом «' . $existing['name'] . '»'];
+        }
+
+        $db = DB::conn();
+        $lock = 'amnezia_pool_split_' . $serverId;
+        $stLock = $db->prepare('SELECT GET_LOCK(?, 15)');
+        $stLock->execute([$lock]);
+        if ((int) $stLock->fetchColumn() !== 1) {
+            return ['success' => false, 'message' => 'Сервер занят другой операцией — повторите позже'];
+        }
+
+        $newPoolId = 0;
+        $oldDomain = $data['domain'] ?? null;
+        $oldPriority = (int) ($data['pool_priority'] ?? 100);
+        try {
+            $db->beginTransaction();
+            $insert = $db->prepare(
+                'INSERT INTO server_pools
+                 (name, domain, server_public_key, server_private_key, preshared_key, awg_params,
+                  vpn_subnet, vpn_port, active_server_id, warp_bypass_google, peer_source_pool_id)
+                 SELECT ?, ?, server_public_key, server_private_key, preshared_key, awg_params,
+                        vpn_subnet, vpn_port, ?, warp_bypass_google, id
+                 FROM server_pools WHERE id = ?'
+            );
+            $insert->execute([$name, $domain, $serverId, $sourcePoolId]);
+            if ($insert->rowCount() !== 1) {
+                throw new RuntimeException('Не удалось скопировать идентичность исходного пула');
+            }
+            $newPoolId = (int) $db->lastInsertId();
+            $db->prepare(
+                'UPDATE vpn_servers
+                 SET pool_id = ?, pool_priority = 0, domain = ?, pool_sync_pending = 1,
+                     validated_clean = NULL, validation_note = ?
+                 WHERE id = ? AND pool_id = ?'
+            )->execute([$newPoolId, $domain, 'отделён в прямой связанный пул; требуется проверка', $serverId, $sourcePoolId]);
+            $db->commit();
+
+            $clear = PoolFront::clearMemberIngressRules($serverId);
+            if (empty($clear['success'])) {
+                throw new RuntimeException('Не удалось открыть прямой вход на сервере: ' . ($clear['message'] ?? 'ошибка'));
+            }
+            $sync = self::reconcilePeers($serverId);
+            if (empty($sync['success'])) {
+                throw new RuntimeException('Не удалось синхронизировать пиры: ' . ($sync['message'] ?? 'ошибка'));
+            }
+            $dns = null;
+            if ($repointDns) {
+                $dns = DnsManager::upsertARecord($domain, (string) $data['host']);
+                if (empty($dns['success'])) {
+                    throw new RuntimeException('DNS не обновлён: ' . ($dns['message'] ?? 'ошибка'));
+                }
+            }
+
+            // The old front must immediately forget the departed backend and
+            // retain front-only protection only on the remaining members.
+            $frontNotes = [];
+            if ($front = PoolFront::forPool($sourcePoolId)) {
+                $country = '';
+                foreach (self::members($sourcePoolId) as $m) {
+                    if ((int) $m['id'] === (int) ($source['active_server_id'] ?? 0)) {
+                        $md = (new VpnServer((int) $m['id']))->getData();
+                        $country = strtoupper(trim((string) ($md['egress_country'] ?? '')));
+                        break;
+                    }
+                }
+                if (preg_match('/^[A-Z]{2}$/', $country)) {
+                    $db->prepare('UPDATE pool_fronts SET primary_country = ? WHERE id = ?')->execute([$country, (int) $front['id']]);
+                }
+                $frontNotes[] = PoolFront::sync($sourcePoolId, true)['message'] ?? '';
+                if ((int) ($front['members_front_only'] ?? 0) === 1) {
+                    $frontNotes[] = PoolFront::applyFrontOnly($sourcePoolId, true)['message'] ?? '';
+                }
+                $frontNotes[] = PoolFront::applyBackendPort($sourcePoolId)['message'] ?? '';
+            }
+
+            return [
+                'success' => true,
+                'pool_id' => $newPoolId,
+                'source_pool_id' => $sourcePoolId,
+                'synced' => (int) ($sync['live'] ?? 0),
+                'dns' => $dns,
+                'message' => "Сервер отделён в пул «{$name}»: {$domain} → {$data['host']}, синхронизировано пиров: " . (int) ($sync['live'] ?? 0)
+                    . ($frontNotes ? '. Фронт исходного пула обновлён.' : ''),
+            ];
+        } catch (Throwable $e) {
+            if ($db->inTransaction()) {
+                $db->rollBack();
+            }
+            if ($newPoolId > 0) {
+                // Keep the DB topology truthful when a remote/DNS step failed.
+                try {
+                    $db->beginTransaction();
+                    $db->prepare(
+                        'UPDATE vpn_servers SET pool_id = ?, pool_priority = ?, domain = ?, pool_sync_pending = 0 WHERE id = ? AND pool_id = ?'
+                    )->execute([$sourcePoolId, $oldPriority, $oldDomain, $serverId, $newPoolId]);
+                    $db->prepare('DELETE FROM server_pools WHERE id = ?')->execute([$newPoolId]);
+                    $db->commit();
+                    $front = PoolFront::forPool($sourcePoolId);
+                    if ($front && (int) ($front['members_front_only'] ?? 0) === 1) {
+                        PoolFront::applyFrontOnly($sourcePoolId, true);
+                    }
+                    if ($front) {
+                        PoolFront::applyBackendPort($sourcePoolId);
+                        PoolFront::sync($sourcePoolId, true);
+                    }
+                } catch (Throwable $rollbackError) {
+                    if ($db->inTransaction()) {
+                        $db->rollBack();
+                    }
+                    error_log('splitMemberToLinkedPool rollback failed: ' . $rollbackError->getMessage());
+                }
+            }
+            return ['success' => false, 'message' => $e->getMessage()];
+        } finally {
+            $db->prepare('SELECT RELEASE_LOCK(?)')->execute([$lock]);
         }
     }
 
@@ -1460,6 +2053,7 @@ class ServerPool
     {
         $pool['server_private_key'] = SecretBox::decryptNullable($pool['server_private_key'] ?? null);
         $pool['preshared_key'] = SecretBox::decryptNullable($pool['preshared_key'] ?? null);
+        $pool['awg31_header_key'] = SecretBox::decryptNullable($pool['awg31_header_key'] ?? null);
         return $pool;
     }
 }

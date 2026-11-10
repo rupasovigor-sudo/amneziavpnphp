@@ -40,8 +40,21 @@
 
 ## Установка
 
+Подробная production-инструкция, автоматический `install.sh`, HTTPS, бэкапы и размещение панели вместе с RU-фронтом: [DEPLOY_RU.md](DEPLOY_RU.md).
+
+Быстрая установка на чистую Ubuntu:
+
 ```bash
-git clone https://github.com/infosave2007/amneziavpnphp.git
+curl -fsSL https://raw.githubusercontent.com/rupasovigor-sudo/amneziavpnphp/master/install.sh -o /tmp/amnezia-panel-install.sh
+sudo bash /tmp/amnezia-panel-install.sh install --domain panel.example.com --admin-email admin@example.com
+```
+
+Обновление установленной панели с предварительным бэкапом БД: `sudo /opt/amnezia-panel/install.sh update`.
+
+Ручной способ:
+
+```bash
+git clone https://github.com/rupasovigor-sudo/amneziavpnphp.git
 cd amneziavpnphp
 cp .env.example .env
 

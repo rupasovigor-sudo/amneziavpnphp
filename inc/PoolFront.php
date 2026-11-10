@@ -331,12 +331,13 @@ SH;
     }
 
     /** nftables ruleset for the relay (sticky per client source IP). */
-    public static function renderRuleset(array $backends, int $port, ?int $backendPort = null): string
+    public static function renderRuleset(array $backends, int $port, ?int $backendPort = null, ?int $awg31Port = null): string
     {
         $port = $port > 0 ? $port : 443;
         // The leg to the members may use another port than the clients' one
         // (see migration 118); members DNAT it back to their awg port.
         $bport = ($backendPort !== null && $backendPort > 0) ? $backendPort : $port;
+        $awg31Port = ($awg31Port !== null && $awg31Port > 0) ? $awg31Port : null;
         $lines = [
             'add table ip amnezia_relay',
             'delete table ip amnezia_relay',
@@ -358,12 +359,27 @@ SH;
                     '        fib daddr type local udp dport %d counter dnat ip addr . port to jhash ip saddr mod %d map { %s }',
                     $port, count($backends), implode(', ', $map)
                 );
+            if ($awg31Port !== null && $awg31Port !== $port) {
+                $map31 = [];
+                foreach (array_values($backends) as $i => $ip) {
+                    $map31[] = "{$i} : {$ip}";
+                }
+                $lines[] = sprintf(
+                    '        fib daddr type local udp dport %d counter dnat to jhash ip saddr mod %d map { %s }',
+                    $awg31Port,
+                    count($backends),
+                    implode(', ', $map31)
+                );
+            }
         }
         $lines[] = '    }';
         $lines[] = '    chain postrouting {';
         $lines[] = '        type nat hook postrouting priority srcnat; policy accept;';
         if ($backends) {
             $lines[] = sprintf('        ip daddr { %s } udp dport %d counter masquerade', implode(', ', $backends), $bport);
+            if ($awg31Port !== null && $awg31Port !== $bport) {
+                $lines[] = sprintf('        ip daddr { %s } udp dport %d counter masquerade', implode(', ', $backends), $awg31Port);
+            }
         }
         $lines[] = '    }';
         $lines[] = '}';
@@ -384,7 +400,8 @@ SH;
         $removed = array_values(array_diff($old, $new));
 
         $bport = (int) ($front['backend_port'] ?? 0) ?: null;
-        $b64 = base64_encode(self::renderRuleset($new, $port, $bport));
+        $awg31Port = (int) ($pool['awg31_port'] ?? 444) ?: 444;
+        $b64 = base64_encode(self::renderRuleset($new, $port, $bport, $awg31Port));
         $flush = '';
         foreach ($removed as $ip) {
             if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false) {
@@ -397,6 +414,9 @@ SH;
             // packet and the ~5s retries keep those entries alive, so without
             // this the clients stay blackholed after members come back.
             $flush .= 'conntrack -D -p udp --orig-port-dst ' . $port . ' >/dev/null 2>&1; ';
+            if ($awg31Port !== $port) {
+                $flush .= 'conntrack -D -p udp --orig-port-dst ' . $awg31Port . ' >/dev/null 2>&1; ';
+            }
         }
         // mktemp: the web "sync" button and the collector may push concurrently.
         $cmd = 'set -e; mkdir -p /etc/amnezia; T=$(mktemp /etc/amnezia/relay.nft.XXXXXX); '
@@ -720,6 +740,34 @@ SH;
     // ------------------------------------------------- members: front only
 
     /**
+     * Remove all front-specific ingress rules from one member.  Used when a
+     * member is split into a direct pool: applying the pool-wide switch would
+     * briefly open every remaining backend, while this only touches the server
+     * that is leaving.
+     */
+    public static function clearMemberIngressRules(int $serverId): array
+    {
+        $script = "set -e\n"
+            . "nft delete table inet amnezia_frontonly >/dev/null 2>&1 || true\n"
+            . "nft delete table ip amnezia_frontport >/dev/null 2>&1 || true\n"
+            . "systemctl disable --now amnezia-front-only.service >/dev/null 2>&1 || true\n"
+            . "systemctl disable --now amnezia-front-port.service >/dev/null 2>&1 || true\n"
+            . "rm -f /etc/systemd/system/amnezia-front-only.service /etc/systemd/system/amnezia-front-port.service "
+            . "/etc/amnezia/front-only.nft /etc/amnezia/front-port.nft\n"
+            . "systemctl daemon-reload\necho FRONT_RULES_CLEARED\n";
+        try {
+            $out = (string) (new VpnServer($serverId))->executeCommand(
+                'echo ' . base64_encode($script) . ' | base64 -d | bash',
+                true
+            );
+            $ok = str_contains($out, 'FRONT_RULES_CLEARED');
+            return ['success' => $ok, 'message' => $ok ? 'Ограничения фронта сняты' : trim(substr($out, -300))];
+        } catch (Throwable $e) {
+            return ['success' => false, 'message' => $e->getMessage()];
+        }
+    }
+
+    /**
      * Enforce (or lift) "VPN port only from the front" on every active member.
      * An nft table drops VPN-port packets whose source isn't the front or a
      * pool member (the reachability probe runs member→member), before docker's
@@ -731,6 +779,7 @@ SH;
         $pool = ServerPool::get($poolId);
         $front = self::forPool($poolId);
         $port = (int) ($pool['vpn_port'] ?? 443) ?: 443;
+        $awg31Port = (int) ($pool['awg31_port'] ?? 444) ?: 444;
         $members = array_values(array_filter(ServerPool::members($poolId), static fn($m) => ($m['status'] ?? '') === 'active'));
 
         $allowed = [];
@@ -757,8 +806,9 @@ SH;
             // fib daddr type local: only packets addressed to THIS host's VPN
             // port. Without it the rule also hit the clients' own outbound
             // UDP/443 (QUIC, HTTP/3) leaving the awg2 container via docker0.
-            $lines[] = '    fib daddr type local udp dport ' . $port . ' ip saddr != @allowed counter drop';
-            $lines[] = '    meta nfproto ipv6 fib daddr type local udp dport ' . $port . ' counter drop';
+            $ports = $awg31Port === $port ? (string) $port : '{ ' . $port . ', ' . $awg31Port . ' }';
+            $lines[] = '    fib daddr type local udp dport ' . $ports . ' ip saddr != @allowed counter drop';
+            $lines[] = '    meta nfproto ipv6 fib daddr type local udp dport ' . $ports . ' counter drop';
             $lines[] = '  }';
             $lines[] = '}';
         }

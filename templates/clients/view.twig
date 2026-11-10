@@ -21,10 +21,26 @@
         <div><dt class="text-sm text-gray-600">Логин</dt><dd>{{ client.name|default('') }}</dd></div>
         <div><dt class="text-sm text-gray-600">{{ t('common.created') }}</dt><dd>{{ client.created_at }}</dd></div>
       </dl>
-      <div class="flex gap-2">
-        <a href="/clients/{{ client.id }}/download" class="bg-brand-600 hover:bg-brand-700 text-white px-4 py-2 rounded">
-          <i class="fas fa-download"></i> Download Config
-        </a>
+      <div class="mb-4">
+        <div class="text-sm font-medium text-gray-700 mb-2">Конфиги по серверам</div>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          {% if client_endpoints|default([])|length > 0 %}
+            {% for endpoint in client_endpoints %}
+              <a href="/clients/{{ client.id }}/download?pool_id={{ endpoint.pool_id }}"
+                 class="flex items-center justify-between gap-3 px-4 py-3 rounded-lg border {{ endpoint.selected ? 'bg-brand-600 border-brand-600 text-white hover:bg-brand-700' : 'bg-sky-50 border-sky-200 text-sky-800 hover:bg-sky-100' }}"
+                 title="{{ endpoint.domain }}:{{ endpoint.port }}">
+                <span class="inline-flex items-center gap-2 font-medium"><i class="fas fa-download"></i>Config {{ endpoint.name }}</span>
+                <span class="text-xs font-mono {{ endpoint.selected ? 'text-brand-100' : 'text-sky-600' }}">{{ endpoint.domain }}:{{ endpoint.port }}</span>
+              </a>
+            {% endfor %}
+          {% else %}
+            <a href="/clients/{{ client.id }}/download" class="flex items-center justify-center gap-2 bg-brand-600 hover:bg-brand-700 text-white px-4 py-3 rounded-lg">
+              <i class="fas fa-download"></i>Download Config
+            </a>
+          {% endif %}
+        </div>
+      </div>
+      <div class="flex gap-2 flex-wrap">
         {% if client.status == 'active' %}
           <form method="POST" action="/clients/{{ client.id }}/revoke" style="display:inline;">
             <button type="button" class="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded" data-confirm="Отозвать доступ у этого клиента?" data-confirm-ok="Отозвать">
@@ -141,29 +157,55 @@
     </div>
   </div>
   
-  {% if client.qr_code %}
-  <div class="card p-6 text-center">
-    <h3 class="section-title"><i class="fas fa-qrcode"></i>QR Code (Simple)</h3>
-    <img src="{{ client.qr_code }}" alt="QR Code" class="mx-auto" style="max-width: 300px; width: 100%; height: auto;">
-    <p class="text-sm text-gray-600 mt-2">Scan with Amnezia VPN app</p>
-  </div>
-  {% endif %}
-
-  {% if is_awg2 and qr_code_vpn_url %}
-  <div class="card p-6 text-center mt-6">
-    <h3 class="section-title"><i class="fas fa-qrcode"></i>QR Code (vpn:// URL)</h3>
-    <img src="{{ qr_code_vpn_url }}" alt="QR Code VPN URL" class="mx-auto" style="max-width: 300px; width: 100%; height: auto;">
-    <p class="text-sm text-gray-600 mt-2">Scan with Amnezia VPN app</p>
-  </div>
-  {% endif %}
-
-  {% if is_awg2 and vpn_url_config %}
+  {% if client_profiles|default([])|length > 0 %}
   <div class="card p-6 mt-6">
-    <h3 class="section-title"><i class="fas fa-link"></i>VPN URL Configuration</h3>
-    <div class="bg-gray-100 p-4 rounded text-left overflow-x-auto">
-      <code class="text-sm break-all">{{ vpn_url_config }}</code>
+    <h3 class="section-title"><i class="fas fa-qrcode"></i>QR-коды и VPN URL по серверам</h3>
+    <div class="flex gap-1 overflow-x-auto border-b mb-5" role="tablist" aria-label="Сервер конфигурации">
+      {% for profile in client_profiles %}
+        <button type="button" role="tab" data-action="selectClientProfile" data-profile-key="{{ profile.key }}" aria-selected="{{ profile.selected ? 'true' : 'false' }}"
+                class="client-profile-tab flex-shrink-0 px-4 py-3 border-b-2 text-sm font-medium {{ profile.selected ? 'border-brand-600 text-brand-700 bg-brand-50' : 'border-transparent text-gray-500 hover:text-gray-800' }}">
+          <i class="fas fa-server mr-1"></i>{{ profile.name }}
+          {% if profile.endpoint %}<span class="block text-[10px] font-mono font-normal mt-0.5">{{ profile.endpoint }}</span>{% endif %}
+        </button>
+      {% endfor %}
     </div>
-    <p class="text-sm text-gray-600 mt-2">Copy this vpn:// URL to import configuration</p>
+
+    {% for profile in client_profiles %}
+      <div class="client-profile-panel {{ profile.selected ? '' : 'hidden' }}" data-profile-panel="{{ profile.key }}" role="tabpanel">
+        <div class="flex justify-end mb-4">
+          <a href="/clients/{{ client.id }}/download{% if profile.pool_id %}?pool_id={{ profile.pool_id }}{% endif %}" class="inline-flex items-center gap-2 bg-brand-600 hover:bg-brand-700 text-white px-4 py-2 rounded">
+            <i class="fas fa-download"></i>Скачать Config {{ profile.name }}
+          </a>
+        </div>
+
+        <div class="grid grid-cols-1 {% if profile.vpn_qr %}md:grid-cols-2{% endif %} gap-6">
+          {% if profile.simple_qr %}
+          <div class="rounded-lg border p-4 text-center">
+            <div class="font-medium text-gray-800 mb-3">QR конфигурации</div>
+            <img src="{{ profile.simple_qr }}" alt="QR Config {{ profile.name }}" class="mx-auto" style="max-width: 280px; width: 100%; height: auto;">
+            <p class="text-xs text-gray-500 mt-2">Для импорта в Amnezia VPN</p>
+          </div>
+          {% endif %}
+          {% if profile.vpn_qr %}
+          <div class="rounded-lg border p-4 text-center">
+            <div class="font-medium text-gray-800 mb-3">QR vpn:// URL</div>
+            <img src="{{ profile.vpn_qr }}" alt="QR VPN URL {{ profile.name }}" class="mx-auto" style="max-width: 280px; width: 100%; height: auto;">
+            <p class="text-xs text-gray-500 mt-2">Для импорта через vpn://</p>
+          </div>
+          {% endif %}
+        </div>
+
+        {% if profile.vpn_url %}
+        <div class="mt-5">
+          <div class="flex items-center justify-between gap-3 mb-2">
+            <div class="font-medium text-gray-800"><i class="fas fa-link mr-1"></i>VPN URL</div>
+            <button type="button" data-action="copyClientProfileUrl" data-copy-target="profile-url-{{ profile.key }}" class="px-3 py-1.5 rounded bg-gray-200 hover:bg-gray-300 text-gray-700 text-sm"><i class="fas fa-copy mr-1"></i>Копировать</button>
+          </div>
+          <div class="bg-gray-100 p-4 rounded overflow-x-auto"><code id="profile-url-{{ profile.key }}" class="text-sm break-all">{{ profile.vpn_url }}</code></div>
+        </div>
+        {% endif %}
+      </div>
+    {% endfor %}
   </div>
   {% endif %}
 
@@ -176,6 +218,45 @@
 </div>
 
 <script nonce="{{ csp_nonce }}">
+function selectClientProfile() {
+  const key = this.dataset.profileKey;
+  document.querySelectorAll('.client-profile-tab').forEach(tab => {
+    const active = tab.dataset.profileKey === key;
+    tab.setAttribute('aria-selected', active ? 'true' : 'false');
+    tab.classList.toggle('border-brand-600', active);
+    tab.classList.toggle('text-brand-700', active);
+    tab.classList.toggle('bg-brand-50', active);
+    tab.classList.toggle('border-transparent', !active);
+    tab.classList.toggle('text-gray-500', !active);
+  });
+  document.querySelectorAll('.client-profile-panel').forEach(panel => {
+    panel.classList.toggle('hidden', panel.dataset.profilePanel !== key);
+  });
+}
+
+async function copyClientProfileUrl() {
+  const target = document.getElementById(this.dataset.copyTarget);
+  if (!target) return;
+  const value = target.textContent.trim();
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(value);
+    } else {
+      const area = document.createElement('textarea');
+      area.value = value;
+      area.style.position = 'fixed';
+      area.style.opacity = '0';
+      document.body.appendChild(area);
+      area.select();
+      document.execCommand('copy');
+      area.remove();
+    }
+    showToast('VPN URL скопирован', 'success');
+  } catch (error) {
+    showToast('Не удалось скопировать URL', 'error');
+  }
+}
+
 function toggleExpirationEdit() {
   const select = document.getElementById('expirationSelect');
   const input = document.getElementById('expirationSeconds');

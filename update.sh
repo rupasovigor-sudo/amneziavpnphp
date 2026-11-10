@@ -445,7 +445,7 @@ log ""
 log "${BLUE}[5/10] Checking git repository...${NC}"
 
 if [ ! -d .git ]; then
-    error_exit "Not a git repository. Cannot update automatically. Clone from: https://github.com/infosave2007/amneziavpnphp"
+    error_exit "Not a git repository. Cannot update automatically. Clone from: https://github.com/rupasovigor-sudo/amneziavpnphp"
 fi
 log_success "Git repository found"
 

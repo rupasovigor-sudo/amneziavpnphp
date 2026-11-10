@@ -60,6 +60,7 @@
     <div class="flex items-center gap-3 flex-shrink-0">
       {% set _st = server.status %}
       <span class="{{ _st == 'active' ? 'badge-green' : (_st == 'error' ? 'badge-red' : 'badge-yellow') }}"><i class="fas fa-circle text-[7px] mr-1"></i>{{ _st }}</span>
+      <a href="/clients?server_id={{ server.id }}" class="px-3 py-2 rounded bg-gray-100 hover:bg-gray-200 text-gray-700 text-sm font-medium"><i class="fas fa-users mr-1"></i>Клиенты</a>
       <a href="/servers/{{ server.id }}/monitoring" class="btn-primary"><i class="fas fa-chart-line"></i>Мониторинг</a>
     </div>
   </div>
@@ -141,7 +142,26 @@
             </div>
             <p class="mt-1 text-sm text-amber-700">⚠ Смена домена: клиентские конфиги ведут на старый домен — их нужно перевыпустить. Пустое поле не меняется.</p>
           </div>
+          <div id="peerSourceBox" class="mb-2 p-2 bg-sky-50 border border-sky-200 rounded text-sm">
+            <div class="flex flex-wrap items-center gap-2">
+              <span><i class="fas fa-arrows-rotate mr-1"></i>Клиенты:</span>
+              <select id="peerSourceSelect" class="px-2 py-0.5 border rounded bg-white"></select>
+              <button type="button" id="peerSourceSave" class="px-2 py-0.5 bg-brand-600 hover:bg-brand-700 text-white rounded">Сохранить и синхронизировать</button>
+            </div>
+            <p class="mt-1 text-xs text-sky-800">Связанные пулы используют один набор ключей, IP и пиров, но сохраняют разные домены и маршруты входа.</p>
+          </div>
           <div id="poolMembers" class="space-y-1"></div>
+          <div id="poolSplitBox" class="mt-2 p-3 bg-amber-50 border border-amber-200 rounded text-sm" style="display:none">
+            <div class="font-semibold mb-2">Отделить <span id="poolSplitMemberName"></span> в прямой пул</div>
+            <div class="flex flex-wrap items-center gap-2">
+              <label>Название: <input id="poolSplitName" type="text" maxlength="255" class="px-2 py-0.5 border rounded bg-white" placeholder="KZ"></label>
+              <label>Домен: <input id="poolSplitDomain" type="text" maxlength="253" class="px-2 py-0.5 border rounded bg-white font-mono" placeholder="kz.legiogroup.pro"></label>
+              <label class="inline-flex items-center gap-1"><input id="poolSplitRepoint" type="checkbox" checked> создать A-запись на сервер</label>
+              <button type="button" id="poolSplitSave" class="px-2 py-0.5 bg-amber-600 hover:bg-amber-700 text-white rounded">Отделить</button>
+              <button type="button" id="poolSplitCancel" class="px-2 py-0.5 bg-gray-300 rounded">Отмена</button>
+            </div>
+            <p class="mt-1 text-xs text-amber-800">AWG не передеплоится: существующие ключи сохранятся. Сервер будет убран из фронта, прямой UDP-вход откроется, клиенты исходного пула синхронизируются автоматически.</p>
+          </div>
           <p id="poolMsg" class="mt-2 text-sm text-gray-500 leading-tight">
             Конфиг клиента <b>единый для всего пула</b> (домен + общие ключи) и синхронизируется на все серверы автоматически — неважно, на каком сервере создавать клиента. <b>ACTIVE</b> — сюда указывает домен и идут клиенты; <b>STANDBY</b> — синхронизирован и готов к переключению.
           </p>
@@ -166,6 +186,7 @@
         const poolBox = document.getElementById('poolBox');
         const setBadge = (t, c) => { badge.textContent = t; badge.className = 'px-2 py-0.5 rounded text-sm ' + c; };
         const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m]));
+        let splitMemberId = 0;
 
         function renderPool(d) {
           standalone.style.display = 'none';
@@ -208,6 +229,7 @@
               m.role !== 'active' ? `<button data-probe="${m.id}" class="px-2 py-0.5 rounded text-sm bg-brand-600 hover:bg-brand-700 text-white" title="Handshake-пробник с активного сервера: проверяет, что ingress жив/проброшен (не проверяет прожиг)">Проверить</button>` : '',
               m.role !== 'active' ? `<button data-activate="${m.id}" class="px-2 py-0.5 rounded text-sm bg-brand-600 hover:bg-brand-700 text-white">Сделать активным</button>` : '',
               m.role !== 'active' ? `<button data-resync="${m.id}" class="px-2 py-0.5 rounded text-sm ${m.sync_pending ? 'bg-yellow-600 hover:bg-yellow-700' : 'bg-gray-600 hover:bg-gray-700'} text-white" title="Пересобрать список пиров из БД на живой интерфейс (нужно, если пиры слетели после рестарта контейнера)">Ре-синк</button>` : '',
+              (m.role !== 'active' && d.members.length > 1) ? `<button data-split="${m.id}" data-split-name="${esc(m.name)}" class="px-2 py-0.5 rounded text-sm bg-amber-600 hover:bg-amber-700 text-white" title="Создать отдельный прямой пул с теми же клиентами">В отдельный пул</button>` : '',
               (m.validated_clean === 1
                 ? `<button data-markclean="0" data-mid="${m.id}" class="px-2 py-0.5 rounded text-sm bg-gray-600 hover:bg-gray-700 text-white" title="Снять пометку годности">Снять годность</button>`
                 : `<button data-markclean="1" data-mid="${m.id}" class="px-2 py-0.5 rounded text-sm bg-green-600 hover:bg-green-700 text-white" title="Пометить проверенным — станет доступен для авто-failover">Пометить годным</button>`),
@@ -222,6 +244,27 @@
           poolBox.querySelectorAll('[data-resync]').forEach(b => b.addEventListener('click', () => resyncMember(b.getAttribute('data-resync'), b)));
           poolBox.querySelectorAll('[data-markclean]').forEach(b => b.addEventListener('click', () => markClean(b.getAttribute('data-mid'), b.getAttribute('data-markclean') === '1', b)));
           poolBox.querySelectorAll('[data-probe]').forEach(b => b.addEventListener('click', () => probeMember(b.getAttribute('data-probe'), b)));
+          poolBox.querySelectorAll('[data-split]').forEach(b => b.addEventListener('click', () => openSplit(b.getAttribute('data-split'), b.getAttribute('data-split-name'))));
+
+          const sourceSelect = document.getElementById('peerSourceSelect');
+          if (sourceSelect) {
+            const current = d.pool.peer_source;
+            const options = [{id: 0, name: 'Собственные клиенты', domain: ''}];
+            if (current) options.push(current);
+            (d.compatible_peer_sources || []).forEach(p => {
+              if (!options.some(o => Number(o.id) === Number(p.id))) options.push(p);
+            });
+            sourceSelect.innerHTML = options.map(p => `<option value="${p.id}" ${Number(d.pool.peer_source_pool_id || 0) === Number(p.id) ? 'selected' : ''}>${esc(p.name)}${p.domain ? ' (' + esc(p.domain) + ')' : ''}</option>`).join('');
+          }
+        }
+
+        function openSplit(memberId, memberName) {
+          splitMemberId = Number(memberId);
+          document.getElementById('poolSplitMemberName').textContent = memberName || ('#' + memberId);
+          document.getElementById('poolSplitName').value = String(memberName || '').split(/[.\s_-]/)[0] || 'direct';
+          document.getElementById('poolSplitDomain').value = '';
+          document.getElementById('poolSplitBox').style.display = 'block';
+          document.getElementById('poolSplitDomain').focus();
         }
 
         function renderStandalone(d) {
@@ -434,6 +477,55 @@
             .finally(() => { poolEditSave.disabled = false; });
         });
 
+        const peerSourceSave = document.getElementById('peerSourceSave');
+        if (peerSourceSave) peerSourceSave.addEventListener('click', async function () {
+          const sourceId = Number(document.getElementById('peerSourceSelect').value || 0);
+          const ok = await showConfirmModal(
+            'Пиры на серверах этого пула будут пересобраны из выбранной группы клиентов. Продолжить?',
+            'Источник клиентов', 'Синхронизировать');
+          if (!ok) return;
+          peerSourceSave.disabled = true;
+          fetch('/servers/' + SID + '/pool/peer-source', {
+            method: 'POST', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({ source_pool_id: sourceId })
+          }).then(r => r.json()).then(d => {
+            showToast(d.message || d.error || 'Готово', d.success ? 'success' : 'error');
+            load();
+          }).catch(e => showToast('Ошибка: ' + e, 'error'))
+            .finally(() => { peerSourceSave.disabled = false; });
+        });
+
+        const poolSplitCancel = document.getElementById('poolSplitCancel');
+        if (poolSplitCancel) poolSplitCancel.addEventListener('click', function () {
+          document.getElementById('poolSplitBox').style.display = 'none';
+          splitMemberId = 0;
+        });
+        const poolSplitSave = document.getElementById('poolSplitSave');
+        if (poolSplitSave) poolSplitSave.addEventListener('click', async function () {
+          const name = document.getElementById('poolSplitName').value.trim();
+          const domain = document.getElementById('poolSplitDomain').value.trim();
+          const repoint = document.getElementById('poolSplitRepoint').checked;
+          if (!splitMemberId || !name || !domain) {
+            showToast('Укажите название и домен', 'error');
+            return;
+          }
+          const memberId = splitMemberId;
+          const ok = await showConfirmModal(
+            'Сервер будет удалён из текущего фронта и станет прямым пулом ' + domain + '. Ключи и клиенты останутся общими. Продолжить?',
+            'Отделить сервер?', 'Отделить');
+          if (!ok) return;
+          poolSplitSave.disabled = true;
+          poolSplitSave.textContent = 'Выполняется…';
+          fetch('/servers/' + memberId + '/pool/split', {
+            method: 'POST', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({ name, domain, repoint })
+          }).then(r => r.json()).then(d => {
+            showToast(d.message || d.error || 'Готово', d.success ? 'success' : 'error');
+            if (d.success) window.location.href = '/servers/' + memberId;
+          }).catch(e => showToast('Ошибка: ' + e, 'error'))
+            .finally(() => { poolSplitSave.disabled = false; poolSplitSave.textContent = 'Отделить'; });
+        });
+
         const forceMigrateBtn = document.getElementById('forceMigrateBtn');
         if (forceMigrateBtn) forceMigrateBtn.addEventListener('click', async function () {
           const ok = await showConfirmModal(
@@ -544,7 +636,7 @@
           <button type="button" class="js-upd-act px-3 py-1 bg-brand-600 hover:bg-brand-700 text-white rounded text-sm" data-action="os"><i class="fas fa-download mr-1"></i>Пакеты ОС</button>
           <button type="button" class="js-upd-act px-3 py-1 bg-brand-600 hover:bg-brand-700 text-white rounded text-sm" data-action="kernel" title="full-upgrade: ставит пакеты, требующие новых зависимостей (ядро)"><i class="fas fa-microchip mr-1"></i>Ядро</button>
           <button type="button" class="js-upd-act px-3 py-1 bg-brand-600 hover:bg-brand-700 text-white rounded text-sm" data-action="docker" title="Перезапускает docker-демон — туннели на этом сервере кратко порвутся"><i class="fab fa-docker mr-1"></i>Docker</button>
-          <button type="button" class="js-upd-act px-3 py-1 bg-brand-600 hover:bg-brand-700 text-white rounded text-sm" data-action="awg2" title="Пересборка из upstream с сохранением идентичности пула"><i class="fas fa-hammer mr-1"></i>awg2</button>
+          <button type="button" class="js-upd-act px-3 py-1 bg-brand-600 hover:bg-brand-700 text-white rounded text-sm" data-action="awg2" title="Пересборка общего движка AWG 2.0/3.1 с сохранением идентичности пула"><i class="fas fa-hammer mr-1"></i>AmneziaWG</button>
           <button type="button" class="js-upd-act px-3 py-1 bg-brand-600 hover:bg-brand-700 text-white rounded text-sm" data-action="warp"><i class="fas fa-cloud mr-1"></i>WARP</button>
           <button type="button" class="js-upd-act px-3 py-1 bg-red-700 hover:bg-red-800 text-white rounded text-sm" data-action="reboot"><i class="fas fa-power-off mr-1"></i>Перезагрузить</button>
         </div>
@@ -575,6 +667,7 @@
           const phased = a.phased || 0;
           const stale = [];
           if (a.awg2_update_available === true) stale.push('awg2');
+          if (a.awg31_ready === false) stale.push('AWG 3.1');
           if (a.warp_update_available === true) stale.push('WARP');
           if (up === 0 && !stale.length) setBadge('всё актуально', 'bg-green-100 text-green-700');
           else if (a.security > 0) setBadge(up + ' обновлений · ' + a.security + ' security', 'bg-red-100 text-red-700');
@@ -589,13 +682,19 @@
           html += row('Ядро', a.kernel || '—');
           html += row('Docker', a.docker_version || '—');
           html += row('Образ awg2', (a.awg2_image_created || '—').replace('T', ' '));
-          html += row('awg2 / WARP', (a.awg2_running ? '✅' : '❌') + ' / ' + (a.warp_active ? '✅' : '❌'));
+          html += row('Образ AWG 3.1', (a.awg31_image_created || '—').replace('T', ' '));
+          html += row('AWG 2.0 / 3.1 / WARP', (a.awg2_running ? '✅' : '❌') + ' / '
+            + (a.awg31_ready ? '✅' : '❌') + ' / ' + (a.warp_active ? '✅' : '❌'));
           // Version freshness (null = could not determine, e.g. no GitHub access)
           const verdict = (flag, okTxt, oldTxt) => flag == null
             ? '<span class="text-gray-400">не определено</span>'
             : (flag ? `<span class="text-yellow-700">${oldTxt}</span>` : `<span class="text-green-700">${okTxt}</span>`);
           html += row('Версия awg2', verdict(a.awg2_update_available, 'актуальна', 'есть обновление')
             + (a.awg2_src_date ? ` <span class="text-gray-400">(${a.awg2_src_date})</span>` : ''));
+          const awg31Details = a.awg31_ready
+            ? `<span class="text-green-700">v${a.awg31_version || '3.1'} готова</span> · UDP ${a.awg31_port || '—'} · пиров ${a.awg31_peers || 0} · параметров ${a.awg31_params || 0}/9`
+            : `<span class="text-red-600">не готова</span> · контейнер ${a.awg31_running ? '✅' : '❌'} · интерфейс ${a.awg31_interface ? '✅' : '❌'} · параметров ${a.awg31_params || 0}/9`;
+          html += row('AmneziaWG 3.1', awg31Details);
           html += row('Скрипты WARP', verdict(a.warp_update_available, 'актуальны', 'отличаются от репозитория'));
           if (a.lists_age_h != null) html += row('Списки пакетов', a.lists_age_h + ' ч назад');
           info.innerHTML = html;
@@ -611,7 +710,7 @@
           }
         }
 
-        const ACT_NAMES = { os: 'Пакеты ОС', kernel: 'Ядро', docker: 'Docker', awg2: 'awg2', warp: 'WARP', reboot: 'Перезагрузка' };
+        const ACT_NAMES = { os: 'Пакеты ОС', kernel: 'Ядро', docker: 'Docker', awg2: 'AmneziaWG 2.0/3.1', warp: 'WARP', reboot: 'Перезагрузка' };
         function renderHistory(rows) {
           const box = document.getElementById('updHistBox');
           const list = document.getElementById('updHist');
@@ -860,169 +959,6 @@
 
     </div>
 
-    <!-- ── Создать клиента ── -->
-    <div class="card p-6">
-      <h3 class="section-title"><i class="fas fa-user-plus"></i>{{ t('clients.create') }}</h3>
-      <form method="POST" action="/servers/{{ server.id }}/clients/create" class="space-y-3" id="createClientForm">
-        <div>
-          <input name="name" placeholder="{{ t('clients.name') }}" required class="w-full px-3 py-2 border rounded" id="clientName">
-        </div>
-        <div>
-          <input name="login" placeholder="Логин (уникально на сервере, пусто — из имени)" class="w-full px-3 py-2 border rounded" id="clientLogin">
-        </div>
-        <div>
-          <label class="block text-sm text-gray-600 mb-1">{{ t('clients.expiration') }}</label>
-          <select name="expires_in_days" class="w-full px-3 py-2 border rounded mb-2" id="expirationSelect" data-action="toggleExpirationInput" data-on="change">
-            <option value="" selected>{{ t('clients.never_expires') }}</option>
-            <option value="7">7 {{ t('common.days') }}</option>
-            <option value="30">30 {{ t('common.days') }}</option>
-            <option value="60">60 {{ t('common.days') }}</option>
-            <option value="90">90 {{ t('common.days') }}</option>
-            <option value="180">180 {{ t('common.days') }}</option>
-            <option value="365">365 {{ t('common.days') }}</option>
-            <option value="custom">{{ t('clients.custom_seconds') }}</option>
-          </select>
-          <input type="number" name="expires_in_seconds" id="expirationSeconds" class="w-full px-3 py-2 border rounded" placeholder="{{ t('clients.enter_seconds') }}" style="display:none;" min="1">
-        </div>
-        <div>
-          <label class="block text-sm text-gray-600 mb-1">{{ t('clients.traffic_limit') }}</label>
-          <select name="traffic_limit_gb" class="w-full px-3 py-2 border rounded mb-2" id="trafficSelect" data-action="toggleTrafficInput" data-on="change">
-            <option value="" selected>{{ t('clients.unlimited') }}</option>
-            <option value="1">1 GB</option>
-            <option value="5">5 GB</option>
-            <option value="10">10 GB</option>
-            <option value="25">25 GB</option>
-            <option value="50">50 GB</option>
-            <option value="100">100 GB</option>
-            <option value="250">250 GB</option>
-            <option value="500">500 GB</option>
-            <option value="1000">1000 GB (1 TB)</option>
-            <option value="custom">{{ t('clients.custom_mb') }}</option>
-          </select>
-          <input type="number" name="traffic_limit_mb" id="trafficMegabytes" class="w-full px-3 py-2 border rounded" placeholder="{{ t('clients.enter_megabytes') }}" style="display:none;" min="1">
-        </div>
-        <button type="submit" class="bg-brand-600 hover:bg-brand-700 text-white px-4 py-2 rounded w-full" id="createClientBtn">
-          <span id="createClientText">{{ t('form.create') }}</span>
-          <i class="fas fa-spinner fa-spin" id="createClientSpinner" style="display:none;"></i>
-        </button>
-      </form>
-    </div>
-  </div>
-
-  <div class="card">
-    <div class="px-6 py-4 border-b flex justify-between items-center">
-      <h3 class="font-bold">{{ t('clients.title') }} ({{ clients|length }})</h3>
-      {% if clients|length > 0 %}
-      <div class="relative">
-        <i class="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm"></i>
-        <input id="clientSearch" type="text" data-action="filterClients" data-on="input" placeholder="Поиск по имени или IP"
-               class="pl-9 pr-3 py-2 border rounded text-sm w-56">
-      </div>
-      {% endif %}
-    </div>
-    {% if clients|length > 0 %}
-    <div class="w-full overflow-x-auto">
-    <table class="w-full" style="min-width: 760px;">
-      <thead class="bg-gray-50">
-        <tr>
-          <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('clients.name') }}</th>
-          <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('clients.status') }}</th>
-          <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('clients.expiration') }}</th>
-          <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('clients.traffic') }}</th>
-          <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('common.speed') }}</th>
-          <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('clients.last_handshake') }}</th>
-          <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">{{ t('clients.actions') }}</th>
-        </tr>
-      </thead>
-      <tbody id="clientsTableBody">
-        {% for client in clients %}
-        {# online_logins is authoritative: it is computed from traffic received from
-           the client, so a disconnected client drops out at once instead of
-           lingering until its handshake ages. #}
-        {% set is_online = client.name in online_logins %}
-        <tr class="border-t client-row hover:bg-gray-50" data-search="{{ (client.name ~ ' ' ~ client.client_ip)|lower }}" data-public-key="{{ client.public_key }}">
-          <td class="px-4 py-3">
-            <div class="font-medium text-gray-900">{{ client.name }}</div>
-            <div class="text-xs text-gray-400 font-mono">{{ client.client_ip }}</div>
-          </td>
-          <td class="px-4 py-3" data-status-cell data-client-name="{{ client.name }}" data-client-status="{{ client.status }}" data-last-handshake="{{ client.last_handshake }}">
-            {% if is_online %}
-              <span class="online-badge inline-flex items-center gap-1 px-2 py-1 bg-green-100 text-green-800 rounded text-xs"><i class="fas fa-wifi"></i>Online</span>
-            {% elseif client.status == 'active' %}
-              <span class="status-badge inline-flex items-center gap-1 px-2 py-1 bg-gray-100 text-gray-600 rounded text-xs"><i class="fas fa-circle text-[7px]"></i>{{ t('status.active') }}</span>
-            {% else %}
-              <span class="status-badge inline-flex items-center gap-1 px-2 py-1 bg-red-100 text-red-800 rounded text-xs"><i class="fas fa-ban"></i>{{ t('status.disabled') }}</span>
-            {% endif %}
-          </td>
-          <td class="px-4 py-3 text-sm">
-            {% if client.expires_at %}
-              {% set diff_days = ((client.expires_at|date('U') - "now"|date('U')) / 86400)|round %}
-              {% if diff_days < 0 %}
-                <span class="inline-flex items-center gap-1 px-2 py-1 bg-red-100 text-red-800 rounded text-xs"><i class="fas fa-exclamation-circle"></i>{{ t('clients.expired') }}</span>
-              {% elseif diff_days <= 7 %}
-                <span class="inline-flex items-center gap-1 px-2 py-1 bg-yellow-100 text-yellow-800 rounded text-xs"><i class="fas fa-clock"></i>{{ diff_days }} {{ t('common.days') }}</span>
-              {% else %}
-                <span class="text-gray-600">{{ client.expires_at|date('Y-m-d') }}</span>
-              {% endif %}
-            {% else %}
-              <span class="text-green-500 text-lg" title="{{ t('clients.never_expires') }}">&infin;</span>
-            {% endif %}
-          </td>
-          <td class="px-4 py-3 text-xs">
-            <div class="text-gray-600 font-mono whitespace-nowrap">&uarr;{{ client.bytes_sent|default(0)|bytes_format }} &darr;{{ client.bytes_received|default(0)|bytes_format }}</div>
-            {% if client.traffic_limit %}
-              {% set total_traffic = (client.bytes_sent|default(0) + client.bytes_received|default(0)) %}
-              {% set percentage = ((total_traffic / client.traffic_limit) * 100)|round %}
-              {% set bar_color = percentage >= 100 ? 'bg-red-500' : (percentage >= 80 ? 'bg-yellow-500' : 'bg-green-500') %}
-              <div class="mt-1" style="width: 7rem; max-width: 7rem;">
-                <div class="h-1.5 bg-gray-200 rounded-full overflow-hidden">
-                  <div class="{{ bar_color }} h-1.5" style="width: {{ percentage > 100 ? 100 : percentage }}%"></div>
-                </div>
-                <div class="text-[10px] text-gray-400 mt-0.5 whitespace-nowrap">{{ total_traffic|bytes_format }} / {{ client.traffic_limit|bytes_format }}{% if percentage >= 80 %} &middot; {{ percentage }}%{% endif %}</div>
-              </div>
-            {% else %}
-              <div class="text-[10px] text-gray-400 mt-0.5">{{ t('clients.unlimited') }}</div>
-            {% endif %}
-          </td>
-          <td class="px-4 py-3 text-xs">
-            <div id="client-speed-{{ client.id }}" class="font-mono leading-tight whitespace-nowrap">
-              <div class="text-green-600">&uarr;{{ ((client.speed_up|default(0) * 8) / 1000000)|number_format(2) }} Mbit</div>
-              <div class="text-blue-600">&darr;{{ ((client.speed_down|default(0) * 8) / 1000000)|number_format(2) }} Mbit</div>
-            </div>
-          </td>
-          <td class="px-4 py-3 text-xs whitespace-nowrap" data-hs-cell>
-            {% if client.last_handshake %}
-              <span class="text-gray-600 block">{{ client.last_handshake|split(' ')|first }}</span>
-              <span class="text-gray-400 block">{{ client.last_handshake|split(' ')|last }}</span>
-            {% else %}
-              <span class="text-gray-400">{{ t('clients.never') }}</span>
-            {% endif %}
-          </td>
-          <td class="px-4 py-3 text-right whitespace-nowrap">
-            <a href="/clients/{{ client.id }}" class="text-brand-600 hover:text-brand-800 px-1.5" title="{{ t('servers.view') }}" aria-label="{{ t('servers.view') }}"><i class="fas fa-eye"></i></a>
-            <button type="button" class="text-blue-600 hover:text-blue-800 px-1.5" data-action="diagnoseClient" data-client-id="{{ client.id }}" title="Диагностика" aria-label="Диагностика"><i class="fas fa-stethoscope"></i></button>
-            {% if client.status == 'active' %}
-              <form method="POST" action="/clients/{{ client.id }}/revoke" style="display:inline;">
-                <button type="button" class="text-orange-600 hover:text-orange-800 px-1.5" data-confirm="{{ t('clients.revoke_confirm') }}" title="{{ t('clients.revoke') }}" aria-label="{{ t('clients.revoke') }}"><i class="fas fa-user-slash"></i></button>
-              </form>
-            {% else %}
-              <form method="POST" action="/clients/{{ client.id }}/restore" style="display:inline;">
-                <button type="submit" class="text-green-600 hover:text-green-800 px-1.5" title="{{ t('clients.restore') }}" aria-label="{{ t('clients.restore') }}"><i class="fas fa-user-check"></i></button>
-              </form>
-            {% endif %}
-            <form method="POST" action="/clients/{{ client.id }}/delete" style="display:inline;">
-              <button type="button" class="text-red-600 hover:text-red-800 px-1.5" data-confirm="{{ t('clients.delete_confirm') }}" title="{{ t('clients.delete') }}" aria-label="{{ t('clients.delete') }}"><i class="fas fa-trash"></i></button>
-            </form>
-          </td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-    </div>
-    <div id="clientsNoResults" class="p-6 text-center text-gray-400 hidden">Ничего не найдено</div>
-    {% else %}
-    <div class="p-12 text-center text-gray-500">{{ t('clients.no_clients') }}</div>
-    {% endif %}
   </div>
 </div>
 
@@ -1590,7 +1526,7 @@ if (document.querySelector('[id^="client-speed-"]')) {
   setInterval(updateClientSpeeds, 60000);
 }
 
-// Live online status: poll the active member's awg0 so the status badge and
+// Live online status: poll both AWG generations so the status badge and
 // last-handshake reflect reality without waiting for the collector cycle.
 const STATUS_LABELS = { active: '{{ t('status.active') }}', disabled: '{{ t('status.disabled') }}' };
 
@@ -1711,8 +1647,10 @@ async function updateOnlineStatus() {
   }
 }
 
-// Poll every 5 seconds
-setInterval(updateOnlineStatus, 15000);
+if (document.querySelector('#clientsTableBody .client-row')) {
+  updateOnlineStatus();
+  setInterval(updateOnlineStatus, 15000);
+}
 {% endif %}
 
 // Client search and diagnostics work on any server state (were only defined
@@ -1748,6 +1686,7 @@ async function diagnoseClient() {
       `Клиент: ${data.client.name}`,
       `IP: ${data.client.ip || '-'}`,
       `Протокол: ${data.client.protocol_slug || '-'}`,
+      `Версия AWG: ${data.client.awg_version || '-'}`,
       `Контейнер: ${data.client.container_name || '-'}`
     ];
     const checks = (data.checks || []).map(check => {

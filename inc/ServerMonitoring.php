@@ -302,6 +302,17 @@ if [ "$is_wg" = "1" ]; then
 	    fi
 	  fi
 	fi
+
+# Parallel AWG 3.1 interface. It is deliberately a separate container because
+# HeaderProtectionKey cannot coexist with legacy 2.0 clients on awg0.
+if docker inspect amnezia-awg31 >/dev/null 2>&1; then
+  echo "awg31_present=1"
+  dump31="$(docker exec amnezia-awg31 awg show awg31 dump 2>/dev/null || true)"
+  echo "awg31_peer_count=$(printf '%s\n' "$dump31" | awk 'NR > 1 {count++} END {print count+0}')"
+else
+  echo "awg31_present=0"
+  echo "awg31_peer_count=0"
+fi
 SH;
 
         $watchdogLookbackSeconds = max(0, (int) Config::get('ALERT_WATCHDOG_RESTART_LOOKBACK_SECONDS', '900'));
@@ -423,20 +434,32 @@ SH;
             // member that stays short, and PoolFront excludes it as a backend.
             $ppPool = (int) ($this->serverData['pool_id'] ?? 0);
             if ($ppPool > 0 && $iface !== '') {
+                $peerServerIds = ServerPool::peerGroupServerIds($ppPool);
+                $in = implode(',', array_fill(0, count($peerServerIds), '?'));
                 $ppSt = DB::conn()->prepare(
-                    "SELECT COUNT(DISTINCT vc.public_key) FROM vpn_clients vc
-                     JOIN vpn_servers s ON s.id = vc.server_id
-                     WHERE s.pool_id = ? AND vc.status = 'active' AND vc.public_key <> '' AND vc.client_ip <> ''"
+                    "SELECT COUNT(DISTINCT public_key) FROM vpn_clients
+                     WHERE server_id IN ($in) AND status = 'active' AND public_key <> '' AND client_ip <> ''
+                       AND COALESCE(awg_version, '2.0') = '2.0'"
                 );
-                $ppSt->execute([$ppPool]);
+                $ppSt->execute($peerServerIds);
                 $ppExpected = (int) $ppSt->fetchColumn();
-                if ($ppExpected > 0) {
+                $pp31 = DB::conn()->prepare(
+                    "SELECT COUNT(DISTINCT public_key) FROM vpn_clients
+                     WHERE server_id IN ($in) AND status = 'active' AND public_key <> '' AND client_ip <> ''
+                       AND awg_version = '3.1'"
+                );
+                $pp31->execute($peerServerIds);
+                $ppExpected31 = (int) $pp31->fetchColumn();
+                $peerCount31 = (int) ($values['awg31_peer_count'] ?? 0);
+                $awg31Present = (int) ($values['awg31_present'] ?? 0) === 1;
+                if ($ppExpected > 0 || $ppExpected31 > 0 || $awg31Present) {
+                    $peerSetsOk = $peerCount >= $ppExpected && $awg31Present && $peerCount31 >= $ppExpected31;
                     $checks['pool_peers'] = [
-                        'ok' => $peerCount >= $ppExpected,
+                        'ok' => $peerSetsOk,
                         'severity' => 'warning',
-                        'message' => $peerCount >= $ppExpected
-                            ? "Пиры пула на месте: {$peerCount}/{$ppExpected}"
-                            : "Неполный набор пиров пула: {$peerCount}/{$ppExpected} — нужен ре-синк (панель сделает его автоматически)",
+                        'message' => $peerSetsOk
+                            ? "Пиры пула на месте: AWG2 {$peerCount}/{$ppExpected}, AWG3.1 {$peerCount31}/{$ppExpected31}"
+                            : "Неполный набор пиров: AWG2 {$peerCount}/{$ppExpected}, AWG3.1 {$peerCount31}/{$ppExpected31} (sidecar " . ($awg31Present ? 'есть' : 'отсутствует') . ') — нужен ре-синк',
                     ];
                 }
             }
@@ -453,15 +476,16 @@ SH;
             // outage rather than a migration in progress.
             $poolId = (int) ($this->serverData['pool_id'] ?? 0);
             if ($poolId > 0) {
+                $peerServerIds = ServerPool::peerGroupServerIds($poolId);
+                $in = implode(',', array_fill(0, count($peerServerIds), '?'));
                 $st = DB::conn()->prepare(
                     "SELECT COUNT(*) AS total,
                             SUM(vc.last_handshake IS NOT NULL
                                 AND vc.last_handshake >= DATE_SUB(NOW(), INTERVAL ? SECOND)) AS fresh
                      FROM vpn_clients vc
-                     JOIN vpn_servers s ON s.id = vc.server_id
-                     WHERE s.pool_id = ? AND vc.status = 'active'"
+                     WHERE vc.server_id IN ($in) AND vc.status = 'active'"
                 );
-                $st->execute([$handshakeStaleSeconds, $poolId]);
+                $st->execute(array_merge([$handshakeStaleSeconds], $peerServerIds));
                 $row = $st->fetch(PDO::FETCH_ASSOC) ?: [];
                 $poolTotal = (int) ($row['total'] ?? 0);
                 $poolFresh = (int) ($row['fresh'] ?? 0);
@@ -588,28 +612,24 @@ SH;
      */
     private function refreshHandshakes(): void
     {
-        $container = $this->resolveContainerForProtocol('awg2');
-        if ($container === '') {
-            $container = trim((string) ($this->serverData['container_name'] ?? 'amnezia-awg2')) ?: 'amnezia-awg2';
-        }
-        // Reuse the same interface dump getClientStats reads (populate the shared
-        // per-container cache once) instead of a second SSH round-trip.
-        if (!array_key_exists($container, $this->wireguardDumpCache)) {
-            $this->wireguardDumpCache[$container] = $this->fetchWireguardDump($container);
-        }
-        $peers = $this->wireguardDumpCache[$container];
-        if (empty($peers)) {
-            return;
-        }
         $upd = DB::conn()->prepare(
             "UPDATE vpn_clients SET last_handshake = ?
              WHERE public_key = ? AND (last_handshake IS NULL OR last_handshake < ?)"
         );
-        foreach ($peers as $pub => $info) {
-            $hs = (int) ($info['handshake_ts'] ?? 0);
-            if ((string) $pub !== '' && $hs > 0) {
-                $date = date('Y-m-d H:i:s', $hs);
-                $upd->execute([$date, (string) $pub, $date]);
+        $legacy = $this->resolveContainerForProtocol('awg2');
+        if ($legacy === '') {
+            $legacy = trim((string) ($this->serverData['container_name'] ?? 'amnezia-awg2')) ?: 'amnezia-awg2';
+        }
+        foreach (array_unique([$legacy, 'amnezia-awg31']) as $container) {
+            if (!array_key_exists($container, $this->wireguardDumpCache)) {
+                $this->wireguardDumpCache[$container] = $this->fetchWireguardDump($container);
+            }
+            foreach ($this->wireguardDumpCache[$container] as $pub => $info) {
+                $hs = (int) ($info['handshake_ts'] ?? 0);
+                if ((string) $pub !== '' && $hs > 0) {
+                    $date = date('Y-m-d H:i:s', $hs);
+                    $upd->execute([$date, (string) $pub, $date]);
+                }
             }
         }
     }
@@ -707,7 +727,9 @@ SH;
         );
 
         if ($isWireguardClient) {
-            $containerName = $this->resolveContainerForProtocol($protocolSlug);
+            $containerName = (($client['awg_version'] ?? '2.0') === '3.1')
+                ? 'amnezia-awg31'
+                : $this->resolveContainerForProtocol($protocolSlug);
         }
 
         if (empty($publicKey) || !$isWireguardClient) {
@@ -992,8 +1014,16 @@ SH;
         $db = DB::conn();
         $maxPointsPerClient = max(1, min(2000, $maxPointsPerClient));
 
-        $clientStmt = $db->prepare('SELECT id FROM vpn_clients WHERE server_id = ? ORDER BY id');
-        $clientStmt->execute([$serverId]);
+        $poolStmt = $db->prepare('SELECT pool_id FROM vpn_servers WHERE id = ?');
+        $poolStmt->execute([$serverId]);
+        $poolId = (int) $poolStmt->fetchColumn();
+        $serverIds = $poolId > 0 ? ServerPool::peerGroupServerIds($poolId) : [$serverId];
+        if (!$serverIds) {
+            $serverIds = [$serverId];
+        }
+        $in = implode(',', array_fill(0, count($serverIds), '?'));
+        $clientStmt = $db->prepare("SELECT id FROM vpn_clients WHERE server_id IN ($in) ORDER BY id");
+        $clientStmt->execute($serverIds);
         $clientIds = array_map('intval', $clientStmt->fetchAll(PDO::FETCH_COLUMN));
         if (empty($clientIds)) {
             return [];
@@ -1247,7 +1277,7 @@ SH;
     private function fetchWireguardDump(string $containerName): array
     {
         $containerArg = escapeshellarg($containerName);
-        $cmd = "docker exec {$containerArg} wg show all dump 2>/dev/null || docker exec {$containerArg} awg show all dump 2>/dev/null";
+        $cmd = "if docker inspect {$containerArg} >/dev/null 2>&1; then docker exec {$containerArg} awg show all dump 2>/dev/null || docker exec {$containerArg} wg show all dump 2>/dev/null || true; fi";
         $result = $this->execSSH($cmd);
 
         if (!$result || trim($result) === '') {
@@ -1473,16 +1503,18 @@ SH);
         $window = self::onlineWindow();
         $db = DB::conn();
         if ($poolId > 0) {
+            $poolIds = ServerPool::peerGroupPoolIds($poolId);
+            $in = implode(',', array_fill(0, count($poolIds), '?'));
             $stmt = $db->prepare(
                 "SELECT DISTINCT vc.name
                  FROM vpn_clients vc
                  JOIN client_traffic_counters t ON t.client_id = vc.id
                  JOIN vpn_servers s ON s.id = t.server_id
-                 WHERE s.pool_id = ? AND vc.status = 'active'
+                 WHERE s.pool_id IN ($in) AND vc.status = 'active'
                    AND t.last_rx_at IS NOT NULL
                    AND t.last_rx_at >= DATE_SUB(NOW(), INTERVAL ? SECOND)"
             );
-            $stmt->execute([$poolId, $window]);
+            $stmt->execute(array_merge($poolIds, [$window]));
         } else {
             $stmt = $db->prepare(
                 "SELECT DISTINCT vc.name
@@ -1513,12 +1545,14 @@ SH);
         // not-yet-collected clients read offline instead of falling back to the
         // handshake window.
         if ($poolId > 0) {
+            $poolIds = ServerPool::peerGroupPoolIds($poolId);
+            $in = implode(',', array_fill(0, count($poolIds), '?'));
             $stmt = DB::conn()->prepare(
                 'SELECT COUNT(*) FROM client_traffic_counters t
                  JOIN vpn_servers s ON s.id = t.server_id
-                 WHERE s.pool_id = ? AND t.last_rx_at IS NOT NULL'
+                 WHERE s.pool_id IN (' . $in . ') AND t.last_rx_at IS NOT NULL'
             );
-            $stmt->execute([$poolId]);
+            $stmt->execute($poolIds);
         } else {
             $stmt = DB::conn()->prepare(
                 'SELECT COUNT(*) FROM client_traffic_counters WHERE server_id = ? AND last_rx_at IS NOT NULL'
@@ -1557,15 +1591,16 @@ SH);
         // One tunable source of truth, shared with the UI (see onlineWindow()).
         $window = self::onlineWindow();
         if ($poolId > 0) {
+            $serverIds = ServerPool::peerGroupServerIds($poolId);
+            $in = implode(',', array_fill(0, count($serverIds), '?'));
             $stmt = $db->prepare("
                 SELECT vc.name FROM vpn_clients vc
-                JOIN vpn_servers s ON s.id = vc.server_id
-                WHERE s.pool_id = ?
+                WHERE vc.server_id IN ($in)
                   AND vc.status = 'active'
                   AND vc.last_handshake IS NOT NULL
                   AND vc.last_handshake >= DATE_SUB(NOW(), INTERVAL ? SECOND)
             ");
-            $stmt->execute([$poolId, $window]);
+            $stmt->execute(array_merge($serverIds, [$window]));
         } else {
             $stmt = $db->prepare("
                 SELECT vc.name FROM vpn_clients vc

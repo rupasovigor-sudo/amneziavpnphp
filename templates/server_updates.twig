@@ -1,0 +1,197 @@
+{% extends "layout.twig" %}
+{% block title %}Обновления — {{ server.name }}{% endblock %}
+
+{% block content %}
+<div class="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
+  <div class="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+    <div>
+      <a href="/updates" class="text-sm text-brand-600 hover:text-brand-800"><i class="fas fa-arrow-left mr-1"></i>Все серверы</a>
+      <h1 class="text-2xl font-bold text-gray-900 mt-2">Обновления — {{ server.name }}</h1>
+      <div class="flex items-center gap-2 mt-1 text-sm text-gray-500">
+        <span class="font-mono">{{ server.host }}</span>
+        {% if server.role|default('vpn') == 'front' %}<span class="badge-gray">FRONT</span>{% endif %}
+      </div>
+    </div>
+    {% if server.role|default('vpn') == 'front' %}
+      <a href="/pools" class="btn-primary"><i class="fas fa-layer-group"></i>Управление фронтом</a>
+    {% else %}
+      <a href="/servers/{{ server.id }}" class="btn-primary"><i class="fas fa-server"></i>Открыть сервер</a>
+    {% endif %}
+  </div>
+
+  <div class="card p-6" id="updBox">
+    <div class="flex items-center justify-between mb-3">
+      <h2 class="section-title mb-0"><i class="fas fa-box"></i>Обновления пакетов</h2>
+      <span id="updBadge" class="px-2 py-1 rounded text-sm bg-gray-200 text-gray-600">Загрузка…</span>
+    </div>
+    <dl id="updInfo" class="text-sm text-gray-600 space-y-2"></dl>
+    <p id="updStamp" class="mt-2 text-xs text-gray-400"></p>
+    <p id="updMsg" class="mt-3 text-sm text-gray-600"></p>
+
+    <div class="mt-5 flex items-center gap-2 flex-wrap">
+      <button type="button" id="updRefreshBtn" class="px-3 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded text-sm"><i class="fas fa-rotate mr-1"></i>Проверить</button>
+      <button type="button" class="js-update-action px-3 py-2 bg-brand-600 hover:bg-brand-700 text-white rounded text-sm" data-update-action="os"><i class="fas fa-download mr-1"></i>Пакеты ОС</button>
+      <button type="button" class="js-update-action px-3 py-2 bg-brand-600 hover:bg-brand-700 text-white rounded text-sm" data-update-action="kernel"><i class="fas fa-microchip mr-1"></i>Ядро</button>
+      <button type="button" class="js-update-action px-3 py-2 bg-brand-600 hover:bg-brand-700 text-white rounded text-sm" data-update-action="docker"><i class="fab fa-docker mr-1"></i>Docker</button>
+      {% if server.role|default('vpn') != 'front' %}
+      <button type="button" class="js-update-action px-3 py-2 bg-brand-600 hover:bg-brand-700 text-white rounded text-sm" data-update-action="awg2"><i class="fas fa-hammer mr-1"></i>AmneziaWG</button>
+      <button type="button" class="js-update-action px-3 py-2 bg-brand-600 hover:bg-brand-700 text-white rounded text-sm" data-update-action="warp"><i class="fas fa-cloud mr-1"></i>WARP</button>
+      {% endif %}
+      <button type="button" class="js-update-action px-3 py-2 bg-red-700 hover:bg-red-800 text-white rounded text-sm" data-update-action="reboot"><i class="fas fa-power-off mr-1"></i>Перезагрузить</button>
+    </div>
+
+    {% if server.role|default('vpn') == 'front' %}
+      <p class="mt-3 text-sm text-gray-500">FRONT передаёт клиентский UDP-трафик. Обновление Docker или перезагрузка могут кратковременно прервать входящие подключения.</p>
+    {% else %}
+      <p class="mt-3 text-sm text-gray-500">Docker/containerd обновляются отдельно: перезапуск Docker кратковременно прерывает туннели. Автоматической перезагрузки нет.</p>
+    {% endif %}
+
+    <details id="updHistBox" class="mt-5" style="display:none">
+      <summary class="text-sm font-medium text-gray-700 cursor-pointer">История операций</summary>
+      <div id="updHist" class="mt-2 space-y-2 text-sm"></div>
+    </details>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script nonce="{{ csp_nonce }}">
+(function () {
+  const serverId = {{ server.id }};
+  const isFront = {{ server.role|default('vpn') == 'front' ? 'true' : 'false' }};
+  const badge = document.getElementById('updBadge');
+  const info = document.getElementById('updInfo');
+  const message = document.getElementById('updMsg');
+  const stamp = document.getElementById('updStamp');
+  const refresh = document.getElementById('updRefreshBtn');
+  const actionButtons = () => document.querySelectorAll('.js-update-action');
+  let pollTimer = null;
+
+  const row = (label, value) => `<div class="flex justify-between gap-4 border-b border-gray-100 pb-1"><dt>${label}</dt><dd class="font-medium text-gray-800 text-right">${value}</dd></div>`;
+  const setBadge = (text, classes) => { badge.textContent = text; badge.className = 'px-2 py-1 rounded text-sm ' + classes; };
+
+  function renderAudit(payload) {
+    const audit = payload.audit || {};
+    if (!audit.ok) {
+      setBadge('нет данных', 'bg-red-100 text-red-700');
+      info.innerHTML = row('Ошибка', escapeHtml(audit.error || 'Аудит не выполнен'));
+      return;
+    }
+    const actionable = audit.actionable != null ? audit.actionable : (audit.upgradable || 0);
+    if (actionable > 0 || audit.reboot_required) setBadge(actionable + ' обновлений', 'bg-yellow-100 text-yellow-800');
+    else setBadge('всё актуально', 'bg-green-100 text-green-700');
+
+    let html = row('Пакетов к обновлению', actionable + (audit.security ? ` <span class="text-red-600">security: ${audit.security}</span>` : ''));
+    if (audit.phased) html += row('Отложены Ubuntu', audit.phased + ' (phased rollout)');
+    if (audit.kernel_upgradable) html += row('Ядро', `<span class="text-amber-700">${audit.kernel_upgradable} — нужен full-upgrade</span>`);
+    if (audit.docker_upgradable) html += row('Docker/containerd', `<span class="text-amber-700">${audit.docker_upgradable} удерживаются</span>`);
+    html += row('Текущее ядро', escapeHtml(audit.kernel || '—'));
+    html += row('Docker', escapeHtml(audit.docker_version || '—'));
+    html += row('Перезагрузка', audit.reboot_required ? '<span class="text-red-600">требуется</span>' : '<span class="text-green-700">не требуется</span>');
+    if (audit.lists_age_h != null) html += row('Списки пакетов', audit.lists_age_h + ' ч назад');
+    if (!isFront) {
+      html += row('AWG 2.0', audit.awg2_running ? '<span class="text-green-700">работает</span>' : '<span class="text-red-600">не работает</span>');
+      html += row('AWG 3.1', audit.awg31_ready ? `<span class="text-green-700">v${escapeHtml(audit.awg31_version || '3.1')} · UDP ${audit.awg31_port || '—'}</span>` : '<span class="text-red-600">не готова</span>');
+      html += row('WARP', audit.warp_active ? '<span class="text-green-700">работает</span>' : '<span class="text-gray-500">не активен</span>');
+    }
+    info.innerHTML = html;
+    if (payload.is_active) actionButtons().forEach(button => button.classList.add('ring-2', 'ring-red-400'));
+  }
+
+  function renderHistory(history) {
+    const box = document.getElementById('updHistBox');
+    const list = document.getElementById('updHist');
+    if (!history || !history.length) { box.style.display = 'none'; return; }
+    box.style.display = 'block';
+    list.innerHTML = history.map(item => `<div class="border-l-2 ${item.state === 'done' ? 'border-green-400' : 'border-red-400'} pl-3"><b>${escapeHtml(item.action)}</b> <span class="text-gray-400">${escapeHtml(item.finished_at || '')}</span><div>${escapeHtml(item.message || '')}</div></div>`).join('');
+  }
+
+  function showState(state) {
+    if (!state || !state.state) return;
+    if (state.state === 'running') {
+      message.innerHTML = '<i class="fas fa-circle-notch fa-spin mr-1"></i>' + escapeHtml(state.message || 'Обновление выполняется…');
+      actionButtons().forEach(button => button.disabled = true);
+      startPolling();
+    } else if (state.state === 'done') {
+      message.innerHTML = '<span class="text-green-700">✅ ' + escapeHtml(state.message || 'Готово') + '</span>';
+    } else if (state.state === 'failed') {
+      message.innerHTML = '<span class="text-red-700">❌ ' + escapeHtml(state.message || 'Ошибка') + '</span>';
+    }
+  }
+
+  async function loadAudit(forceRefresh) {
+    const original = refresh.innerHTML;
+    refresh.disabled = true;
+    if (forceRefresh) refresh.innerHTML = '<i class="fas fa-circle-notch fa-spin mr-1"></i>Проверяю…';
+    try {
+      const response = await fetch(`/servers/${serverId}/updates/audit${forceRefresh ? '?refresh=1' : ''}`, { credentials: 'same-origin' });
+      const payload = await response.json();
+      if (!response.ok || payload.success === false) throw new Error(payload.error || 'Ошибка аудита');
+      renderAudit(payload); renderHistory(payload.history); showState(payload.state);
+      stamp.textContent = 'Проверено: ' + new Date().toLocaleTimeString();
+    } catch (error) {
+      setBadge('ошибка', 'bg-red-100 text-red-700');
+      message.textContent = error.message;
+    } finally {
+      refresh.disabled = false; refresh.innerHTML = original;
+    }
+  }
+
+  const warnings = {
+    os: ['Обновить пакеты ОС?', 'Docker удерживается, автоматической перезагрузки не будет.'],
+    kernel: ['Обновить ядро?', 'Будет выполнен full-upgrade. Для запуска нового ядра затем потребуется перезагрузка.'],
+    docker: ['Обновить Docker?', 'Docker-демон перезапустится, сервисы на сервере кратковременно остановятся.'],
+    awg2: ['Обновить AmneziaWG?', 'Контейнеры AWG будут пересобраны; VPN кратковременно прервётся.'],
+    warp: ['Переустановить WARP?', 'Выход через WARP будет временно недоступен.'],
+    reboot: ['Перезагрузить сервер?', 'Сервер и обслуживаемый им трафик будут временно недоступны.']
+  };
+
+  async function runAction(action, force) {
+    actionButtons().forEach(button => button.disabled = true);
+    try {
+      const response = await fetch(`/servers/${serverId}/updates/os`, {
+        method: 'POST', credentials: 'same-origin', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({action, force: !!force})
+      });
+      const payload = await response.json();
+      if (response.status === 409 && payload.needs_force) {
+        actionButtons().forEach(button => button.disabled = false);
+        const confirmed = await showConfirmModal(payload.error + '\n\nВыполнить принудительно?', 'Активный сервер', 'Выполнить');
+        if (confirmed) runAction(action, true);
+        return;
+      }
+      if (!response.ok || !payload.success) throw new Error(payload.error || 'Ошибка запуска');
+      message.innerHTML = '<i class="fas fa-circle-notch fa-spin mr-1"></i>' + escapeHtml(payload.message || 'Задача запущена');
+      startPolling();
+    } catch (error) {
+      actionButtons().forEach(button => button.disabled = false);
+      showToast(error.message, 'error');
+    }
+  }
+
+  function startPolling() {
+    if (pollTimer) return;
+    pollTimer = setInterval(async () => {
+      try {
+        const response = await fetch(`/servers/${serverId}/updates/status`, { credentials: 'same-origin' });
+        const payload = await response.json();
+        if (!payload.success) return;
+        if ((payload.state || {}).state !== 'running') {
+          clearInterval(pollTimer); pollTimer = null;
+          actionButtons().forEach(button => button.disabled = false);
+          showState(payload.state); renderHistory(payload.history); loadAudit(false);
+        } else showState(payload.state);
+      } catch (_) {}
+    }, 5000);
+  }
+
+  refresh.addEventListener('click', () => loadAudit(true));
+  actionButtons().forEach(button => button.addEventListener('click', async () => {
+    const action = button.dataset.updateAction;
+    const warning = warnings[action] || ['Выполнить?', ''];
+    if (await showConfirmModal(warning[1], warning[0], 'Выполнить')) runAction(action, false);
+  }));
+  loadAudit(false);
+})();
+</script>
+{% endblock %}

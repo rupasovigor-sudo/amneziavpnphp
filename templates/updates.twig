@@ -6,7 +6,7 @@
   <div class="mb-6 flex items-center justify-between flex-wrap gap-2">
     <div>
       <h1 class="text-2xl font-bold text-gray-900">Обновления серверов</h1>
-      <p class="text-gray-600">Состояние пакетов, awg2 и WARP по всему парку</p>
+      <p class="text-gray-600">Состояние пакетов, AWG 2.0/3.1 и WARP по всему парку</p>
     </div>
     <div class="flex items-center gap-2 flex-wrap">
       <button type="button" id="fleetRefresh" class="px-4 py-2 bg-gray-600 text-white rounded-md text-sm">
@@ -27,13 +27,14 @@
           <th class="px-4 py-3 text-left">Пакеты</th>
           <th class="px-4 py-3 text-left">Перезагрузка</th>
           <th class="px-4 py-3 text-left">awg2</th>
+          <th class="px-4 py-3 text-left">AWG 3.1</th>
           <th class="px-4 py-3 text-left">WARP</th>
           <th class="px-4 py-3 text-left">Проверено</th>
           <th class="px-4 py-3 text-left"></th>
         </tr>
       </thead>
       <tbody id="fleetBody">
-        <tr><td colspan="8" class="px-4 py-6 text-center text-gray-400">Загрузка…</td></tr>
+        <tr><td colspan="9" class="px-4 py-6 text-center text-gray-400">Загрузка…</td></tr>
       </tbody>
     </table>
   </div>
@@ -55,7 +56,7 @@
 
   function render(rows) {
     if (!rows || !rows.length) {
-      body.innerHTML = '<tr><td colspan="8" class="px-4 py-6 text-center text-gray-400">Серверов нет</td></tr>';
+      body.innerHTML = '<tr><td colspan="9" class="px-4 py-6 text-center text-gray-400">Серверов нет</td></tr>';
       return;
     }
     body.innerHTML = rows.map(r => {
@@ -65,21 +66,27 @@
       const pkg = act == null ? '—'
         : (act === 0 ? '<span class="text-green-700">0</span>' + phased
           : `<span class="${a.security ? 'text-red-700 font-semibold' : 'text-yellow-700'}">${act}${a.security ? ' · sec ' + a.security : ''}</span>` + phased);
-      const role = r.is_active
-        ? '<span class="px-2 py-0.5 rounded text-xs bg-green-100 text-green-700">ACTIVE</span>'
-        : (r.pool_id ? '<span class="px-2 py-0.5 rounded text-xs bg-gray-200 text-gray-600">STANDBY</span>' : '<span class="text-gray-400 text-xs">—</span>');
+      const role = r.role === 'front'
+        ? '<span class="px-2 py-0.5 rounded text-xs bg-brand-100 text-brand-700">FRONT</span>'
+        : (r.is_active
+          ? '<span class="px-2 py-0.5 rounded text-xs bg-green-100 text-green-700">ACTIVE</span>'
+          : (r.pool_id ? '<span class="px-2 py-0.5 rounded text-xs bg-gray-200 text-gray-600">STANDBY</span>' : '<span class="text-gray-400 text-xs">—</span>'));
       const running = (r.state && r.state.state === 'running')
         ? ' <i class="fas fa-circle-notch fa-spin text-brand-600" title="идёт задача"></i>' : '';
       return `<tr class="border-t">
-        <td class="px-4 py-3"><a href="/servers/${r.id}" class="text-brand-700 hover:underline">${esc(r.name)}</a>${running}
+        <td class="px-4 py-3"><a href="${r.role === 'front' ? '/updates/server/' + r.id : '/servers/' + r.id}" class="text-brand-700 hover:underline">${esc(r.name)}</a>${running}
           <div class="text-gray-400 font-mono text-xs">${esc(r.host)}</div></td>
         <td class="px-4 py-3">${role}</td>
         <td class="px-4 py-3">${pkg}</td>
         <td class="px-4 py-3">${a.reboot_required == null ? '—' : (a.reboot_required ? '<span class="text-red-600">нужна</span>' : '<span class="text-green-700">нет</span>')}</td>
         <td class="px-4 py-3">${yes(a.awg2_update_available, 'актуален', 'обновить')}</td>
+        <td class="px-4 py-3">${a.awg31_ready == null ? '<span class="text-gray-400">—</span>'
+          : (a.awg31_ready
+            ? `<span class="text-green-700">v${esc(a.awg31_version || '3.1')}</span><div class="text-xs text-gray-400">UDP ${a.awg31_port || '—'} · ${a.awg31_peers || 0} peer</div>`
+            : '<span class="text-red-600">не готова</span>')}</td>
         <td class="px-4 py-3">${yes(a.warp_update_available, 'актуальны', 'обновить')}</td>
         <td class="px-4 py-3 text-gray-500">${esc((a.audited_at || '').slice(0, 16))}</td>
-        <td class="px-4 py-3"><a href="/servers/${r.id}" class="px-2 py-1 bg-gray-600 text-white rounded text-xs">Открыть</a></td>
+        <td class="px-4 py-3"><a href="/updates/server/${r.id}" class="px-2 py-1 bg-gray-600 hover:bg-gray-700 text-white rounded text-xs">Управление</a></td>
       </tr>`;
     }).join('');
   }
@@ -101,7 +108,7 @@
         if (refresh && window.showToast) showToast('Проверено серверов: ' + (d.servers || []).length, 'success');
       })
       .catch(e => {
-        body.innerHTML = `<tr><td colspan="8" class="px-4 py-6 text-center text-red-600">Ошибка: ${esc(e.message)}</td></tr>`;
+        body.innerHTML = `<tr><td colspan="9" class="px-4 py-6 text-center text-red-600">Ошибка: ${esc(e.message)}</td></tr>`;
       })
       .finally(() => { btn.disabled = false; btn.innerHTML = orig; });
   }

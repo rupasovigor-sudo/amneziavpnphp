@@ -828,7 +828,7 @@ BASH;
     }
 
     /**
-     * Live client summary from the awg2 interface: how many peers have handshaked
+     * Live client summary from both AWG generations: how many peers handshaked
      * recently. A real handshake proves the server actually receives client UDP
      * (unlike a synthetic server-to-server probe), so this is the honest
      * "is this node serving clients" signal.
@@ -837,45 +837,62 @@ BASH;
      */
     public function liveClientSummary(int $recentSeconds = 180): array
     {
-        $container = trim((string) ($this->data['container_name'] ?? 'amnezia-awg2')) ?: 'amnezia-awg2';
-        $dump = (string) $this->executeCommand(
-            'docker exec ' . escapeshellarg($container) . ' awg show awg0 dump 2>/dev/null '
-            . '|| docker exec ' . escapeshellarg($container) . ' wg show wg0 dump 2>/dev/null',
-            true
-        );
-        $lines = array_values(array_filter(explode("\n", trim($dump)), static fn($l) => trim($l) !== ''));
-
-        $now = time();
-        $total = 0;
-        $active = 0;
-        $lastHs = 0;
-        foreach ($lines as $i => $line) {
-            if ($i === 0) {
-                continue; // interface line (private/public key, listen-port, fwmark)
-            }
-            $f = explode("\t", $line);
-            if (count($f) < 5) {
-                continue;
-            }
-            $total++;
-            $hs = (int) $f[4];
-            if ($hs > 0) {
-                $lastHs = max($lastHs, $hs);
-                if (($now - $hs) <= $recentSeconds) {
-                    $active++;
-                }
-            }
-        }
+        $peers = $this->liveClientPeers(0);
+        $ages = array_values(array_filter(
+            array_map(static fn($p) => $p['handshake_age'] ?? null, $peers),
+            static fn($age) => $age !== null
+        ));
+        $active = count(array_filter($ages, static fn($age) => (int) $age <= $recentSeconds));
 
         return [
-            'total_peers' => $total,
+            'total_peers' => count($peers),
             'active_peers' => $active,
-            'last_handshake_age' => $lastHs > 0 ? ($now - $lastHs) : null,
+            'last_handshake_age' => $ages ? min($ages) : null,
         ];
     }
 
     /**
-     * Live per-peer state from awg0, keyed by public key:
+     * Parse `awg/wg show all dump` output, keyed by public key. The `all`
+     * format prefixes peer rows with the interface name.
+     */
+    private static function parseLivePeerDump(string $dump, ?int $now = null): array
+    {
+        $now ??= time();
+        $peers = [];
+        foreach (preg_split('/\r?\n/', trim($dump)) ?: [] as $line) {
+            $f = preg_split('/\s+/', trim($line));
+            if (!$f || count($f) < 8) {
+                continue; // empty or interface row
+            }
+            $pub = trim((string) ($f[1] ?? ''));
+            if ($pub === '' || $pub === '(none)') {
+                continue;
+            }
+            $hs = (int) ($f[5] ?? 0);
+            $endpoint = trim((string) ($f[3] ?? ''));
+            $endpointIp = null;
+            if ($endpoint !== '' && $endpoint !== '(none)') {
+                $endpointIp = preg_match('/^\[([^\]]+)\]:\d+$/', $endpoint, $em)
+                    ? $em[1]
+                    : preg_replace('/:\d+$/', '', $endpoint);
+            }
+            $info = [
+                'handshake_age' => $hs > 0 ? max(0, $now - $hs) : null,
+                'rx' => (int) ($f[6] ?? 0),
+                'tx' => (int) ($f[7] ?? 0),
+                'endpoint_ip' => $endpointIp,
+                'interface' => (string) ($f[0] ?? ''),
+            ];
+            $oldAge = $peers[$pub]['handshake_age'] ?? null;
+            if (!isset($peers[$pub]) || ($info['handshake_age'] !== null && ($oldAge === null || $info['handshake_age'] < $oldAge))) {
+                $peers[$pub] = $info;
+            }
+        }
+        return $peers;
+    }
+
+    /**
+     * Live per-peer state from legacy awg0 and parallel awg31, keyed by public key:
      * [pubkey => ['handshake_age' => int|null, 'rx' => int, 'tx' => int]].
      * Used to drive a live online indicator that doesn't wait for the
      * metrics-collector cycle.
@@ -895,42 +912,13 @@ BASH;
         }
 
         $container = trim((string) ($this->data['container_name'] ?? 'amnezia-awg2')) ?: 'amnezia-awg2';
-        $dump = (string) $this->executeCommand(
-            'docker exec ' . escapeshellarg($container) . ' awg show awg0 dump 2>/dev/null '
-            . '|| docker exec ' . escapeshellarg($container) . ' wg show wg0 dump 2>/dev/null',
-            true
-        );
-        $lines = array_values(array_filter(explode("\n", trim($dump)), static fn($l) => trim($l) !== ''));
-        $now = time();
-        $peers = [];
-        foreach ($lines as $i => $line) {
-            if ($i === 0) {
-                continue; // interface line
-            }
-            $f = explode("\t", $line);
-            if (count($f) < 7) {
-                continue;
-            }
-            $pub = trim($f[0]);
-            $hs = (int) $f[4];
-            if ($pub === '') {
-                continue;
-            }
-            // Endpoint = where the client's packets come from ("ip:port",
-            // "[v6]:port" or "(none)"): with a front it's the front's IP,
-            // otherwise the client's own address.
-            $endpoint = trim((string) $f[2]);
-            $endpointIp = null;
-            if ($endpoint !== '' && $endpoint !== '(none)') {
-                $endpointIp = preg_match('/^\[([^\]]+)\]:\d+$/', $endpoint, $em) ? $em[1] : preg_replace('/:\d+$/', '', $endpoint);
-            }
-            $peers[$pub] = [
-                'handshake_age' => $hs > 0 ? ($now - $hs) : null,
-                'rx' => (int) $f[5],
-                'tx' => (int) $f[6],
-                'endpoint_ip' => $endpointIp,
-            ];
-        }
+        $legacy = 'docker exec ' . escapeshellarg($container) . ' awg show all dump 2>/dev/null '
+            . '|| docker exec ' . escapeshellarg($container) . ' wg show all dump 2>/dev/null || true';
+        $parallel = $container === 'amnezia-awg31' ? '' : '; '
+            . 'if docker inspect amnezia-awg31 >/dev/null 2>&1; then '
+            . 'docker exec amnezia-awg31 awg show all dump 2>/dev/null || true; fi';
+        $dump = (string) $this->executeCommand($legacy . $parallel, true);
+        $peers = self::parseLivePeerDump($dump);
         if ($sid > 0) {
             @file_put_contents($cacheFile, json_encode($peers));
         }

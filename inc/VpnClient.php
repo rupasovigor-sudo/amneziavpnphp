@@ -308,6 +308,13 @@ class VpnClient
             }
         }
 
+        // New AWG clients use the parallel 3.1 interface. Existing database
+        // rows are explicitly marked 2.0 by migration 122 and remain on awg0.
+        $awgVersion = $isWireguard && $slug === 'awg2' ? '3.1' : '2.0';
+        if ($awgVersion === '3.1') {
+            $serverData = ServerPool::decorateServerDataForAwg31($serverData);
+        }
+
         // Serialize IP allocation across the pool (or the standalone server):
         // getNextClientIP reads the used-IP set and the INSERT happens further
         // below, so two concurrent creates on different pool members could pick
@@ -315,7 +322,7 @@ class VpnClient
         // window; it auto-releases at request end if we don't reach the explicit
         // release (e.g. on exception).
         $ipLockKey = 'amnezia_ip_' . ((int) ($serverData['pool_id'] ?? 0) > 0
-            ? 'pool_' . (int) $serverData['pool_id']
+            ? 'pool_' . ServerPool::peerRootPoolId((int) $serverData['pool_id'])
             : 'srv_' . $serverId);
         // The lock exists to stop two concurrent creates handing out the same
         // client_ip. GET_LOCK returns 0 on timeout — ignoring that meant we
@@ -372,13 +379,18 @@ class VpnClient
 
                 foreach ($awgParams as $k => $v) {
                     $uk = strtoupper((string) $k);
-                    if (in_array($uk, ['JC', 'JMIN', 'JMAX', 'S1', 'S2', 'S3', 'S4', 'H1', 'H2', 'H3', 'H4', 'I1', 'I2', 'I3', 'I4', 'I5'], true) && !isset($awgParams[$uk])) {
+                    if (!isset($awgParams[$uk])) {
                         $awgParams[$uk] = $v;
                     }
                 }
 
                 if ($slug === 'awg2') {
-                    $requiredAwg2Params = ['JC', 'JMIN', 'JMAX', 'S1', 'S2', 'S3', 'S4', 'H1', 'H2', 'H3', 'H4', 'I1', 'I2', 'I3', 'I4', 'I5'];
+                    $isAwg31 = ($serverData['awg_version'] ?? '2.0') === '3.1';
+                    $requiredAwg2Params = $isAwg31
+                        ? ['JC', 'JMIN', 'JMAX', 'S1', 'S2', 'S3', 'S4', 'H1', 'H2', 'H3', 'H4',
+                           'HEADERPROTECTIONKEY', 'CONTENTPADDINGADDITION', 'REKEYAFTERTIME', 'REKEYTIMEOUT',
+                           'REJECTAFTERTIME', 'KEEPALIVETIMEOUT', 'MAXHANDSHAKEATTEMPTS', 'RANDOMTRAILERS', 'DISABLECOOKIES']
+                        : ['JC', 'JMIN', 'JMAX', 'S1', 'S2', 'S3', 'S4', 'H1', 'H2', 'H3', 'H4', 'I1', 'I2', 'I3', 'I4', 'I5'];
                     $missingAwg2Params = false;
                     foreach ($requiredAwg2Params as $requiredKey) {
                         if (!isset($awgParams[$requiredKey]) || $awgParams[$requiredKey] === '') {
@@ -387,7 +399,7 @@ class VpnClient
                         }
                     }
 
-                    if ($missingAwg2Params) {
+                    if ($missingAwg2Params && !$isAwg31) {
                         $directAwgParams = self::timed('create.awg2_param_recovery', [
                             'server_id' => $serverId,
                             'protocol' => $slug,
@@ -470,8 +482,8 @@ class VpnClient
             $config = self::timed('create.generate_config', [
                 'server_id' => $serverId,
                 'protocol' => $slug,
-            ], function () use ($protoRow, $vars, $keys, $clientIP, $serverData, $awgParams, $slug) {
-                if ($protoRow && !empty($protoRow['output_template'])) {
+            ], function () use ($protoRow, $vars, $keys, $clientIP, $serverData, $awgParams, $slug, $awgVersion) {
+                if ($awgVersion !== '3.1' && $protoRow && !empty($protoRow['output_template'])) {
                     require_once __DIR__ . '/ProtocolService.php';
                     return ProtocolService::generateProtocolOutput($protoRow, $vars);
                 }
@@ -485,7 +497,8 @@ class VpnClient
                     self::endpointHost($serverData),
                     $serverData['vpn_port'],
                     is_array($awgParams) ? $awgParams : [],
-                    $slug
+                    $slug,
+                    $awgVersion
                 );
             });
 
@@ -500,7 +513,7 @@ class VpnClient
                 self::timed('create.push_peer_to_pool', [
                     'server_id' => $serverId,
                     'pool_id' => (int) $serverData['pool_id'],
-                ], fn() => ServerPool::pushPeerToMembers((int) $serverData['pool_id'], $keys['public'], $clientIP, $serverId));
+                ], fn() => ServerPool::pushPeerToMembers((int) $serverData['pool_id'], $keys['public'], $clientIP, $serverId, $awgVersion));
             }
             $qrCode = self::timed('create.generate_qr_code', [
                 'server_id' => $serverId,
@@ -647,8 +660,8 @@ class VpnClient
         // Insert into database
         $stmt = $pdo->prepare('
             INSERT INTO vpn_clients 
-            (server_id, user_id, protocol_id, name, client_ip, public_key, private_key, preshared_key, config, qr_code, status, expires_at) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (server_id, user_id, protocol_id, awg_version, name, client_ip, public_key, private_key, preshared_key, config, qr_code, status, expires_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ');
 
         try {
@@ -659,6 +672,7 @@ class VpnClient
                 $serverId,
                 $userId,
                 $protocolId ?: null,
+                $awgVersion,
                 $loginFinal,
                 $clientIP,
                 $pub, // public_key stays plaintext (indexed + matched by the collector)
@@ -685,18 +699,7 @@ class VpnClient
                 $rbPool = (int) ($serverData['pool_id'] ?? 0);
                 if ($rbPool > 0) {
                     try {
-                        $stmtM = DB::conn()->prepare('SELECT id FROM vpn_servers WHERE pool_id = ? AND id <> ?');
-                        $stmtM->execute([$rbPool, $serverId]);
-                        foreach ($stmtM->fetchAll(PDO::FETCH_COLUMN) as $mid) {
-                            try {
-                                $md = (new VpnServer((int) $mid))->getData();
-                                if ($md && ($md['status'] ?? '') === 'active') {
-                                    self::removeClientFromServer($md, $pub);
-                                }
-                            } catch (Throwable $e3) {
-                                error_log("create rollback: pool peer removal failed on {$mid}: " . $e3->getMessage());
-                            }
-                        }
+                        ServerPool::removePeerFromMembers($rbPool, $pub, $serverId, $awgVersion);
                     } catch (Throwable $e4) {
                         error_log('create rollback: member enumeration failed: ' . $e4->getMessage());
                     }
@@ -795,12 +798,10 @@ class VpnClient
         // IP and collide on the shared awg0 (one peer loses its allowed-ips).
         $poolId = (int) ($serverData['pool_id'] ?? 0);
         if ($poolId > 0) {
-            $stmt = $pdo->prepare(
-                'SELECT c.client_ip FROM vpn_clients c
-                 JOIN vpn_servers s ON s.id = c.server_id
-                 WHERE s.pool_id = ?'
-            );
-            $stmt->execute([$poolId]);
+            $memberIds = ServerPool::peerGroupServerIds($poolId);
+            $in = implode(',', array_fill(0, count($memberIds), '?'));
+            $stmt = $pdo->prepare("SELECT client_ip FROM vpn_clients WHERE server_id IN ($in)");
+            $stmt->execute($memberIds);
         } else {
             $stmt = $pdo->prepare('SELECT client_ip FROM vpn_clients WHERE server_id = ?');
             $stmt->execute([$serverData['id']]);
@@ -936,7 +937,7 @@ class VpnClient
         // public_key \t preshared_key \t endpoint \t allowed_ips \t latest_handshake \t rx \t tx \t keepalive
         $isAwg2 = (stripos($containerName, 'awg2') !== false || $protocolSlug === 'awg2');
         $wgTool = $isAwg2 ? 'awg' : 'wg';
-        $ifaceName = $isAwg2 ? 'awg0' : 'wg0';
+        $ifaceName = (($containerName === 'amnezia-awg31') ? 'awg31' : ($isAwg2 ? 'awg0' : 'wg0'));
         $cmdDump = sprintf('docker exec %s %s show %s dump 2>/dev/null || true', escapeshellarg($containerName), $wgTool, $ifaceName);
         $dump = (string) $server->executeCommand($cmdDump, true);
         if (trim($dump) === '' && $isAwg2) {
@@ -1159,7 +1160,8 @@ class VpnClient
         string $serverHost,
         int $serverPort,
         array $awgParams,
-        string $protocolSlug = ''
+        string $protocolSlug = '',
+        string $awgVersion = '2.0'
     ): string {
         // Get default parameters for the protocol
         $defaultParams = self::getAwgParamDefaults($protocolSlug);
@@ -1203,6 +1205,17 @@ class VpnClient
         if ($protocolSlug === 'awg2') {
             $paramKeys = array_merge($paramKeys, ['I1', 'I2', 'I3', 'I4', 'I5']);
         }
+
+        // AWG 3.1 uses the AWG2 packet-size/header fields plus the complete
+        // 3.0/3.1 timing, padding, trailer and cookie controls. I1-I5 remain
+        // harmless legacy fields, but the official 3.1 profile does not set them.
+        if ($awgVersion === '3.1') {
+            $paramKeys = [
+                'Jc', 'Jmin', 'Jmax', 'S1', 'S2', 'S3', 'S4', 'H1', 'H2', 'H3', 'H4',
+                'HeaderProtectionKey', 'ContentPaddingAddition', 'RekeyAfterTime', 'RekeyTimeout',
+                'RejectAfterTime', 'KeepaliveTimeout', 'MaxHandshakeAttempts', 'RandomTrailers', 'DisableCookies',
+            ];
+        }
         
         foreach ($paramKeys as $key) {
             $value = null;
@@ -1223,7 +1236,10 @@ class VpnClient
         $config .= "PresharedKey = {$presharedKey}\n";
         $config .= "Endpoint = {$serverHost}:{$serverPort}\n";
         $config .= "AllowedIPs = 0.0.0.0/0, ::/0\n";
-        $config .= "PersistentKeepalive = 25\n\n";
+        $keepalive = $awgVersion === '3.1'
+            ? (string) ($finalParams['PERSISTENTKEEPALIVE'] ?? $finalParams['PersistentKeepalive'] ?? '25-35')
+            : '25';
+        $config .= "PersistentKeepalive = {$keepalive}\n\n";
 
         return $config;
     }
@@ -1247,7 +1263,7 @@ class VpnClient
 
         $wgTool = $isAwg2 ? 'awg' : 'wg';
         $wgQuickTool = $isAwg2 ? 'awg-quick' : 'wg-quick';
-        $configFile = $isAwg2 ? 'awg0.conf' : 'wg0.conf';
+        $configFile = (string) ($serverData['awg_config_file'] ?? ($isAwg2 ? 'awg0.conf' : 'wg0.conf'));
         $reloadInterfaceOnAdd = in_array(strtolower((string) getenv('AMNEZIA_RELOAD_INTERFACE_ON_ADD')), ['1', 'true', 'yes'], true);
         $clientTableEntry = json_encode([
             'clientId' => $publicKey,
@@ -1497,15 +1513,19 @@ BASH;
     public static function listByPool(int $poolId): array
     {
         $pdo = DB::conn();
-        $stmt = $pdo->prepare('
+        $serverIds = ServerPool::peerGroupServerIds($poolId);
+        if (!$serverIds) {
+            return [];
+        }
+        $in = implode(',', array_fill(0, count($serverIds), '?'));
+        $stmt = $pdo->prepare("
             SELECT c.*, p.name as protocol_name, p.show_text_content
             FROM vpn_clients c
             LEFT JOIN protocols p ON c.protocol_id = p.id
-            JOIN vpn_servers s ON s.id = c.server_id
-            WHERE s.pool_id = ?
+            WHERE c.server_id IN ($in)
             ORDER BY c.created_at DESC
-        ');
-        $stmt->execute([$poolId]);
+        ");
+        $stmt->execute($serverIds);
         return $stmt->fetchAll();
     }
 
@@ -1548,6 +1568,9 @@ BASH;
         if ($isWireguard) {
             $server = new VpnServer($this->data['server_id']);
             $serverData = $server->getData();
+            if (($this->data['awg_version'] ?? '2.0') === '3.1') {
+                $serverData = ServerPool::decorateServerDataForAwg31($serverData);
+            }
             if ($serverData && $serverData['status'] === 'active') {
                 try {
                     self::timed('revoke.remove_client_from_server', [
@@ -1571,21 +1594,12 @@ BASH;
             if ($poolId > 0) {
                 $homeId = (int) $this->data['server_id'];
                 $pk = (string) $this->data['public_key'];
-                $stmtM = DB::conn()->prepare('SELECT id FROM vpn_servers WHERE pool_id = ? AND id <> ?');
-                $stmtM->execute([$poolId, $homeId]);
-                foreach ($stmtM->fetchAll(PDO::FETCH_COLUMN) as $mid) {
-                    try {
-                        $md = (new VpnServer((int) $mid))->getData();
-                        if ($md && $md['status'] === 'active') {
-                            self::removeClientFromServer($md, $pk);
-                        } else {
-                            $failedServers[] = (int) $mid;
-                        }
-                    } catch (Throwable $e) {
-                        error_log("revoke: pool peer removal failed on server {$mid}: " . $e->getMessage());
-                        $failedServers[] = (int) $mid;
-                    }
-                }
+                $failedServers = array_merge($failedServers, ServerPool::removePeerFromMembers(
+                    $poolId,
+                    $pk,
+                    $homeId,
+                    (string) ($this->data['awg_version'] ?? '2.0')
+                ));
             }
         }
 
@@ -1629,6 +1643,9 @@ BASH;
         if ($isWireguard) {
             $server = new VpnServer($this->data['server_id']);
             $serverData = $server->getData();
+            if (($this->data['awg_version'] ?? '2.0') === '3.1') {
+                $serverData = ServerPool::decorateServerDataForAwg31($serverData);
+            }
             if ($serverData && $serverData['status'] === 'active') {
                 try {
                     self::timed('restore.add_client_to_server', [
@@ -1648,7 +1665,13 @@ BASH;
             // the active member until a resync happens to run.
             $poolId = (int) ($serverData['pool_id'] ?? 0);
             if ($poolId > 0) {
-                ServerPool::pushPeerToMembers($poolId, (string) $this->data['public_key'], (string) $this->data['client_ip'], (int) $this->data['server_id']);
+                ServerPool::pushPeerToMembers(
+                    $poolId,
+                    (string) $this->data['public_key'],
+                    (string) $this->data['client_ip'],
+                    (int) $this->data['server_id'],
+                    (string) ($this->data['awg_version'] ?? '2.0')
+                );
             }
         }
 
@@ -1737,7 +1760,7 @@ BASH;
         }
 
         $isAwg2 = (stripos($containerName, 'awg2') !== false || $protocolSlug === 'awg2');
-        $configFile = $isAwg2 ? 'awg0.conf' : 'wg0.conf';
+        $configFile = (string) ($serverData['awg_config_file'] ?? ($isAwg2 ? 'awg0.conf' : 'wg0.conf'));
         $wgTool = $isAwg2 ? 'awg' : 'wg';
         $wgQuickTool = $isAwg2 ? 'awg-quick' : 'wg-quick';
 
@@ -1806,8 +1829,6 @@ END {
   flush_block()
 }
 ' '$CONFIG_DIR/$CONFIG_FILE' > '$CONFIG_DIR/$CONFIG_FILE.tmp' && mv '$CONFIG_DIR/$CONFIG_FILE.tmp' '$CONFIG_DIR/$CONFIG_FILE'"
-
-docker exec -i "$CONTAINER_NAME" "$WG_QUICK_TOOL" save "$IFACE_NAME"
 
 TABLE_JSON=$(docker exec -i "$CONTAINER_NAME" cat "$CONFIG_DIR/clientsTable" 2>/dev/null || true)
 if command -v python3 >/dev/null 2>&1; then
@@ -1986,6 +2007,11 @@ BASH;
             $serverData = $server->getData();
         }
 
+        $awgVersion = (string) ($this->data['awg_version'] ?? '2.0');
+        if ($awgVersion === '3.1') {
+            $serverData = ServerPool::decorateServerDataForAwg31($serverData);
+        }
+
         $privateKey = (string) ($this->data['private_key'] ?? '');
         $clientPublicKey = (string) ($this->data['public_key'] ?? '');
         $clientIP = (string) ($this->data['client_ip'] ?? '');
@@ -2002,7 +2028,7 @@ BASH;
         // by duplicating them into canonical uppercase AWG keys.
         foreach ($awgParams as $k => $v) {
             $uk = strtoupper((string) $k);
-            if (in_array($uk, ['JC', 'JMIN', 'JMAX', 'S1', 'S2', 'S3', 'S4', 'H1', 'H2', 'H3', 'H4', 'I1', 'I2', 'I3', 'I4', 'I5'], true) && !isset($awgParams[$uk])) {
+            if (!isset($awgParams[$uk])) {
                 $awgParams[$uk] = $v;
             }
         }
@@ -2010,9 +2036,11 @@ BASH;
         // If AWG params are missing (common after reinstall), fetch them directly from wg0.conf
         // to avoid falling back to template defaults that will not match the server.
         if (in_array($slug, ['awg2'], true)) {
-            $needKeys = $slug === 'awg2'
-                ? ['JC', 'JMIN', 'JMAX', 'S1', 'S2', 'S3', 'S4', 'H1', 'H2', 'H3', 'H4', 'I1', 'I2', 'I3', 'I4', 'I5']
-                : ['JC', 'JMIN', 'JMAX', 'S1', 'S2', 'H1', 'H2', 'H3', 'H4'];
+            $needKeys = $awgVersion === '3.1'
+                ? ['JC', 'JMIN', 'JMAX', 'S1', 'S2', 'S3', 'S4', 'H1', 'H2', 'H3', 'H4',
+                   'HEADERPROTECTIONKEY', 'CONTENTPADDINGADDITION', 'REKEYAFTERTIME', 'REKEYTIMEOUT',
+                   'REJECTAFTERTIME', 'KEEPALIVETIMEOUT', 'MAXHANDSHAKEATTEMPTS', 'RANDOMTRAILERS', 'DISABLECOOKIES']
+                : ['JC', 'JMIN', 'JMAX', 'S1', 'S2', 'S3', 'S4', 'H1', 'H2', 'H3', 'H4', 'I1', 'I2', 'I3', 'I4', 'I5'];
             $missing = false;
             foreach ($needKeys as $k) {
                 if (!isset($awgParams[$k])) {
@@ -2021,7 +2049,7 @@ BASH;
                 }
             }
 
-            if ($missing) {
+            if ($missing && $awgVersion !== '3.1') {
                 $containerName = $serverData['container_name'] ?? ($slug === 'awg2' ? 'amnezia-awg2' : 'amnezia-awg');
                 $configDir = '/opt/amnezia/awg';
                 $configFile = $slug === 'awg2' ? 'awg0.conf' : 'wg0.conf';
@@ -2111,7 +2139,7 @@ BASH;
             }
         }
 
-        if ($protoRow && !empty($protoRow['output_template'])) {
+        if ($awgVersion !== '3.1' && $protoRow && !empty($protoRow['output_template'])) {
             require_once __DIR__ . '/ProtocolService.php';
             $config = ProtocolService::generateProtocolOutput($protoRow, $vars);
         } else {
@@ -2123,7 +2151,8 @@ BASH;
                 self::endpointHost($serverData),
                 (int) ($serverData['vpn_port'] ?? 0),
                 $awgParams,
-                $slug
+                $slug,
+                $awgVersion
             );
         }
 
@@ -2181,6 +2210,9 @@ BASH;
 
         if (!$serverData || $serverData['status'] !== 'active') {
             return false;
+        }
+        if (($this->data['awg_version'] ?? '2.0') === '3.1') {
+            $serverData = ServerPool::decorateServerDataForAwg31($serverData);
         }
 
         try {
@@ -2273,7 +2305,7 @@ BASH;
         $protocolSlug = (string) ($serverData['install_protocol'] ?? '');
         $isAwg2 = (stripos($containerName, 'awg2') !== false || $protocolSlug === 'awg2');
         $wgTool = $isAwg2 ? 'awg' : 'wg';
-        $ifaceName = $isAwg2 ? 'awg0' : 'wg0';
+        $ifaceName = (($containerName === 'amnezia-awg31') ? 'awg31' : ($isAwg2 ? 'awg0' : 'wg0'));
 
         // Get WireGuard interface stats
         $cmd = sprintf("docker exec -i %s %s show %s dump", $containerName, $wgTool, $ifaceName);

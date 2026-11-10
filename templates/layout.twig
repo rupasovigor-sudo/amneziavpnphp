@@ -73,8 +73,11 @@
             <a href="/dashboard" class="nav-item {{ uri starts with '/dashboard' ? 'active' }}">
                 <i class="fas fa-tachometer-alt w-5 text-center"></i><span>{{ t('menu.dashboard') }}</span>
             </a>
-            <a href="/servers" class="nav-item {{ uri starts with '/servers' or uri starts with '/clients' ? 'active' }}">
+            <a href="/servers" class="nav-item {{ uri starts with '/servers' ? 'active' }}">
                 <i class="fas fa-server w-5 text-center"></i><span>{{ t('menu.servers') }}</span>
+            </a>
+            <a href="/clients" class="nav-item {{ uri starts with '/clients' ? 'active' }}">
+                <i class="fas fa-users w-5 text-center"></i><span>{{ t('clients.title') }}</span>
             </a>
             {% if is_admin %}
             <a href="/pools" class="nav-item {{ uri starts with '/pools' ? 'active' }}">

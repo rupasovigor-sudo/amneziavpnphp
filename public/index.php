@@ -199,6 +199,12 @@ function getClientProtocolSlug(array $clientData): string
 
 function resolveClientContainer(array $serverData, array $clientData): string
 {
+    // AWG 3.1 clients live on the parallel sidecar, not on the legacy AWG 2.0
+    // container recorded on vpn_servers/server_protocols.
+    if ((string) ($clientData['awg_version'] ?? '2.0') === '3.1') {
+        return 'amnezia-awg31';
+    }
+
     $containerName = trim((string) ($serverData['container_name'] ?? ''));
     $protocolId = (int) ($clientData['protocol_id'] ?? 0);
     if ($protocolId > 0) {
@@ -262,7 +268,7 @@ if [ "$running" != "true" ]; then
   exit 0
 fi
 iface=""
-for candidate in awg0 wg0; do
+for candidate in awg31 awg0 wg0; do
   if docker exec "$CONTAINER" sh -lc "ip link show '$candidate' >/dev/null 2>&1"; then
     iface="$candidate"
     break
@@ -300,7 +306,7 @@ SH;
         'name' => 'wireguard_interface',
         'ok' => $iface !== '',
         'severity' => 'critical',
-        'message' => $iface !== '' ? "Интерфейс {$iface} найден" : 'Интерфейс awg0/wg0 не найден',
+        'message' => $iface !== '' ? "Интерфейс {$iface} найден" : 'Интерфейс awg31/awg0/wg0 не найден',
     ];
 
     $peerLine = trim((string) ($values['peer_line'] ?? ''));

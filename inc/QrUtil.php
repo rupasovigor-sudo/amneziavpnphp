@@ -258,7 +258,7 @@ class QrUtil
                 $allowedIps = array_map('trim', preg_split('/[,\s]+/', $v));
             } elseif (stripos($line, 'PersistentKeepalive') === 0 && strpos($line, '=') !== false) {
                 [, $v] = array_map('trim', explode('=', $line, 2));
-                $keepAlive = (int) $v;
+                $keepAlive = $v;
             }
         }
 
@@ -302,6 +302,15 @@ class QrUtil
             'S2' => null,
             'S3' => null,
             'S4' => null,
+            'HeaderProtectionKey' => null,
+            'ContentPaddingAddition' => null,
+            'RekeyAfterTime' => null,
+            'RekeyTimeout' => null,
+            'RejectAfterTime' => null,
+            'KeepaliveTimeout' => null,
+            'MaxHandshakeAttempts' => null,
+            'RandomTrailers' => null,
+            'DisableCookies' => null,
         ];
         foreach (explode("\n", $conf) as $line) {
             $line = trim($line);
@@ -344,6 +353,9 @@ class QrUtil
             'psk_key' => (string) ($psk ?? ''),
             'server_pub_key' => (string) ($pubKeyServer ?? ''),
         ];
+        foreach ($params as $key => $value) {
+            $lastConfigObj[$key] = (string) ($value ?? '');
+        }
 
         $serverDesc = self::resolveServerDescription($endpointHost);
 
@@ -418,7 +430,7 @@ class QrUtil
                 $allowedIps = array_map('trim', preg_split('/[,\s]+/', $v));
             } elseif (stripos($line, 'PersistentKeepalive') === 0 && strpos($line, '=') !== false) {
                 [, $v] = array_map('trim', explode('=', $line, 2));
-                $keepAlive = (int) $v;
+                $keepAlive = $v;
             }
         }
 
@@ -462,6 +474,15 @@ class QrUtil
             'S2' => null,
             'S3' => null,
             'S4' => null,
+            'HeaderProtectionKey' => null,
+            'ContentPaddingAddition' => null,
+            'RekeyAfterTime' => null,
+            'RekeyTimeout' => null,
+            'RejectAfterTime' => null,
+            'KeepaliveTimeout' => null,
+            'MaxHandshakeAttempts' => null,
+            'RandomTrailers' => null,
+            'DisableCookies' => null,
         ];
         foreach (explode("\n", $conf) as $line) {
             $line = trim($line);
@@ -504,6 +525,11 @@ class QrUtil
             'psk_key' => (string) ($psk ?? ''),
             'server_pub_key' => (string) ($pubKeyServer ?? ''),
         ];
+        foreach ($params as $key => $value) {
+            $lastConfigObj[$key] = (string) ($value ?? '');
+        }
+
+        $isAwg31 = trim((string) ($params['HeaderProtectionKey'] ?? '')) !== '';
 
         $serverDesc = self::resolveServerDescription($endpointHost);
 
@@ -525,7 +551,21 @@ class QrUtil
                         'last_config' => json_encode($lastConfigObj, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT),
                         'port' => (string) $endpointPort,
                         'transport_proto' => 'udp',
-                    ] + ($protocolSlug === 'awg2' ? [
+                    ] + ($isAwg31 ? [
+                        'S3' => (string) ($params['S3'] ?? ''),
+                        'S4' => (string) ($params['S4'] ?? ''),
+                        'HeaderProtectionKey' => (string) ($params['HeaderProtectionKey'] ?? ''),
+                        'ContentPaddingAddition' => (string) ($params['ContentPaddingAddition'] ?? ''),
+                        'RekeyAfterTime' => (string) ($params['RekeyAfterTime'] ?? ''),
+                        'RekeyTimeout' => (string) ($params['RekeyTimeout'] ?? ''),
+                        'RejectAfterTime' => (string) ($params['RejectAfterTime'] ?? ''),
+                        'KeepaliveTimeout' => (string) ($params['KeepaliveTimeout'] ?? ''),
+                        'MaxHandshakeAttempts' => (string) ($params['MaxHandshakeAttempts'] ?? ''),
+                        'RandomTrailers' => (string) ($params['RandomTrailers'] ?? ''),
+                        'DisableCookies' => (string) ($params['DisableCookies'] ?? ''),
+                        'protocol_version' => '3.1',
+                        'subnet_address' => (string) ($address ? (preg_match('/^(\d+\.\d+\.\d+)\.\d+/', $address, $m) ? $m[1] . '.0' : '10.8.31.0') : '10.8.31.0'),
+                    ] : ($protocolSlug === 'awg2' ? [
                         'I1' => (string) ($params['I1'] ?? ''),
                         'I2' => (string) ($params['I2'] ?? ''),
                         'I3' => (string) ($params['I3'] ?? ''),
@@ -535,7 +575,7 @@ class QrUtil
                         'S4' => (string) ($params['S4'] ?? ''),
                         'protocol_version' => '2',
                         'subnet_address' => (string) ($address ? (preg_match('/^(\d+\.\d+\.\d+)\.\d+/', $address, $m) ? $m[1] . '.0' : '10.8.1.0') : '10.8.1.0'),
-                    ] : []),
+                    ] : [])),
                     'container' => $protocolSlug === 'awg2' ? 'amnezia-awg2' : 'amnezia-awg',
                 ],
             ],

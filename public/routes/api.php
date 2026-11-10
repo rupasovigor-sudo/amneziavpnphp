@@ -355,6 +355,7 @@ Router::get('/api/clients/{id}/diagnostics', function ($params) {
                 'name' => $clientData['name'],
                 'ip' => $clientData['client_ip'],
                 'protocol_slug' => $protocolSlug,
+                'awg_version' => (string) ($clientData['awg_version'] ?? '2.0'),
                 'container_name' => $containerName,
             ],
             'checks' => $checks,

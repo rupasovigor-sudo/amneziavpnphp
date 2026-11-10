@@ -149,6 +149,61 @@ Router::get('/servers', function () {
     View::render('servers/index.twig', ['servers' => $servers]);
 });
 
+// Clients workspace: the selected VPN server is switched with tabs. Pool
+// members intentionally share one list because their peers are synchronized.
+Router::get('/clients', function () {
+    requireAuth();
+    $user = Auth::user();
+
+    $servers = Auth::isAdmin()
+        ? VpnServer::listAll(false)
+        : VpnServer::listByUser((int) $user['id'], false);
+    $servers = array_values(array_filter($servers, static function (array $server): bool {
+        return ($server['role'] ?? 'vpn') !== 'front';
+    }));
+    $servers = VpnServer::attachPoolInfo($servers);
+
+    $requestedId = isset($_GET['server_id']) ? (int) $_GET['server_id'] : 0;
+    $selectedServer = null;
+    foreach ($servers as $server) {
+        if ((int) ($server['id'] ?? 0) === $requestedId) {
+            $selectedServer = $server;
+            break;
+        }
+    }
+    if ($selectedServer === null) {
+        foreach ($servers as $server) {
+            if (($server['status'] ?? '') === 'active') {
+                $selectedServer = $server;
+                break;
+            }
+        }
+    }
+    if ($selectedServer === null && $servers) {
+        $selectedServer = $servers[0];
+    }
+
+    $clients = [];
+    $onlineLogins = [];
+    if ($selectedServer !== null) {
+        $poolId = (int) ($selectedServer['pool_id'] ?? 0);
+        $clients = $poolId > 0
+            ? VpnClient::listByPool($poolId)
+            : VpnClient::listByServer((int) $selectedServer['id']);
+        $onlineLogins = ServerMonitoring::getOnlineClientsForServer($selectedServer);
+    }
+
+    View::render('clients/index.twig', [
+        'servers' => VpnServer::redactServerList($servers),
+        'selected_server' => $selectedServer !== null
+            ? VpnServer::redactServerSecrets($selectedServer)
+            : null,
+        'clients' => $clients,
+        'online_logins' => $onlineLogins,
+        'online_window' => ServerMonitoring::onlineWindow(),
+    ]);
+});
+
 // Create server page
 Router::get('/servers/create', function () {
     requireAuth();
@@ -783,6 +838,58 @@ Router::get('/servers/{id}/pool/status', function ($params) {
     }
 });
 
+// Split a standby into its own direct pool while keeping the source pool's
+// shared AWG identity/client set (AJAX, admin).
+Router::post('/servers/{id}/pool/split', function ($params) {
+    requireAdmin();
+    @set_time_limit(300);
+    header('Content-Type: application/json');
+    $serverId = (int) $params['id'];
+    $input = json_decode(file_get_contents('php://input'), true) ?: [];
+    try {
+        $res = ServerPool::splitMemberToLinkedPool(
+            $serverId,
+            trim((string) ($input['name'] ?? '')),
+            trim((string) ($input['domain'] ?? '')),
+            !array_key_exists('repoint', $input) || !empty($input['repoint'])
+        );
+        if (empty($res['success'])) {
+            http_response_code(409);
+        }
+        echo json_encode($res, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    } catch (Throwable $e) {
+        http_response_code(500);
+        echo json_encode(['success' => false, 'error' => $e->getMessage()], JSON_UNESCAPED_UNICODE);
+    }
+});
+
+// Select another compatible pool as the authoritative client/peer source.
+Router::post('/servers/{id}/pool/peer-source', function ($params) {
+    requireAdmin();
+    @set_time_limit(300);
+    header('Content-Type: application/json');
+    $serverId = (int) $params['id'];
+    $input = json_decode(file_get_contents('php://input'), true) ?: [];
+    try {
+        $data = (new VpnServer($serverId))->getData();
+        $poolId = (int) ($data['pool_id'] ?? 0);
+        if ($poolId <= 0) {
+            http_response_code(400);
+            echo json_encode(['success' => false, 'error' => 'Сервер не состоит в пуле'], JSON_UNESCAPED_UNICODE);
+            return;
+        }
+        $sourceId = (int) ($input['source_pool_id'] ?? 0);
+        $res = ServerPool::setPeerSource($poolId, $sourceId > 0 ? $sourceId : null);
+        if (empty($res['success'])) {
+            http_response_code(409);
+        }
+        echo json_encode($res, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    } catch (Throwable $e) {
+        http_response_code(500);
+        echo json_encode(['success' => false, 'error' => $e->getMessage()], JSON_UNESCAPED_UNICODE);
+    }
+});
+
 // Create a failover pool by adopting this server's awg2 identity (AJAX, admin)
 Router::post('/servers/{id}/pool/create', function ($params) {
     requireAdmin();
@@ -828,7 +935,7 @@ Router::get('/servers/{id}/net/live-clients', function ($params) {
     }
 });
 
-// Live per-client online status from awg0, keyed by public key. Pool-aware:
+// Live per-client online status from legacy awg0 and parallel awg31, keyed by public key. Pool-aware:
 // reads the ACTIVE member's interface (that's where clients actually connect),
 // so the table's status/last-handshake stay live without waiting for the
 // metrics-collector cycle.
@@ -850,7 +957,7 @@ Router::get('/servers/{id}/clients/live-status', function ($params) {
         // tab, adds up fast. The data only needs to be a few seconds fresh, so
         // serve a short-lived shared cache instead.
         $cacheTtl = max(0, (int) Config::get('LIVE_STATUS_CACHE_SECONDS', '20'));
-        $cacheFile = sys_get_temp_dir() . '/live_status_' . ($poolId > 0 ? 'pool' . $poolId : 'srv' . $serverId) . '.json';
+        $cacheFile = sys_get_temp_dir() . '/live_status_' . ($poolId > 0 ? 'group' . ServerPool::peerRootPoolId($poolId) : 'srv' . $serverId) . '.json';
         if ($cacheTtl > 0 && is_readable($cacheFile)) {
             $cached = json_decode((string) @file_get_contents($cacheFile), true);
             if (is_array($cached) && (time() - (int) ($cached['at'] ?? 0)) < $cacheTtl && isset($cached['peers'])) {
@@ -871,10 +978,15 @@ Router::get('/servers/{id}/clients/live-status', function ($params) {
             // elsewhere as offline and reset its badge to "active". Merge all
             // members and keep the freshest handshake per peer.
             $peers = [];
-            $activeMemberId = (int) (ServerPool::get($poolId)['active_server_id'] ?? 0);
-            foreach (ServerPool::members($poolId) as $member) {
+            $activeMemberIds = [];
+            foreach (ServerPool::peerGroupPoolIds($poolId) as $groupPoolId) {
+                $groupPool = ServerPool::get($groupPoolId);
+                $activeMemberIds[(int) ($groupPool['active_server_id'] ?? 0)] = true;
+            }
+            foreach (ServerPool::peerGroupServerIds($poolId) as $memberId) {
                 try {
-                    $memberPeers = (new VpnServer((int) $member['id']))->liveClientPeers();
+                    $memberData = (new VpnServer($memberId))->getData();
+                    $memberPeers = (new VpnServer($memberId))->liveClientPeers();
                 } catch (Exception $e) {
                     continue; // a single unreachable member must not blank the list
                 }
@@ -887,9 +999,10 @@ Router::get('/servers/{id}/clients/live-status', function ($params) {
                         // they linger on the old one — surfacing that per client
                         // turns an invisible split into something the operator
                         // can see at a glance.
-                        $info['server_id'] = (int) $member['id'];
-                        $info['server_name'] = (string) $member['name'];
-                        $info['is_active_member'] = ((int) $member['id'] === $activeMemberId);
+                        $info['server_id'] = $memberId;
+                        $info['server_name'] = (string) ($memberData['name'] ?? ('#' . $memberId));
+                        $info['connection_pool_id'] = (int) ($memberData['pool_id'] ?? 0);
+                        $info['is_active_member'] = isset($activeMemberIds[$memberId]);
                         $peers[$pub] = $info;
                     }
                 }
@@ -910,9 +1023,21 @@ Router::get('/servers/{id}/clients/live-status', function ($params) {
             $name = $keyToName[(string) $pk] ?? null;
             $peers[$pk]['online'] = $name !== null && isset($onlineNames[$name]);
         }
-        // Front mode: mark clients that bypass the entry relay.
+        // Mark the actual path using the front of the pool carrying this peer.
+        // A linked direct pool and a fronted source pool share clients, so using
+        // only the page's pool would mislabel a FI/front session as KZ/direct.
         if ($poolId > 0) {
-            $peers = PoolFront::stampViaFront($poolId, $peers);
+            $fronts = [];
+            foreach ($peers as $pk => $info) {
+                $connectionPoolId = (int) ($info['connection_pool_id'] ?? 0);
+                if (!array_key_exists($connectionPoolId, $fronts)) {
+                    $fronts[$connectionPoolId] = PoolFront::forPool($connectionPoolId);
+                }
+                $front = $fronts[$connectionPoolId];
+                if ($front && (int) $front['enabled'] === 1 && $front['dns_mode'] === 'front') {
+                    $peers[$pk]['via_front'] = (string) ($info['endpoint_ip'] ?? '') === (string) $front['server_host'];
+                }
+            }
         }
 
         if ($cacheTtl > 0) {
@@ -935,6 +1060,24 @@ Router::get('/servers/{id}/clients/live-status', function ($params) {
 Router::get('/updates', function () {
     requireAdmin();
     View::render('updates.twig', []);
+});
+
+// Dedicated maintenance page works for VPN members and entry fronts alike.
+// Fronts do not have the regular /servers/{id} VPN page, so without this page
+// their package audit was visible in the fleet but had nowhere actionable to go.
+Router::get('/updates/server/{id}', function ($params) {
+    requireAdmin();
+    $serverId = (int) $params['id'];
+    try {
+        $server = new VpnServer($serverId);
+        $serverData = $server->getData();
+        View::render('server_updates.twig', [
+            'server' => VpnServer::redactServerSecrets($serverData),
+        ]);
+    } catch (Throwable $e) {
+        http_response_code(404);
+        echo 'Server not found';
+    }
 });
 
 // Rolling update of a whole pool in a detached worker (AJAX, admin).
@@ -998,7 +1141,7 @@ Router::get('/updates/fleet', function () {
         ServerUpdateManager::reapStuck();
         $refresh = !empty($_GET['refresh']);
         $rows = DB::conn()->query(
-            "SELECT s.id, s.name, s.host, s.pool_id, p.name AS pool_name
+            "SELECT s.id, s.name, s.host, s.role, s.pool_id, p.name AS pool_name
              FROM vpn_servers s LEFT JOIN server_pools p ON p.id = s.pool_id
              WHERE s.status != 'deleted' ORDER BY s.id"
         )->fetchAll(PDO::FETCH_ASSOC) ?: [];
@@ -1013,6 +1156,7 @@ Router::get('/updates/fleet', function () {
                 'id'        => $id,
                 'name'      => $r['name'],
                 'host'      => $r['host'],
+                'role'      => $r['role'] ?? 'vpn',
                 'pool_id'   => (int) ($r['pool_id'] ?? 0),
                 'pool_name' => $r['pool_name'] ?? null,
                 'is_active' => ServerUpdateManager::isActivePoolMember($id),
@@ -1305,6 +1449,14 @@ Router::post('/servers/{id}/pool/delete', function ($params) {
         $domain = trim((string) ($pool['domain'] ?? ''));
         $poolName = (string) ($pool['name'] ?? ('pool ' . $poolId));
 
+        $linked = DB::conn()->prepare('SELECT COUNT(*) FROM server_pools WHERE peer_source_pool_id = ?');
+        $linked->execute([$poolId]);
+        if ((int) $linked->fetchColumn() > 0) {
+            http_response_code(409);
+            echo json_encode(['success' => false, 'error' => 'Этот пул является источником клиентов для других пулов — сначала отключите их связь с источником'], JSON_UNESCAPED_UNICODE);
+            return;
+        }
+
         // A pool's entry relay would be orphaned: with no members it relays to
         // nothing, and the domain (if on the front) would blackhole everyone.
         if ($front = PoolFront::forPool($poolId)) {
@@ -1532,29 +1684,10 @@ Router::get('/servers/{id}', function ($params) {
             return $pid > 0 && !in_array($pid, $installedIds, true);
         }));
 
-        $selectedProtocolId = isset($_GET['protocol_id']) ? (int) $_GET['protocol_id'] : 0;
-        $poolId = (int) ($serverData['pool_id'] ?? 0);
-        if ($selectedProtocolId > 0) {
-            $clients = VpnClient::listByServerAndProtocol($serverId, $selectedProtocolId);
-        } elseif ($poolId > 0) {
-            // Pool member: show the pool-wide client list (peers are synced to all).
-            $clients = VpnClient::listByPool($poolId);
-        } else {
-            $clients = VpnClient::listByServer($serverId);
-        }
-
-        // Get online clients for this server (Xray)
-        $onlineLogins = ServerMonitoring::getOnlineClientsForServer($serverData);
-
         View::render('servers/view.twig', [
             'server' => VpnServer::redactServerSecrets($serverData),
-            'clients' => $clients,
             'server_protocols' => $serverProtocols,
-            'selected_protocol_id' => $selectedProtocolId,
             'available_protocols' => $availableProtocols,
-            'online_logins' => $onlineLogins,
-            // Same window the /online endpoint uses, so the first render and the
-            // JS poll can never disagree and flip a client's badge.
             'online_window' => ServerMonitoring::onlineWindow(),
         ]);
     } catch (Exception $e) {
@@ -1639,7 +1772,7 @@ Router::post('/servers/{id}/clients/create', function ($params) {
     }
 
     if (empty($clientName)) {
-        redirect('/servers/' . $serverId . '?error=Client+name+is+required');
+        redirect('/clients?server_id=' . $serverId . '&error=Client+name+is+required');
         return;
     }
 
@@ -1678,7 +1811,7 @@ Router::post('/servers/{id}/clients/create', function ($params) {
 
         redirect('/clients/' . $clientId);
     } catch (Exception $e) {
-        redirect('/servers/' . $serverId . '?error=' . urlencode($e->getMessage()));
+        redirect('/clients?server_id=' . $serverId . '&error=' . urlencode($e->getMessage()));
     }
 });
 
@@ -1701,9 +1834,11 @@ Router::get('/clients/{id}', function ($params) {
         $server = new VpnServer((int) $clientData['server_id']);
         $serverData = $server->getData();
         $protocolOutput = '';
-        $qrCodeVpnUrl = '';
-        $vpnUrlConfig = '';
         $isAwg2 = false;
+        $protocolSlug = '';
+        $clientEndpoints = [];
+        $clientProfiles = [];
+        $selectedEndpointPoolId = 0;
         try {
             $pdo = DB::conn();
             $protocol = null;
@@ -1719,7 +1854,7 @@ Router::get('/clients/{id}', function ($params) {
 
             if ($protocol) {
                 $clientData['show_text_content'] = !empty($protocol['show_text_content']);
-                $protocolSlug = $protocol['slug'] ?? '';
+                $protocolSlug = (string) ($protocol['slug'] ?? '');
                 $isAwg2 = ($protocolSlug === 'awg2');
             }
             if ($protocol && ($protocol['output_template'] ?? '') !== '') {
@@ -1734,27 +1869,92 @@ Router::get('/clients/{id}', function ($params) {
                 }
             }
             
-            // Generate second QR code and vpn:// config for AWG2
-            if ($isAwg2 && !empty($clientData['config'])) {
-                try {
-                    $qrCodeVpnUrl = VpnClient::generateQRCodeVpnUrl($clientData['config'], 'awg2');
-                    
-                    // Generate vpn:// URL string using vpn:// format (JSON + zlib)
-                    require_once __DIR__ . '/../../inc/QrUtil.php';
-                    $vpnUrlConfig = 'vpn://' . QrUtil::encodeVpnUrlConf($clientData['config'], 'awg2');
-                } catch (Exception $e) {
-                    // Ignore errors, just don't show the second QR
-                }
-            }
         } catch (Exception $e) {
             $protocolOutput = '';
         }
+        $homePoolId = (int) ($serverData['pool_id'] ?? 0);
+        if ($homePoolId > 0) {
+            $isAwg31Client = (string) ($clientData['awg_version'] ?? '2.0') === '3.1';
+            $requestedPoolId = (int) ($_GET['pool_id'] ?? 0);
+            $groupPoolIds = ServerPool::peerGroupPoolIds($homePoolId);
+            $selectedEndpointPoolId = in_array($requestedPoolId, $groupPoolIds, true) ? $requestedPoolId : $homePoolId;
+            foreach ($groupPoolIds as $endpointPoolId) {
+                $ep = ServerPool::get($endpointPoolId);
+                if ($ep && trim((string) ($ep['domain'] ?? '')) !== '') {
+                    $clientEndpoints[] = [
+                        'pool_id' => $endpointPoolId,
+                        'name' => $ep['name'],
+                        'domain' => trim((string) $ep['domain']),
+                        'port' => ServerPool::endpointPort($ep, $isAwg31Client ? '3.1' : '2.0'),
+                        'current' => $endpointPoolId === $homePoolId,
+                        'selected' => $endpointPoolId === $selectedEndpointPoolId,
+                    ];
+                }
+            }
+        }
+
+        // Each pool endpoint needs its own encoded payload: changing only the
+        // download URL is not enough because both QR formats and vpn:// embed
+        // the Endpoint line inside the payload.
+        $profileEndpoints = $clientEndpoints;
+        if (!$profileEndpoints) {
+            $storedEndpoint = '';
+            if (preg_match('/^\s*Endpoint\s*=\s*(.+)\s*$/mi', (string) ($clientData['config'] ?? ''), $match)) {
+                $storedEndpoint = trim($match[1]);
+            }
+            $profileEndpoints[] = [
+                'pool_id' => 0,
+                'name' => (string) ($serverData['name'] ?? 'Server'),
+                'domain' => $storedEndpoint,
+                'port' => '',
+                'selected' => true,
+            ];
+        }
+
+        foreach ($profileEndpoints as $endpoint) {
+            $profileConfig = (string) ($clientData['config'] ?? '');
+            $poolId = (int) ($endpoint['pool_id'] ?? 0);
+            $endpointAddress = '';
+            if ($poolId > 0) {
+                $endpointAddress = trim((string) ($endpoint['domain'] ?? '')) . ':' . (int) ($endpoint['port'] ?? 0);
+                $profileConfig = preg_replace(
+                    '/^(\s*Endpoint\s*=\s*).+$/mi',
+                    '$1' . $endpointAddress,
+                    $profileConfig,
+                    1
+                ) ?? $profileConfig;
+            } else {
+                $endpointAddress = trim((string) ($endpoint['domain'] ?? ''));
+            }
+
+            $profile = $endpoint;
+            $profile['key'] = $poolId > 0 ? 'pool-' . $poolId : 'server-' . (int) $clientData['server_id'];
+            $profile['endpoint'] = $endpointAddress;
+            $profile['simple_qr'] = '';
+            $profile['vpn_qr'] = '';
+            $profile['vpn_url'] = '';
+            if ($profileConfig !== '') {
+                $profile['simple_qr'] = VpnClient::generateQRCode($profileConfig, $protocolSlug);
+                if ($isAwg2) {
+                    try {
+                        require_once __DIR__ . '/../../inc/QrUtil.php';
+                        $profile['vpn_qr'] = VpnClient::generateQRCodeVpnUrl($profileConfig, 'awg2');
+                        $profile['vpn_url'] = 'vpn://' . QrUtil::encodeVpnUrlConf($profileConfig, 'awg2');
+                    } catch (Throwable $e) {
+                        error_log('Failed to build endpoint profile for client ' . $clientId . ': ' . $e->getMessage());
+                    }
+                }
+            }
+            $clientProfiles[] = $profile;
+        }
+
         View::render('clients/view.twig', [
             'client' => $clientData,
             'protocol_output' => $protocolOutput,
-            'qr_code_vpn_url' => $qrCodeVpnUrl,
-            'vpn_url_config' => $vpnUrlConfig,
-            'is_awg2' => $isAwg2
+            'is_awg2' => $isAwg2,
+            'client_endpoints' => $clientEndpoints,
+            'client_profiles' => $clientProfiles,
+            'selected_endpoint_pool_id' => $selectedEndpointPoolId,
         ]);
     } catch (Exception $e) {
         http_response_code(404);
@@ -1810,6 +2010,47 @@ Router::get('/clients/{id}/download', function ($params) {
             return;
         }
 
+        // A linked pool has the same AWG identity and peers but another direct
+        // endpoint. Generate a variant by changing only Endpoint; client keys,
+        // address and obfuscation parameters remain byte-for-byte identical.
+        $targetPoolId = (int) ($_GET['pool_id'] ?? 0);
+        $targetPoolName = '';
+        if ($targetPoolId > 0) {
+            $serverData = (new VpnServer((int) $clientData['server_id']))->getData();
+            $homePoolId = (int) ($serverData['pool_id'] ?? 0);
+            if ($homePoolId <= 0 || !in_array($targetPoolId, ServerPool::peerGroupPoolIds($homePoolId), true)) {
+                http_response_code(400);
+                echo 'Target pool does not share this client identity.';
+                return;
+            }
+            $targetPool = ServerPool::get($targetPoolId);
+            $targetDomain = trim((string) ($targetPool['domain'] ?? ''));
+            if (!$targetPool || $targetDomain === '') {
+                http_response_code(400);
+                echo 'Target pool has no domain.';
+                return;
+            }
+            // Linked-pool downloads only replace Endpoint. Keep the protocol
+            // generation's listener: legacy AWG 2.0 is on vpn_port (443), while
+            // AWG 3.1 is deliberately isolated on awg31_port (444) because a
+            // HeaderProtectionKey cannot share the legacy interface.
+            $targetPort = ServerPool::endpointPort(
+                $targetPool,
+                (string) ($clientData['awg_version'] ?? '2.0')
+            );
+            $endpoint = $targetDomain . ':' . $targetPort;
+            $replaced = 0;
+            $config = preg_replace_callback('/^(\s*Endpoint\s*=\s*).+$/mi', static function ($m) use ($endpoint) {
+                return $m[1] . $endpoint;
+            }, $config, 1, $replaced);
+            if ($replaced !== 1) {
+                http_response_code(500);
+                echo 'Endpoint line was not found in the client config.';
+                return;
+            }
+            $targetPoolName = (string) $targetPool['name'];
+        }
+
         // Use login if available, fallback to name
         $baseName = !empty($clientData['login']) ? $clientData['login'] : $clientData['name'];
 
@@ -1821,7 +2062,8 @@ Router::get('/clients/{id}/download', function ($params) {
             $safeName = 'user_' . $clientData['id'] . '_s' . $clientData['server_id'];
         }
 
-        $filename = $safeName . '.conf';
+        $suffix = $targetPoolName !== '' ? '-' . preg_replace('/[^a-zA-Z0-9_-]/', '_', $targetPoolName) : '';
+        $filename = $safeName . $suffix . '.conf';
 
         header('Content-Type: text/plain; charset=utf-8');
         header('Content-Disposition: attachment; filename="' . $filename . '"');
@@ -2091,12 +2333,12 @@ Router::post('/clients/{id}/revoke', function ($params) {
         }
 
         if ($client->revoke()) {
-            redirect('/servers/' . $clientData['server_id'] . '?success=Client+revoked');
+            redirect('/clients?server_id=' . $clientData['server_id'] . '&success=Client+revoked');
         } else {
-            redirect('/servers/' . $clientData['server_id'] . '?error=Failed+to+revoke+client');
+            redirect('/clients?server_id=' . $clientData['server_id'] . '&error=Failed+to+revoke+client');
         }
     } catch (Exception $e) {
-        redirect('/dashboard?error=' . urlencode($e->getMessage()));
+        redirect('/clients?error=' . urlencode($e->getMessage()));
     }
 });
 
@@ -2118,12 +2360,12 @@ Router::post('/clients/{id}/restore', function ($params) {
         }
 
         if ($client->restore()) {
-            redirect('/servers/' . $clientData['server_id'] . '?success=Client+restored');
+            redirect('/clients?server_id=' . $clientData['server_id'] . '&success=Client+restored');
         } else {
-            redirect('/servers/' . $clientData['server_id'] . '?error=Failed+to+restore+client');
+            redirect('/clients?server_id=' . $clientData['server_id'] . '&error=Failed+to+restore+client');
         }
     } catch (Exception $e) {
-        redirect('/dashboard?error=' . urlencode($e->getMessage()));
+        redirect('/clients?error=' . urlencode($e->getMessage()));
     }
 });
 
@@ -2147,12 +2389,12 @@ Router::post('/clients/{id}/delete', function ($params) {
         $serverId = $clientData['server_id'];
 
         if ($client->delete()) {
-            redirect('/servers/' . $serverId . '?success=Client+deleted');
+            redirect('/clients?server_id=' . $serverId . '&success=Client+deleted');
         } else {
-            redirect('/servers/' . $serverId . '?error=Failed+to+delete+client');
+            redirect('/clients?server_id=' . $serverId . '&error=Failed+to+delete+client');
         }
     } catch (Exception $e) {
-        redirect('/dashboard?error=' . urlencode($e->getMessage()));
+        redirect('/clients?error=' . urlencode($e->getMessage()));
     }
 });
 

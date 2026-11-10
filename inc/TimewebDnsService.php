@@ -128,12 +128,42 @@ class TimewebDnsService
 
         // 1. List existing A-records for this fqdn.
         $list = self::request('GET', $base, null, $token);
+        // Timeweb addresses records by the full subdomain, but a brand-new
+        // subdomain must first be registered explicitly.  The old code treated
+        // that normal 404 as a hard failure, so the panel could update existing
+        // endpoints but could never create a new one.
+        if (!$list['ok'] && (int) ($list['status'] ?? 0) === 404) {
+            [$rootDomain, $subdomain] = self::splitDomain($fqdn);
+            if ($subdomain !== '') {
+                $add = self::request(
+                    'POST',
+                    '/api/v1/domains/' . rawurlencode($rootDomain) . '/subdomains/' . rawurlencode($subdomain),
+                    null,
+                    $token
+                );
+                if (!$add['ok']) {
+                    return [
+                        'success' => false,
+                        'message' => "Failed to create subdomain: {$add['error']}",
+                        'status' => $add['status'],
+                        'response' => $add['body'],
+                    ];
+                }
+                $list = self::request('GET', $base, null, $token);
+            }
+        }
         if (!$list['ok']) {
             return ['success' => false, 'message' => "Failed to list DNS records: {$list['error']}", 'status' => $list['status'], 'response' => $list['body']];
         }
         $aRecordIds = self::aRecordIds($list['body']);
         // Low TTL so failover (A-record repoint) propagates to clients quickly.
         $payload = ['type' => 'A', 'value' => $ip, 'ttl' => self::RECORD_TTL];
+        [, $recordSubdomain] = self::splitDomain($fqdn);
+        if ($recordSubdomain !== '') {
+            // Required by Timeweb's v1 CreateDns schema for a new subdomain
+            // record (PATCH of an existing record did not need it).
+            $payload['subdomain'] = $fqdn;
+        }
 
         if (empty($aRecordIds)) {
             $res = self::request('POST', $base, $payload, $token);

@@ -17,6 +17,7 @@ set -euo pipefail
 # validated path that actually carries WARP traffic.
 
 CONTAINER_NAME="${SERVER_CONTAINER:-amnezia-awg2}"
+AWG31_CONTAINER_NAME="${AWG31_CONTAINER_NAME:-amnezia-awg31}"
 HOST_CONFIG_DIR="${AWG2_HOST_CONFIG_DIR:-/opt/amnezia/awg2}"
 CONFIG_FILE="${AWG2_CONFIG_FILE:-awg0.conf}"
 STATE_DIR="/var/lib/cloudflare-warp/awg2-egress"
@@ -111,10 +112,12 @@ install_packages() {
 }
 
 container_ips() {
-  docker exec "$CONTAINER_NAME" hostname -i 2>/dev/null \
-    | tr ' ' '\n' \
-    | grep -E '^[0-9]+(\.[0-9]+){3}$' \
-    | sort -u || true
+  local container
+  for container in "$CONTAINER_NAME" "$AWG31_CONTAINER_NAME"; do
+    docker exec "$container" hostname -i 2>/dev/null || true
+  done | tr ' ' '\n' \
+       | grep -E '^[0-9]+(\.[0-9]+){3}$' \
+       | sort -u || true
 }
 
 # ---------------------------------------------------------------------------

@@ -41,8 +41,21 @@ Web-based management panel for Amnezia AWG (WireGuard) VPN servers.
 
 ## Installation
 
+For the automated `install.sh`, production deployment, HTTPS, backups, and the panel/RU-front co-location scenario, see the Russian guide: [DEPLOY_RU.md](DEPLOY_RU.md).
+
+Quick install on a clean Ubuntu host:
+
 ```bash
-git clone https://github.com/infosave2007/amneziavpnphp.git
+curl -fsSL https://raw.githubusercontent.com/rupasovigor-sudo/amneziavpnphp/master/install.sh -o /tmp/amnezia-panel-install.sh
+sudo bash /tmp/amnezia-panel-install.sh install --domain panel.example.com --admin-email admin@example.com
+```
+
+Update with a database backup: `sudo /opt/amnezia-panel/install.sh update`.
+
+Manual installation:
+
+```bash
+git clone https://github.com/rupasovigor-sudo/amneziavpnphp.git
 cd amneziavpnphp
 cp .env.example .env
 
