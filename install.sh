@@ -9,7 +9,7 @@
 
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.2.0"
+SCRIPT_VERSION="1.2.1"
 DEFAULT_REPO="https://github.com/rupasovigor-sudo/amneziavpnphp.git"
 DEFAULT_BRANCH="fix/awg2"
 DEFAULT_INSTALL_DIR="/opt/amnezia-panel"
@@ -334,6 +334,16 @@ save_initial_credentials() {
     warn "Случайный пароль администратора сохранен в $credentials_file (root:root, 0600)"
 }
 
+check_existing_proxy_publication() {
+    [[ "$EXISTING_PROXY" -eq 1 && -n "$PANEL_DOMAIN" ]] || return 0
+    local public_url="https://$PANEL_DOMAIN/login" status_code
+    status_code="$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 12 "$public_url" 2>/dev/null || true)"
+    case "$status_code" in
+        2??|3??) ok "Публичный HTTPS работает: $public_url (HTTP $status_code)" ;;
+        *) warn "ПУБЛИКАЦИЯ НЕ ЗАВЕРШЕНА: настройте существующий proxy: $PANEL_DOMAIN → http://127.0.0.1:8082 (проверка HTTPS: ${status_code:-нет ответа})" ;;
+    esac
+}
+
 install_reaper_cron() {
     cat > /etc/cron.d/amnezia-docker-reaper <<EOF
 SHELL=/bin/bash
@@ -396,7 +406,7 @@ install_panel() {
     if [[ -n "$PANEL_DOMAIN" ]]; then
         log "Адрес: $([[ "$NO_HTTPS" -eq 1 ]] && echo http || echo https)://$PANEL_DOMAIN"
         if [[ "$EXISTING_PROXY" -eq 1 ]]; then
-            warn "ПУБЛИКАЦИЯ НЕ ЗАВЕРШЕНА: настройте существующий proxy: $PANEL_DOMAIN → http://127.0.0.1:8082"
+            check_existing_proxy_publication
         fi
     else
         log "Панель доступна локально: http://127.0.0.1:8082"
@@ -437,7 +447,7 @@ update_panel() {
         && ok "RU-фронт активен" || true
     ok "Панель обновлена"
     if [[ "$EXISTING_PROXY" -eq 1 ]]; then
-        warn "ПУБЛИКАЦИЯ НЕ ЗАВЕРШЕНА: настройте существующий proxy: $PANEL_DOMAIN → http://127.0.0.1:8082"
+        check_existing_proxy_publication
     fi
 }
 
