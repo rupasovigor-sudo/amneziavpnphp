@@ -442,6 +442,7 @@ Router::post('/pools/{id}/front/detect', function ($params) {
     });
 });
 Router::post('/pools/{id}/front/domain', function ($params) {
+    @set_time_limit(300); // returning to a member first rebuilds both peer sets over SSH
     poolFrontJson(fn($in) => ($in['target'] ?? '') === 'front'
         ? PoolFront::pointDomainToFront((int) $params['id'])
         : PoolFront::pointDomainToMember((int) $params['id'], 'manual_ui'));

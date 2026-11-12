@@ -612,6 +612,23 @@ SH;
         if ($target === null) {
             return ['success' => false, 'message' => 'Нет здорового сервера пула для переключения домена'];
         }
+        // The front can keep serving while a member has lost live peers after a
+        // container restart. Before exposing that member directly, rebuild both
+        // AWG 2.0 and AWG 3.1 peer sets from the DB and apply them with syncconf.
+        // This is non-disruptive for already-connected clients and replaces the
+        // old two-click workflow: «Ре-синк», then «Вернуть на сервер».
+        try {
+            $peerSync = ServerPool::reconcilePeers($target);
+        } catch (Throwable $e) {
+            return ['success' => false, 'message' => 'Автоматический ре-синк перед возвратом на сервер не выполнен: ' . $e->getMessage()];
+        }
+        if (empty($peerSync['success'])) {
+            return [
+                'success' => false,
+                'message' => 'Автоматический ре-синк перед возвратом на сервер не завершён: '
+                    . ($peerSync['message'] ?? 'неизвестная ошибка'),
+            ];
+        }
         // Clients are about to reach a member directly: reopen the VPN port
         // first (the setting is kept and re-applied when the domain returns).
         // Best-effort — with the front down, staying locked helps nobody.
@@ -637,7 +654,10 @@ SH;
             $db->prepare("UPDATE pool_fronts SET dns_mode = ? WHERE id = ?")->execute([$front['dns_mode'], (int) $front['id']]);
             return ['success' => false, 'message' => $res['message'] ?? 'setActive failed'];
         }
-        return ['success' => true, 'message' => $res['message'] ?? 'ok'];
+        return [
+            'success' => true,
+            'message' => 'Автоматический ре-синк выполнен. ' . ($res['message'] ?? 'Домен возвращён на сервер.'),
+        ];
     }
 
     // --------------------------------------------------------------- settings

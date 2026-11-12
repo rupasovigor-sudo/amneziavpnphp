@@ -626,6 +626,73 @@ class ServerPool
         }
     }
 
+    /**
+     * Count the expected and live peers on both parallel AWG interfaces.
+     *
+     * AWG 3.1 clients live on awg31, not awg0. Comparing the combined DB
+     * count with awg0 alone produces a permanent false shortage (for example
+     * 14/22 when the remaining eight peers are correctly present on awg31).
+     * Keep the generations separate so a missing peer cannot be hidden by an
+     * extra peer on the other interface.
+     *
+     * @return array{ready:bool,expected:int,live:int,expected_legacy:int,live_legacy:int,expected_awg31:int,live_awg31:int}
+     */
+    private static function peerGenerationsReady(
+        int $expectedLegacy,
+        int $liveLegacy,
+        int $expectedAwg31,
+        int $liveAwg31
+    ): bool {
+        return $liveLegacy >= $expectedLegacy && $liveAwg31 >= $expectedAwg31;
+    }
+
+    private static function peerReadiness(int $poolId, int $serverId): array
+    {
+        $expectedLegacy = 0;
+        $expectedAwg31 = 0;
+        $memberIds = self::peerGroupServerIds($poolId);
+        if ($memberIds) {
+            $in = implode(',', array_fill(0, count($memberIds), '?'));
+            $stmt = DB::conn()->prepare(
+                "SELECT CASE WHEN awg_version = '3.1' THEN '3.1' ELSE '2.0' END AS generation,
+                        COUNT(DISTINCT public_key) AS peers
+                 FROM vpn_clients
+                 WHERE server_id IN ($in) AND status = 'active' AND public_key <> '' AND client_ip <> ''
+                 GROUP BY generation"
+            );
+            $stmt->execute($memberIds);
+            foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                if (($row['generation'] ?? '') === '3.1') {
+                    $expectedAwg31 = (int) $row['peers'];
+                } else {
+                    $expectedLegacy = (int) $row['peers'];
+                }
+            }
+        }
+
+        $server = new VpnServer($serverId);
+        $data = $server->getData();
+        $container = (string) ($data['container_name'] ?? '') ?: 'amnezia-awg2';
+        $liveLegacy = (int) trim((string) $server->executeCommand(
+            'docker exec ' . escapeshellarg($container) . ' awg show awg0 allowed-ips 2>/dev/null | grep -c "/32" || true',
+            true
+        ));
+        $liveAwg31 = (int) trim((string) $server->executeCommand(
+            'docker exec amnezia-awg31 awg show awg31 allowed-ips 2>/dev/null | grep -c "/32" || true',
+            true
+        ));
+
+        return [
+            'ready' => self::peerGenerationsReady($expectedLegacy, $liveLegacy, $expectedAwg31, $liveAwg31),
+            'expected' => $expectedLegacy + $expectedAwg31,
+            'live' => $liveLegacy + $liveAwg31,
+            'expected_legacy' => $expectedLegacy,
+            'live_legacy' => $liveLegacy,
+            'expected_awg31' => $expectedAwg31,
+            'live_awg31' => $liveAwg31,
+        ];
+    }
+
     private static function setActiveLocked(int $poolId, int $serverId, string $reason): array
     {
         $pool = self::get($poolId);
@@ -644,41 +711,26 @@ class ServerPool
         }
 
         // Safety: never repoint to a member that isn't actually serving the pool's
-        // clients on its LIVE awg0 interface. Peers can be absent even when
+        // clients on its LIVE AWG interfaces. Peers can be absent even when
         // pool_sync_pending = 0 (they live in clientsTable/`awg set`, not awg0.conf,
         // so a container restart drops them). Activating a peer-less member
         // black-holes every client — this exact gap caused a full outage.
-        $memberIds = self::peerGroupServerIds($poolId);
-        $expectedPeers = 0;
-        if (!empty($memberIds)) {
-            $in = implode(',', array_fill(0, count($memberIds), '?'));
-            $stmtC = DB::conn()->prepare(
-                // Must mirror reconcilePeers() exactly: it skips rows with an
-                // empty client_ip, so counting them here would make expectedPeers
-                // permanently exceed the live peer count and silently block both
-                // manual switching and auto-failover.
-                "SELECT COUNT(DISTINCT public_key) FROM vpn_clients
-                 WHERE server_id IN ($in) AND status = 'active' AND public_key <> '' AND client_ip <> ''"
+        $peerState = self::peerReadiness($poolId, $serverId);
+        if ($peerState['expected'] > 0 && !$peerState['ready']) {
+            error_log(
+                "ServerPool::setActive REFUSED #{$serverId}: "
+                . "AWG2={$peerState['live_legacy']}/{$peerState['expected_legacy']} "
+                . "AWG3.1={$peerState['live_awg31']}/{$peerState['expected_awg31']}"
             );
-            $stmtC->execute($memberIds);
-            $expectedPeers = (int) $stmtC->fetchColumn();
-        }
-        if ($expectedPeers > 0) {
-            $targetData = (new VpnServer($serverId))->getData();
-            $tc = (string) ($targetData['container_name'] ?? '') ?: 'amnezia-awg2';
-            $livePeers = (int) trim((string) (new VpnServer($serverId))->executeCommand(
-                'docker exec ' . escapeshellarg($tc) . ' awg show awg0 allowed-ips 2>/dev/null | grep -c "/32"',
-                true
-            ));
-            if ($livePeers < $expectedPeers) {
-                error_log("ServerPool::setActive REFUSED #{$serverId}: {$livePeers}/{$expectedPeers} live peers");
-                return [
-                    'success' => false,
-                    'message' => "Отказ активировать #{$serverId} ({$target['name']}): на живом интерфейсе {$livePeers}/{$expectedPeers} клиентских пиров — сначала «Ре-синк» (иначе клиенты не подключатся).",
-                    'live_peers' => $livePeers,
-                    'expected_peers' => $expectedPeers,
-                ];
-            }
+            return [
+                'success' => false,
+                'message' => "Отказ активировать #{$serverId} ({$target['name']}): "
+                    . "пиры AWG 2.0 {$peerState['live_legacy']}/{$peerState['expected_legacy']}, "
+                    . "AWG 3.1 {$peerState['live_awg31']}/{$peerState['expected_awg31']} — требуется ре-синк.",
+                'live_peers' => $peerState['live'],
+                'expected_peers' => $peerState['expected'],
+                'peer_state' => $peerState,
+            ];
         }
 
         $oldActive = (int) ($pool['active_server_id'] ?? 0);
@@ -1457,33 +1509,17 @@ class ServerPool
         }
 
         $members = self::members($poolId);
-        $memberIds = self::peerGroupServerIds($poolId);
 
         // Safety: the active must be able to serve everyone before we kick clients
-        // off the others (mirror the setActive live-peer guard).
-        $expected = 0;
-        if (!empty($memberIds)) {
-            $in = implode(',', array_fill(0, count($memberIds), '?'));
-            $st = DB::conn()->prepare(
-                "SELECT COUNT(DISTINCT public_key) FROM vpn_clients
-                 WHERE server_id IN ($in) AND status = 'active' AND public_key <> '' AND client_ip <> ''"
-            );
-            $st->execute($memberIds);
-            $expected = (int) $st->fetchColumn();
-        }
-        if ($expected > 0) {
-            $ad = (new VpnServer($activeId))->getData();
-            $ac = (string) ($ad['container_name'] ?? '') ?: 'amnezia-awg2';
-            $live = (int) trim((string) (new VpnServer($activeId))->executeCommand(
-                'docker exec ' . escapeshellarg($ac) . ' awg show awg0 allowed-ips 2>/dev/null | grep -c "/32"',
-                true
-            ));
-            if ($live < $expected) {
-                return [
-                    'success' => false,
-                    'message' => "Активный #{$activeId} обслуживает {$live}/{$expected} пиров — сначала «Ре-синк» активного, иначе согнанные клиенты не подключатся.",
-                ];
-            }
+        // off the others (mirror the setActive per-generation guard).
+        $peerState = self::peerReadiness($poolId, $activeId);
+        if ($peerState['expected'] > 0 && !$peerState['ready']) {
+            return [
+                'success' => false,
+                'message' => "Активный #{$activeId}: пиры AWG 2.0 "
+                    . "{$peerState['live_legacy']}/{$peerState['expected_legacy']}, AWG 3.1 "
+                    . "{$peerState['live_awg31']}/{$peerState['expected_awg31']} — сначала выполните ре-синк.",
+            ];
         }
 
         $kicked = [];
