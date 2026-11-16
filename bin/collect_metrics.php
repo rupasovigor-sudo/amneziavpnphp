@@ -265,16 +265,21 @@ function runCollectorPool(array $servers, int $limit, AlertManager $alertManager
     }
 }
 
-$collectorCfg = [
-    'awg_enforcement_interval' => (int) Config::get('AMNEZIA_AWG_ENFORCEMENT_INTERVAL_SECONDS', '0'),
-    'cpu_warn' => configFloat('ALERT_CPU_WARNING_PERCENT', 90.0),
-    'cpu_crit' => configFloat('ALERT_CPU_CRITICAL_PERCENT', 98.0),
-    'ram_warn' => configFloat('ALERT_RAM_WARNING_PERCENT', 90.0),
-    'ram_crit' => configFloat('ALERT_RAM_CRITICAL_PERCENT', 97.0),
-    'disk_warn' => configFloat('ALERT_DISK_WARNING_PERCENT', 85.0),
-    'disk_crit' => configFloat('ALERT_DISK_CRITICAL_PERCENT', 95.0),
-    'resource_failure_threshold' => max(2, (int) Config::get('ALERT_RESOURCE_FAILURE_THRESHOLD', '5')),
-];
+function loadCollectorConfig(): array
+{
+    return [
+        'awg_enforcement_interval' => (int) Config::get('AMNEZIA_AWG_ENFORCEMENT_INTERVAL_SECONDS', '0'),
+        'cpu_warn' => configFloat('ALERT_CPU_WARNING_PERCENT', 90.0),
+        'cpu_crit' => configFloat('ALERT_CPU_CRITICAL_PERCENT', 98.0),
+        'ram_warn' => configFloat('ALERT_RAM_WARNING_PERCENT', 90.0),
+        'ram_crit' => configFloat('ALERT_RAM_CRITICAL_PERCENT', 97.0),
+        'disk_warn' => configFloat('ALERT_DISK_WARNING_PERCENT', 85.0),
+        'disk_crit' => configFloat('ALERT_DISK_CRITICAL_PERCENT', 95.0),
+        'resource_failure_threshold' => max(2, (int) Config::get('ALERT_RESOURCE_FAILURE_THRESHOLD', '5')),
+    ];
+}
+
+$collectorCfg = loadCollectorConfig();
 
 // Child mode: collect one server and exit (no lock/pid, spawned by the daemon).
 foreach (array_slice($argv ?? [], 1) as $arg) {
@@ -353,6 +358,43 @@ $alertManager = new AlertManager();
 while (true) {
     try {
         $startTime = microtime(true);
+
+        // Alert settings are editable from the panel while this root-owned
+        // daemon stays alive for weeks.  www-data cannot signal/kill it, and a
+        // second Config::load() would keep the values exported by the first
+        // load.  Refresh the file authoritatively at the cycle boundary, then
+        // rebuild the cached configuration objects.  Child collectors inherit
+        // these refreshed values too.
+        Config::reload(__DIR__ . '/../.env', [
+            'ALERTS_ENABLED',
+            'ALERTS_FAILURE_THRESHOLD',
+            'ALERT_RESOURCE_FAILURE_THRESHOLD',
+            'ALERTS_COOLDOWN_SECONDS',
+            'ALERT_CPU_WARNING_PERCENT',
+            'ALERT_CPU_CRITICAL_PERCENT',
+            'ALERT_RAM_WARNING_PERCENT',
+            'ALERT_RAM_CRITICAL_PERCENT',
+            'ALERT_DISK_WARNING_PERCENT',
+            'ALERT_DISK_CRITICAL_PERCENT',
+            'ALERT_WATCHDOG_RESTART_LOOKBACK_SECONDS',
+            'ALERT_HANDSHAKE_STALE_SECONDS',
+            'ALERT_HANDSHAKE_STALE_PERCENT',
+            'ALERT_HANDSHAKE_MIN_PEERS',
+            'TELEGRAM_ALERTS_ENABLED',
+            'TELEGRAM_BOT_TOKEN',
+            'TELEGRAM_CHAT_ID',
+            'EMAIL_ALERTS_ENABLED',
+            'ALERT_EMAIL_TO',
+            'SMTP_HOST',
+            'SMTP_PORT',
+            'SMTP_USERNAME',
+            'SMTP_PASSWORD',
+            'SMTP_FROM',
+            'SMTP_FROM_NAME',
+            'SMTP_TLS',
+        ]);
+        $collectorCfg = loadCollectorConfig();
+        $alertManager = new AlertManager();
         
         // Get all active servers
         $servers = array_values(array_filter(VpnServer::listAll(), function ($s) {
