@@ -784,7 +784,11 @@ SWAP;
         // (which can build into a non-working container) instead of the vetted
         // commit. (An earlier attempt wrongly substituted this into the WATCHDOG
         // script, which has no such line — so the pin was silently dead.)
-        $awg2Ref = trim((string) Config::get('AWG2_PIN_REF', ''));
+        // A rebuild resolves the advertised upstream HEAD before it starts and
+        // passes that exact SHA here.  This keeps the build deterministic even
+        // if master advances while Docker is compiling.  Fresh installs still
+        // honour an explicit env pin, or let the installer use master.
+        $awg2Ref = trim((string) ($options['awg2_ref'] ?? Config::get('AWG2_PIN_REF', '')));
         if ($awg2Ref !== '') {
             $pairs['AWG2_REF'] = $awg2Ref;
         }

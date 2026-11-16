@@ -1156,6 +1156,30 @@ class ServerPool
     }
 
     /**
+     * Confirm that the installer really checked out the ref the panel offered
+     * as an update.  Container health alone is insufficient: rebuilding an old
+     * working tree produces a healthy old image and used to be reported as a
+     * successful update.
+     *
+     * @return array{ok:bool,local:string,expected:?string}
+     */
+    private static function awg2SourceCurrent(VpnServer $server, ?string $expected): array
+    {
+        $local = strtolower(trim((string) $server->executeCommand(
+            'git -C /opt/amnezia/awg2/src rev-parse HEAD 2>/dev/null || true',
+            true
+        )));
+        $expected = $expected !== null ? strtolower($expected) : null;
+        $validLocal = preg_match('/^[0-9a-f]{40}$/', $local) === 1;
+
+        return [
+            'ok' => $validLocal && ($expected === null || hash_equals($expected, $local)),
+            'local' => $local,
+            'expected' => $expected,
+        ];
+    }
+
+    /**
      * Restore awg2 from the pre-rebuild snapshot and start a container from the
      * existing image, mirroring how the installer mounts it (host
      * /opt/amnezia/awg2 -> container /opt/amnezia/awg). Returns true if the
@@ -1216,11 +1240,16 @@ class ServerPool
         //    throw here skipped the rollback below and left the member with no
         //    container at all. Treat it as an ordinary failure.
         $protocol = InstallProtocolManager::getBySlug('awg2');
+        // Resolve once and pass the exact commit to the remote installer.  It
+        // gives the post-build check a stable target instead of racing a moving
+        // master branch.
+        $expectedSourceHead = ServerUpdateManager::awg2UpstreamHead();
         $deployError = '';
         try {
             $deploy = InstallProtocolManager::activate(new VpnServer($serverId), $protocol, [
                 'pool_identity' => self::identityOptions($pool),
                 'server_port' => $port,
+                'awg2_ref' => $expectedSourceHead,
             ]);
         } catch (Throwable $e) {
             error_log("ServerPool::redeployMember: rebuild threw on {$serverId}: " . $e->getMessage());
@@ -1231,7 +1260,15 @@ class ServerPool
         // 4. Verify REAL success: a running container with awg0 listening on the
         //    port. Do NOT trust $deploy['success'] alone — activate() returns
         //    success=true by default even when the install aborted.
-        if (empty($deploy['success']) || !self::awg2Healthy($server, $port)) {
+        $source = !empty($deploy['success'])
+            ? self::awg2SourceCurrent($server, $expectedSourceHead)
+            : ['ok' => false, 'local' => '', 'expected' => null];
+        if (empty($deploy['success']) || !self::awg2Healthy($server, $port) || empty($source['ok'])) {
+            if (!empty($deploy['success']) && empty($source['ok'])) {
+                $localShort = $source['local'] !== '' ? substr($source['local'], 0, 12) : 'не определён';
+                $expectedShort = !empty($source['expected']) ? substr((string) $source['expected'], 0, 12) : 'не определён';
+                $deployError = "исходники не обновились: установлен {$localShort}, ожидался {$expectedShort}";
+            }
             // 5. Roll back to the snapshot: restore config+keys and bring the
             //    container back from the (still-present) image, so the member is
             //    left running its previous identity instead of destroyed.
