@@ -574,7 +574,11 @@ SWAP;
             return $decoded;
         }
 
-        if ($phase === 'install') {
+        // With a reliable trailing exit-code marker, intermediate retry output
+        // is diagnostic only.  Apply text heuristics solely as a fallback when
+        // the marker is missing; otherwise a first failed retry can poison a
+        // later successful attempt.
+        if ($phase === 'install' && $exitCode === null) {
             $lower = strtolower($trimmed);
             $hardErrors = [
                 'connection refused',
@@ -599,6 +603,28 @@ SWAP;
         // Try key-value format (e.g., "Port: 123" or "Server Public Key: abc")
         $result = self::parseKeyValueOutput($trimmed);
         if (!empty($result)) {
+            // Docker BuildKit prints an `ERROR: ...` line for a failed build
+            // attempt.  The AWG installer deliberately retries transient
+            // Alpine/CDN failures, so that line can coexist with a later
+            // successful build and a final script exit code of zero.  The
+            // generic key-value parser turns the stale line into result.error;
+            // discard it only when the complete script succeeded AND its
+            // terminal output contains positive install evidence.  A genuine
+            // final failure is still caught above by the non-zero exit code (or
+            // below by the required AWG result fields).
+            $slug = (string) ($protocol['slug'] ?? '');
+            $hasSuccessEvidence = preg_match(
+                '/(?:installed successfully|using existing[^\n]*configuration)/i',
+                $trimmed
+            ) === 1
+                || ($slug === 'awg2' && !empty($result['server_public_key']));
+            if ($phase === 'install' && $exitCode === 0 && $hasSuccessEvidence && !empty($result['error'])) {
+                Logger::appendInstall(
+                    $server->getId(),
+                    'INSTALL phase: ignored an error line from an earlier retry; final exit code and result are successful'
+                );
+                unset($result['error']);
+            }
             Logger::appendInstall($server->getId(), strtoupper($phase) . ' phase: parsed key-value result with ' . count($result) . ' keys');
             return array_merge(['success' => true], $result);
         }
