@@ -397,7 +397,8 @@ SH;
         DB::conn()->prepare(
             'UPDATE vpn_servers
              SET server_update_state = ?, server_update_message = ?,
-                 server_update_started_at = CASE WHEN ? = \'running\' THEN NOW() ELSE server_update_started_at END
+                 server_update_started_at = CASE WHEN ? = \'running\' THEN NOW() ELSE server_update_started_at END,
+                 server_update_boot_id = NULL
              WHERE id = ?'
         )->execute([$state, mb_substr($message, 0, 1000), (string) $state, $serverId]);
     }
@@ -815,8 +816,21 @@ SH;
         }
         try {
             $server = new VpnServer($serverId);
+            // Persist the current kernel boot identity before sending reboot.
+            // A panel hosted on this same front disappears with the server and
+            // kills its own worker; the new panel process can compare this id
+            // with the post-boot value and safely finish the orphaned job.
+            $bootId = trim((string) $server->executeCommand(
+                'cat /proc/sys/kernel/random/boot_id 2>/dev/null',
+                true,
+                20
+            ));
+            if (preg_match('/^[0-9a-f-]{36}$/i', $bootId)) {
+                DB::conn()->prepare('UPDATE vpn_servers SET server_update_boot_id = ? WHERE id = ?')
+                    ->execute([$bootId, $serverId]);
+            }
             // Detach so the SSH channel closing does not abort the reboot.
-            $server->executeCommand('(sleep 2; systemctl reboot) >/dev/null 2>&1 & echo reboot-scheduled', true);
+            $server->executeCommand('(sleep 2; systemctl reboot) >/dev/null 2>&1 & echo reboot-scheduled', true, 30);
         } catch (Exception $e) {
             return ['success' => false, 'message' => 'Не удалось отправить команду перезагрузки: ' . $e->getMessage()];
         }
@@ -1076,6 +1090,11 @@ SH;
      */
     public static function reapStuck(int $olderThanSeconds = 3600): int
     {
+        // A reboot of the host that runs the panel kills the detached PHP
+        // worker as well. Recover those jobs immediately after the panel comes
+        // back instead of leaving the UI spinning until the generic one-hour
+        // stale-job timeout.
+        $recovered = self::recoverInterruptedReboots();
         $st = DB::conn()->prepare(
             "UPDATE vpn_servers
              SET server_update_state = 'failed',
@@ -1090,7 +1109,129 @@ SH;
         // keeps the guard while leaving real long updates alone; callers use the
         // 3600s default anyway.
         $st->execute([max(1800, $olderThanSeconds)]);
-        return $st->rowCount();
+        return $recovered + $st->rowCount();
+    }
+
+    /** True when this container still has the reboot worker for the server. */
+    private static function rebootWorkerRunning(int $serverId): bool
+    {
+        foreach (glob('/proc/[0-9]*/cmdline') ?: [] as $path) {
+            $raw = @file_get_contents($path);
+            if (!is_string($raw) || $raw === '') {
+                continue;
+            }
+            $cmd = str_replace("\0", ' ', $raw);
+            if (str_contains($cmd, 'server_update_worker.php')
+                && str_contains($cmd, '--server-id=' . $serverId)
+                && str_contains($cmd, '--action=reboot')) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Finish reboot jobs whose worker vanished because the panel host rebooted.
+     * A changed boot_id is authoritative; uptime is a compatibility fallback
+     * for a reboot started before migration 123 was installed.
+     */
+    public static function recoverInterruptedReboots(): int
+    {
+        try {
+            $rows = DB::conn()->query(
+                "SELECT id, role, server_update_boot_id,
+                        TIMESTAMPDIFF(SECOND, server_update_started_at, NOW()) AS elapsed_seconds
+                 FROM vpn_servers
+                 WHERE server_update_state = 'running'
+                   AND server_update_message LIKE 'Команда перезагрузки отправлена%'
+                   AND server_update_started_at < DATE_SUB(NOW(), INTERVAL 60 SECOND)"
+            )->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        } catch (Throwable $e) {
+            // During a rolling upgrade the code can briefly precede migration
+            // 123. Leave the existing stale-job reaper operational.
+            return 0;
+        }
+
+        $recovered = 0;
+        foreach ($rows as $row) {
+            $serverId = (int) $row['id'];
+            if ($serverId <= 0 || self::rebootWorkerRunning($serverId)) {
+                continue;
+            }
+
+            $lock = 'amnezia_reboot_recover_' . $serverId;
+            $lk = DB::conn()->prepare('SELECT GET_LOCK(?, 0)');
+            $lk->execute([$lock]);
+            if ((int) $lk->fetchColumn() !== 1) {
+                continue;
+            }
+            try {
+                $st = DB::conn()->prepare(
+                    "SELECT server_update_state, server_update_message, server_update_boot_id,
+                            TIMESTAMPDIFF(SECOND, server_update_started_at, NOW()) AS elapsed_seconds
+                     FROM vpn_servers WHERE id = ?"
+                );
+                $st->execute([$serverId]);
+                $fresh = $st->fetch(PDO::FETCH_ASSOC) ?: [];
+                if (($fresh['server_update_state'] ?? '') !== 'running'
+                    || !str_starts_with((string) ($fresh['server_update_message'] ?? ''), 'Команда перезагрузки отправлена')) {
+                    continue;
+                }
+
+                $server = new VpnServer($serverId);
+                $probe = (string) $server->executeCommand(
+                    'echo BOOT_ID=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null); '
+                    . 'echo UPTIME=$(cut -d. -f1 /proc/uptime 2>/dev/null)',
+                    true,
+                    20
+                );
+                preg_match('/^BOOT_ID=([0-9a-f-]{36})$/mi', $probe, $bootMatch);
+                preg_match('/^UPTIME=(\d+)$/mi', $probe, $uptimeMatch);
+                $currentBootId = strtolower((string) ($bootMatch[1] ?? ''));
+                $previousBootId = strtolower(trim((string) ($fresh['server_update_boot_id'] ?? '')));
+                $uptime = isset($uptimeMatch[1]) ? (int) $uptimeMatch[1] : -1;
+                $elapsed = (int) ($fresh['elapsed_seconds'] ?? 0);
+                $didReboot = $previousBootId !== ''
+                    ? ($currentBootId !== '' && $currentBootId !== $previousBootId)
+                    : ($uptime >= 0 && $elapsed > $uptime + 10);
+                if (!$didReboot) {
+                    continue;
+                }
+
+                $data = $server->getData() ?: [];
+                if (($data['role'] ?? 'vpn') !== 'front') {
+                    try {
+                        $server->executeCommand(
+                            'systemctl restart --no-block awg2-warp-egress.service >/dev/null 2>&1 || true; echo done',
+                            true,
+                            20
+                        );
+                    } catch (Throwable $e) {
+                        // Post-boot verification below remains authoritative.
+                    }
+                }
+
+                $verify = self::verifyAfterUpdate($serverId);
+                $ok = !empty($verify['ok']);
+                $message = 'Сервер перезагрузился и доступен. ' . ($verify['message'] ?? '')
+                    . ' (результат восстановлен после перезапуска панели)';
+                self::setState($serverId, $ok ? 'done' : 'failed', $message);
+                self::recordHistory(
+                    $serverId,
+                    'reboot',
+                    $ok ? 'done' : 'failed',
+                    $message,
+                    self::isActivePoolMember($serverId)
+                );
+                self::audit($serverId);
+                $recovered++;
+            } catch (Throwable $e) {
+                // Server may still be booting; a later poll retries recovery.
+            } finally {
+                DB::conn()->prepare('SELECT RELEASE_LOCK(?)')->execute([$lock]);
+            }
+        }
+        return $recovered;
     }
 
     /**
@@ -1114,8 +1255,10 @@ SH;
         // pre-existing firewall rule would fail every post-update verify and,
         // because nothing sets validated_clean back to 1 automatically, would
         // stickily drop a healthy server from failover. Keep it as an advisory.
+        $serverData = (new VpnServer($serverId))->getData() ?: [];
+        $isFront = ($serverData['role'] ?? 'vpn') === 'front';
         $critical = [];
-        foreach (['container_running', 'wireguard_interface', 'wireguard_port'] as $name) {
+        foreach ($isFront ? ['ssh', 'front_relay'] : ['container_running', 'wireguard_interface', 'wireguard_port'] as $name) {
             if (isset($checks[$name]) && empty($checks[$name]['ok'])) {
                 $critical[] = $checks[$name]['message'];
             }
@@ -1138,6 +1281,11 @@ SH;
             $advisory = ' ⚠ ' . $checks['wireguard_input_drops']['message'] . ' (проверьте фаервол; на failover не влияет)';
         }
 
-        return ['ok' => true, 'message' => 'Проверка пройдена: контейнер, awg0 и порт в норме' . $advisory];
+        return [
+            'ok' => true,
+            'message' => ($isFront
+                ? 'Проверка пройдена: SSH и relay в норме'
+                : 'Проверка пройдена: контейнер, awg0 и порт в норме') . $advisory,
+        ];
     }
 }
